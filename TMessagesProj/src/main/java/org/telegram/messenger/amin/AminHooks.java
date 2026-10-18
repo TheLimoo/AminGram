@@ -3,7 +3,11 @@ package org.telegram.messenger.amin;
 import android.content.Context;
 
 import org.telegram.messenger.ApplicationLoader;
+import org.telegram.messenger.MessageObject;
+import org.telegram.messenger.amin.core.MessagePipeline;
 import org.telegram.messenger.amin.plugins.PluginRegistry;
+
+import java.util.ArrayList;
 
 /**
  * Single bridge between upstream Telegram code and the AminGram mod layer.
@@ -37,5 +41,18 @@ public final class AminHooks {
 
     public static boolean freeTranslate() {
         return moduleEnabled("free_translate");
+    }
+
+    /** Phase 4: feed freshly arrived messages to the mod pipeline
+     *  (KeywordRadar / ConfigVault / AutoSaver). Fully isolated: any
+     *  failure inside the pipeline is swallowed here. */
+    public static void onNewMessages(ArrayList<MessageObject> messages) {
+        try {
+            Context context = ApplicationLoader.applicationContext;
+            if (context != null) {
+                MessagePipeline.process(context, messages);
+            }
+        } catch (Throwable ignored) {
+        }
     }
 }

@@ -1,0 +1,12 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+index 410c4fe..0e09703 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -19776,6 +19776,7 @@ public class MessagesController extends BaseController implements NotificationCe
+         }
+ 
+         if (pushMessages != null) {
++            amin.AminHooks.onNewMessages(pushMessages);
+             ArrayList<MessageObject> pushMessagesFinal = pushMessages;
+             getMessagesStorage().getStorageQueue().postRunnable(() -> AndroidUtilities.runOnUIThread(() -> getNotificationsController().processNewMessages(pushMessagesFinal, true, false, null)));
+         }

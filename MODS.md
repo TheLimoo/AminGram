@@ -12,6 +12,13 @@ Target: keep this list under 30 files, each with 1–3 line hooks.
   (SettingCell id 90) in `fillItems`; `case 90` in the `onClick` switch →
   opens the Plugins hub. Rebase check: search for `case 90` and `AminGram`.
 
+- `org/telegram/messenger/MessagesController.java` — (in addition to the
+  patch-0003 hooks above) Phase 4 pipeline: one line in
+  `processUpdateArray` feeding `pushMessages` to
+  `amin.AminHooks.onNewMessages` before the notification dispatch
+  (patch 0006). The pipeline (`amin.core.MessagePipeline` + `VaultStore`)
+  powers KeywordRadar hits, ConfigVault link collection and AutoSaver
+  v1 (immediate download of self-destruct media documents).
 - `TMessagesProj_App/google-services.json` — added Firebase clients for
   `org.telegram.amingram` + `org.telegram.amingram.beta` (cloned from the
   upstream entries, patch 0005). Without this the google-services Gradle

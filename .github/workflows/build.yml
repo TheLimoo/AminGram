@@ -27,6 +27,7 @@ jobs:
           git apply ../patches/0003-phase2-hooks.patch
           git apply ../patches/0004-videobg-rebrand.patch
           git apply ../patches/0005-google-services-amingram.patch
+          git apply ../patches/0006-message-pipeline-hook.patch
 
       - name: Inject API credentials from secrets
         env:
@@ -43,6 +44,36 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+
+      - name: Restore cached NDK
+        id: ndk-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: /usr/local/lib/android/sdk/ndk/27.2.12479018
+          key: ndk-27.2.12479018
+
+      - name: Install NDK 27.2.12479018
+        id: ndk-install
+        if: steps.ndk-cache.outputs.cache-hit != 'true'
+        run: |
+          SDKMANAGER="$(command -v sdkmanager || echo "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager")"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          ok=0
+          for i in 1 2 3; do
+            if "$SDKMANAGER" "ndk;27.2.12479018"; then ok=1; break; fi
+            echo "sdkmanager attempt $i failed; retrying in 15s"
+            rm -rf /usr/local/lib/android/sdk/ndk/27.2.12479018
+            sleep 15
+          done
+          test "$ok" = 1 && test -f /usr/local/lib/android/sdk/ndk/27.2.12479018/source.properties
+          echo "ok=true" >> "$GITHUB_OUTPUT"
+
+      - name: Save NDK cache
+        if: steps.ndk-install.outputs.ok == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /usr/local/lib/android/sdk/ndk/27.2.12479018
+          key: ndk-27.2.12479018
 
       - name: Build release APK (afat)
         run: |
