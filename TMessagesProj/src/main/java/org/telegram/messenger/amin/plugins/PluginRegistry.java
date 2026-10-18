@@ -1,0 +1,57 @@
+package org.telegram.messenger.amin.plugins;
+
+import android.content.Context;
+import android.content.SharedPreferences;
+
+import org.telegram.messenger.amin.modules.AntiDeleteModule;
+import org.telegram.messenger.amin.modules.FreeTranslateModule;
+import org.telegram.messenger.amin.modules.GhostModeModule;
+import org.telegram.messenger.amin.modules.LocalPremiumModule;
+import org.telegram.messenger.amin.modules.VideoBackgroundModule;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
+/**
+ * Central registry of all mod modules. The Plugins hub UI is generated
+ * from this list; adding a module = adding one line in {@link #registerAll()}.
+ */
+public final class PluginRegistry {
+
+    private static final String PREFS = "amingram_plugins";
+    private static final List<ModModule> MODULES = new ArrayList<>();
+    private static boolean registered;
+
+    private PluginRegistry() {
+    }
+
+    public static synchronized void registerAll() {
+        if (registered) {
+            return;
+        }
+        registered = true;
+        MODULES.add(new LocalPremiumModule());
+        MODULES.add(new GhostModeModule());
+        MODULES.add(new AntiDeleteModule());
+        MODULES.add(new FreeTranslateModule());
+        MODULES.add(new VideoBackgroundModule());
+    }
+
+    public static List<ModModule> modules() {
+        registerAll();
+        return Collections.unmodifiableList(MODULES);
+    }
+
+    public static boolean isEnabled(Context context, ModModule module) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        return prefs.getBoolean("enabled_" + module.id(), module.enabledByDefault());
+    }
+
+    public static void setEnabled(Context context, ModModule module, boolean enabled) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean("enabled_" + module.id(), enabled)
+                .apply();
+    }
+}
