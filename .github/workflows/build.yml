@@ -1,0 +1,55 @@
+name: Build AminGram
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout AminGram overlay
+        uses: actions/checkout@v4
+
+      - name: Fetch upstream Telegram source (pinned)
+        run: |
+          git clone --depth 1 https://github.com/DrKLO/Telegram.git upstream
+          cd upstream && git log --oneline -1
+
+      - name: Apply AminGram overlay
+        run: |
+          cp -r TMessagesProj upstream/
+          cd upstream
+          git apply ../patches/0001-settings-plugins-entry.patch
+          git apply ../patches/0002-rebrand-package.patch
+
+      - name: Inject API credentials from secrets
+        env:
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
+        run: |
+          cd upstream
+          sed -i "s/public static int APP_ID = 4;/public static int APP_ID = ${API_ID};/" TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java
+          sed -i 's/public static String APP_HASH = "014b35b6184100b085b0d0572f9b5103";/public static String APP_HASH = "'"${API_HASH}"'";/' TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java
+          grep -c "APP_ID" TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Build release APK (afat)
+        run: |
+          cd upstream
+          chmod +x gradlew
+          ./gradlew :TMessagesProj_App:assembleAfatRelease --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: AminGram-apk
+          path: upstream/TMessagesProj_App/build/outputs/apk/afat/release/*.apk
+          if-no-files-found: warn
