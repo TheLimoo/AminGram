@@ -1,0 +1,31 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java
+index 693df78..632a315 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java
+@@ -125,6 +125,7 @@ import org.telegram.ui.Components.ScaleStateListAnimator;
+ import org.telegram.ui.Components.ShareAlert;
+ import org.telegram.ui.Components.SizeNotifierFrameLayout;
+ import org.telegram.ui.Components.TextHelper;
++import org.telegram.messenger.amin.ui.AminPluginsActivity;
+ import org.telegram.ui.Components.UItem;
+ import org.telegram.ui.Components.UniversalAdapter;
+ import org.telegram.ui.Components.UniversalRecyclerView;
+@@ -706,6 +707,8 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
+         items.add(SettingCell.Factory.of(8, IconBackgroundColors.CYAN.top, IconBackgroundColors.CYAN.bottom, R.drawable.settings_devices, getString(R.string.SettingsDevices), getString(R.string.SettingsDevicesInfo)));
+         items.add(SettingCell.Factory.of(9, IconBackgroundColors.ORANGE_DEEP.top, IconBackgroundColors.ORANGE_DEEP.bottom, R.drawable.settings_power, getString(R.string.SettingsPowerSaving), getString(R.string.SettingsPowerSavingInfo)));
+         items.add(SettingCell.Factory.of(10, IconBackgroundColors.PURPLE.top, IconBackgroundColors.PURPLE.bottom, R.drawable.settings_language, getString(R.string.SettingsLanguage), LocaleController.getCurrentLanguageName()));
++        items.add(UItem.asHeader("AminGram"));
++        items.add(SettingCell.Factory.of(90, IconBackgroundColors.PURPLE.top, IconBackgroundColors.PURPLE.bottom, R.drawable.settings_features, "Plugins", "AminGram feature modules"));
+ 
+         items.add(UItem.asShadow(null));
+         if (!walletAbove && getMessagesController().config.walletAvailable.get()) {
+@@ -817,6 +820,9 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
+             return;
+         }
+         switch (item.id) {
++            case 90:
++                presentSettingFragment(new AminPluginsActivity());
++                break;
+             case 1:
+                 presentSettingFragment(new UserInfoActivity());
+                 break;
