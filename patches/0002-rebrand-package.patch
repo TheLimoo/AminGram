@@ -1,0 +1,13 @@
+diff --git a/gradle.properties b/gradle.properties
+index 55d530f..85ae563 100644
+--- a/gradle.properties
++++ b/gradle.properties
+@@ -15,7 +15,7 @@
+ #Sat Mar 12 05:53:50 MSK 2016
+ APP_VERSION_CODE=7175
+ APP_VERSION_NAME=13.0.2
+-APP_PACKAGE=org.telegram.messenger
++APP_PACKAGE=org.telegram.amingram
+ IS_PRIVATE=false
+ RELEASE_KEY_PASSWORD=android
+ RELEASE_KEY_ALIAS=androidkey
