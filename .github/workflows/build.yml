@@ -26,6 +26,7 @@ jobs:
           git apply ../patches/0002-rebrand-package.patch
           git apply ../patches/0003-phase2-hooks.patch
           git apply ../patches/0004-videobg-rebrand.patch
+          git apply ../patches/0005-google-services-amingram.patch
 
       - name: Inject API credentials from secrets
         env:

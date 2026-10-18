@@ -12,6 +12,14 @@ Target: keep this list under 30 files, each with 1–3 line hooks.
   (SettingCell id 90) in `fillItems`; `case 90` in the `onClick` switch →
   opens the Plugins hub. Rebase check: search for `case 90` and `AminGram`.
 
+- `TMessagesProj_App/google-services.json` — added Firebase clients for
+  `org.telegram.amingram` + `org.telegram.amingram.beta` (cloned from the
+  upstream entries, patch 0005). Without this the google-services Gradle
+  task fails the rebranded build ("No matching client found for package
+  name 'org.telegram.amingram'", CI run #4). NOTE: this only satisfies the
+  build; FCM push under Telegram's Firebase project will not deliver to
+  the fork package at runtime — expected for a sideload fork.
+
 ## Hook points (planned)
 - `MessagesController` — message update/delete events → AntiDelete, plugin bus
 - `ChatActivity` — chat screen lifecycle → VideoBackground, per-chat plugins
