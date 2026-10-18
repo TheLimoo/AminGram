@@ -7,7 +7,7 @@ index 93bc81c..410c4fe 100644
              if (!ignoreSetOnline && getConnectionsManager().getPauseTime() == 0 && ApplicationLoader.isScreenOn && !ApplicationLoader.mainInterfacePausedStageQueue) {
                  if (ApplicationLoader.mainInterfacePausedStageQueueTime != 0 && Math.abs(ApplicationLoader.mainInterfacePausedStageQueueTime - System.currentTimeMillis()) > 1000) {
 -                    if (statusSettingState != 1 && (lastStatusUpdateTime == 0 || Math.abs(System.currentTimeMillis() - lastStatusUpdateTime) >= 55000 || offlineSent)) {
-+                    if (statusSettingState != 1 && !amin.AminHooks.ghostMode() && (lastStatusUpdateTime == 0 || Math.abs(System.currentTimeMillis() - lastStatusUpdateTime) >= 55000 || offlineSent)) {
++                    if (statusSettingState != 1 && !org.telegram.messenger.amin.AminHooks.ghostMode() && (lastStatusUpdateTime == 0 || Math.abs(System.currentTimeMillis() - lastStatusUpdateTime) >= 55000 || offlineSent)) {
                          statusSettingState = 1;
  
                          if (statusRequest != 0) {
@@ -15,7 +15,7 @@ index 93bc81c..410c4fe 100644
      }
  
      private void completeReadTask(ReadTask task) {
-+        if (amin.AminHooks.ghostMode()) {
++        if (org.telegram.messenger.amin.AminHooks.ghostMode()) {
 +            return;
 +        }
          if (task.replyId != 0 && task.monoForumPeerId == 0) {
@@ -26,7 +26,7 @@ index 93bc81c..410c4fe 100644
                  }
              }
 -            if (deletedMessagesFinal != null) {
-+            if (deletedMessagesFinal != null && !amin.AminHooks.antiDelete()) {
++            if (deletedMessagesFinal != null && !org.telegram.messenger.amin.AminHooks.antiDelete()) {
                  for (int a = 0, size = deletedMessagesFinal.size(); a < size; a++) {
                      long dialogId = deletedMessagesFinal.keyAt(a);
                      ArrayList<Integer> arrayList = deletedMessagesFinal.valueAt(a);
@@ -38,7 +38,7 @@ index ead28d5..ca96c3b 100644
      }
  
      public boolean isFeatureAvailable() {
-+        if (amin.AminHooks.freeTranslate()) {
++        if (org.telegram.messenger.amin.AminHooks.freeTranslate()) {
 +            return isChatTranslateEnabled();
 +        }
          return isChatTranslateEnabled() && UserConfig.getInstance(currentAccount).isPremium();
@@ -48,7 +48,7 @@ index ead28d5..ca96c3b 100644
          }
          final TLRPC.Chat chat = getMessagesController().getChat(-dialogId);
          return (
-+            amin.AminHooks.freeTranslate() ||
++            org.telegram.messenger.amin.AminHooks.freeTranslate() ||
              UserConfig.getInstance(currentAccount).isPremium() ||
              chat != null && chat.autotranslation
          );
@@ -56,7 +56,7 @@ index ead28d5..ca96c3b 100644
                      return;
                  }*/
  
-+                if (amin.AminHooks.freeTranslate()) {
++                if (org.telegram.messenger.amin.AminHooks.freeTranslate()) {
 +                    for (int i = 0; i < pendingTranslation1.messageIds.size(); ++i) {
 +                        final int id = pendingTranslation1.messageIds.get(i);
 +                        final Utilities.Callback4<Boolean, Integer, TLRPC.TL_textWithEntities, String> _callback = pendingTranslation1.callbacks.get(i);

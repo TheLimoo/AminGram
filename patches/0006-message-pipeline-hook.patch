@@ -6,7 +6,7 @@ index 410c4fe..0e09703 100644
          }
  
          if (pushMessages != null) {
-+            amin.AminHooks.onNewMessages(pushMessages);
++            org.telegram.messenger.amin.AminHooks.onNewMessages(pushMessages);
              ArrayList<MessageObject> pushMessagesFinal = pushMessages;
              getMessagesStorage().getStorageQueue().postRunnable(() -> AndroidUtilities.runOnUIThread(() -> getNotificationsController().processNewMessages(pushMessagesFinal, true, false, null)));
          }

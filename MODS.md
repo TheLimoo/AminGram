@@ -12,6 +12,19 @@ Target: keep this list under 30 files, each with 1–3 line hooks.
   (SettingCell id 90) in `fillItems`; `case 90` in the `onClick` switch →
   opens the Plugins hub. Rebase check: search for `case 90` and `AminGram`.
 
+- `org/telegram/messenger/UserConfig.java` — LocalPremium: `isPremium()`
+  returns true when the module is enabled (1 guard line, patch 0003).
+- `org/telegram/messenger/MessagesController.java` — GhostMode:
+  `completeReadTask` early-return (no read receipts sent) and the
+  `updateTimerProc` online-status branch skipped while ghost is on;
+  AntiDelete v1: the update-driven `deletedMessagesFinal` application
+  block is skipped while enabled (patch 0003).
+- `org/telegram/messenger/TranslateController.java` — FreeTranslate:
+  premium gates in both `isFeatureAvailable` variants bypassed when
+  enabled; the translate runnable routes to the built-in keyless
+  `TranslateAlert2.alternativeTranslate` (Google public endpoint)
+  instead of the server request (patch 0003).
+
 - `org/telegram/messenger/MessagesController.java` — (in addition to the
   patch-0003 hooks above) Phase 4 pipeline: one line in
   `processUpdateArray` feeding `pushMessages` to
@@ -48,3 +61,15 @@ Target: keep this list under 30 files, each with 1–3 line hooks.
 - Settings UI ("Plugins" hub) is generated from manifests.
 - Runtime script plugins (JS/Python) are phase 3 — API surface will mirror
   the module events so scripts survive upstream rebases.
+- Hub tools (overlay-only, no upstream files touched): `AminPluginsActivity`
+  Tools section — video-background file picker (ACTION_GET_CONTENT →
+  `VideoBackgroundHelper` path prefs; content:// URIs copied via
+  `MediaController.copyFileToCache`), KeywordRadar keyword editor, and
+  read-only `AminStoreListActivity` viewers for Config Vault / Radar hits /
+  Auto-Saver log (all backed by `amin.core.VaultStore`; tap = copy, last
+  row = clear). NOTE: `BulletinFactory.createSimpleBulletin` icons are
+  `R.raw.*` Lottie ids, never `R.drawable.*`.
+- Hook-call rule (learned from CI run #6): patch call sites in upstream
+  files must use the fully-qualified `org.telegram.messenger.amin.…`
+  name — a bare `amin.AminHooks.…` does not resolve from
+  `org.telegram.messenger` and fails javac ("package amin does not exist").
