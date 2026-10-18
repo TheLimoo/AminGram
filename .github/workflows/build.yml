@@ -25,6 +25,7 @@ jobs:
           git apply ../patches/0001-settings-plugins-entry.patch
           git apply ../patches/0002-rebrand-package.patch
           git apply ../patches/0003-phase2-hooks.patch
+          git apply ../patches/0004-videobg-rebrand.patch
 
       - name: Inject API credentials from secrets
         env:

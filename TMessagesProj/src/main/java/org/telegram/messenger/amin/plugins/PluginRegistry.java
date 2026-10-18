@@ -4,8 +4,11 @@ import android.content.Context;
 import android.content.SharedPreferences;
 
 import org.telegram.messenger.amin.modules.AntiDeleteModule;
+import org.telegram.messenger.amin.modules.AutoSaverModule;
+import org.telegram.messenger.amin.modules.ConfigVaultModule;
 import org.telegram.messenger.amin.modules.FreeTranslateModule;
 import org.telegram.messenger.amin.modules.GhostModeModule;
+import org.telegram.messenger.amin.modules.KeywordRadarModule;
 import org.telegram.messenger.amin.modules.LocalPremiumModule;
 import org.telegram.messenger.amin.modules.VideoBackgroundModule;
 
@@ -36,6 +39,9 @@ public final class PluginRegistry {
         MODULES.add(new AntiDeleteModule());
         MODULES.add(new FreeTranslateModule());
         MODULES.add(new VideoBackgroundModule());
+        MODULES.add(new KeywordRadarModule());
+        MODULES.add(new ConfigVaultModule());
+        MODULES.add(new AutoSaverModule());
     }
 
     public static List<ModModule> modules() {
