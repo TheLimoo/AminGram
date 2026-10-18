@@ -15,7 +15,7 @@ jobs:
 
       - name: Fetch upstream Telegram source (pinned)
         run: |
-          git clone --depth 1 https://github.com/DrKLO/Telegram.git upstream
+          git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/DrKLO/Telegram.git upstream
           cd upstream && git log --oneline -1
 
       - name: Apply AminGram overlay
@@ -24,6 +24,7 @@ jobs:
           cd upstream
           git apply ../patches/0001-settings-plugins-entry.patch
           git apply ../patches/0002-rebrand-package.patch
+          git apply ../patches/0003-phase2-hooks.patch
 
       - name: Inject API credentials from secrets
         env:
