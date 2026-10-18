@@ -1,0 +1,95 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+index 93bc81c..410c4fe 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -10510,7 +10510,7 @@ public class MessagesController extends BaseController implements NotificationCe
+         if (getUserConfig().isClientActivated()) {
+             if (!ignoreSetOnline && getConnectionsManager().getPauseTime() == 0 && ApplicationLoader.isScreenOn && !ApplicationLoader.mainInterfacePausedStageQueue) {
+                 if (ApplicationLoader.mainInterfacePausedStageQueueTime != 0 && Math.abs(ApplicationLoader.mainInterfacePausedStageQueueTime - System.currentTimeMillis()) > 1000) {
+-                    if (statusSettingState != 1 && (lastStatusUpdateTime == 0 || Math.abs(System.currentTimeMillis() - lastStatusUpdateTime) >= 55000 || offlineSent)) {
++                    if (statusSettingState != 1 && !amin.AminHooks.ghostMode() && (lastStatusUpdateTime == 0 || Math.abs(System.currentTimeMillis() - lastStatusUpdateTime) >= 55000 || offlineSent)) {
+                         statusSettingState = 1;
+ 
+                         if (statusRequest != 0) {
+@@ -14541,6 +14541,9 @@ public class MessagesController extends BaseController implements NotificationCe
+     }
+ 
+     private void completeReadTask(ReadTask task) {
++        if (amin.AminHooks.ghostMode()) {
++            return;
++        }
+         if (task.replyId != 0 && task.monoForumPeerId == 0) {
+             TLRPC.TL_messages_readDiscussion req = new TLRPC.TL_messages_readDiscussion();
+             req.msg_id = (int) task.replyId;
+@@ -21129,7 +21132,7 @@ public class MessagesController extends BaseController implements NotificationCe
+                     getNotificationCenter().postNotificationName(NotificationCenter.messagesReadContent, key, value);
+                 }
+             }
+-            if (deletedMessagesFinal != null) {
++            if (deletedMessagesFinal != null && !amin.AminHooks.antiDelete()) {
+                 for (int a = 0, size = deletedMessagesFinal.size(); a < size; a++) {
+                     long dialogId = deletedMessagesFinal.keyAt(a);
+                     ArrayList<Integer> arrayList = deletedMessagesFinal.valueAt(a);
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/TranslateController.java b/TMessagesProj/src/main/java/org/telegram/messenger/TranslateController.java
+index ead28d5..ca96c3b 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/TranslateController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/TranslateController.java
+@@ -91,6 +91,9 @@ public class TranslateController extends BaseController {
+     }
+ 
+     public boolean isFeatureAvailable() {
++        if (amin.AminHooks.freeTranslate()) {
++            return isChatTranslateEnabled();
++        }
+         return isChatTranslateEnabled() && UserConfig.getInstance(currentAccount).isPremium();
+     }
+ 
+@@ -100,6 +103,7 @@ public class TranslateController extends BaseController {
+         }
+         final TLRPC.Chat chat = getMessagesController().getChat(-dialogId);
+         return (
++            amin.AminHooks.freeTranslate() ||
+             UserConfig.getInstance(currentAccount).isPremium() ||
+             chat != null && chat.autotranslation
+         );
+@@ -1141,6 +1145,26 @@ public class TranslateController extends BaseController {
+                     return;
+                 }*/
+ 
++                if (amin.AminHooks.freeTranslate()) {
++                    for (int i = 0; i < pendingTranslation1.messageIds.size(); ++i) {
++                        final int id = pendingTranslation1.messageIds.get(i);
++                        final Utilities.Callback4<Boolean, Integer, TLRPC.TL_textWithEntities, String> _callback = pendingTranslation1.callbacks.get(i);
++                        final String _text = pendingTranslation1.messageTexts.get(i).text;
++                        final String toLanguage = pendingTranslation1.language;
++                        TranslateAlert2.alternativeTranslate(_text, null, toLanguage, (result, rateLimit) -> {
++                            if (result != null) {
++                                final TLRPC.TL_textWithEntities resultWithEntities = new TLRPC.TL_textWithEntities();
++                                resultWithEntities.text = result;
++                                _callback.run(isTranscription, id, resultWithEntities, toLanguage);
++                            } else {
++                                toggleTranslatingDialog(dialogId, false);
++                                NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.showBulletin, Bulletin.TYPE_ERROR, getString(rateLimit ? R.string.TranslationFailedAlert1 : R.string.TranslationFailedAlert2));
++                            }
++                        });
++                    }
++                    return;
++                }
++
+                 final TLRPC.TL_messages_translateText req = new TLRPC.TL_messages_translateText();
+                 if (isTranscription) {
+                     req.flags |= 2;
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/UserConfig.java b/TMessagesProj/src/main/java/org/telegram/messenger/UserConfig.java
+index 0f79e44..66cb742 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/UserConfig.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/UserConfig.java
+@@ -572,6 +572,9 @@ public class UserConfig extends BaseController {
+     }
+ 
+     public boolean isPremium() {
++        if (org.telegram.messenger.amin.AminHooks.localPremium()) {
++            return true;
++        }
+         TLRPC.User user = currentUser;
+         if (user == null) {
+             return false;

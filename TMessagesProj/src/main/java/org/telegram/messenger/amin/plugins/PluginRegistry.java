@@ -43,6 +43,15 @@ public final class PluginRegistry {
         return Collections.unmodifiableList(MODULES);
     }
 
+    public static boolean isEnabledById(Context context, String moduleId) {
+        for (ModModule module : modules()) {
+            if (module.id().equals(moduleId)) {
+                return isEnabled(context, module);
+            }
+        }
+        return false;
+    }
+
     public static boolean isEnabled(Context context, ModModule module) {
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         return prefs.getBoolean("enabled_" + module.id(), module.enabledByDefault());
