@@ -45,6 +45,15 @@ Target: keep this list under 30 files, each with 1–3 line hooks.
   `updateTimerProc` online-status branch skipped while ghost is on;
   AntiDelete v1: the update-driven `deletedMessagesFinal` application
   block is skipped while enabled (patch 0003).
+  AntiDelete v2 (v1.1, still patch 0003): one added call right before
+  that block — `AminHooks.onMessagesDeleted(this, deletedMessagesFinal)`
+  — moves matching entries from the pipeline's snapshot store
+  (`amin.core.DeletedStore`, prefs `amingram_antidelete`) into a
+  persistent "deleted" list, so deleted content survives restarts;
+  the pipeline snapshots every incoming message while the module is
+  enabled, and the hook falls back to the controller's in-memory
+  message maps for messages that were never snapshotted. Viewer =
+  hub "Deleted messages" row (`AminStoreListActivity`).
 - `org/telegram/messenger/TranslateController.java` — FreeTranslate:
   premium gates in both `isFeatureAvailable` variants bypassed when
   enabled; the translate runnable routes to the built-in keyless

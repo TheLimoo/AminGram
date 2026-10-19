@@ -1,5 +1,5 @@
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
-index 93bc81c..410c4fe 100644
+index 93bc81c..7c31718 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
 @@ -10510,7 +10510,7 @@ public class MessagesController extends BaseController implements NotificationCe
@@ -21,17 +21,28 @@ index 93bc81c..410c4fe 100644
          if (task.replyId != 0 && task.monoForumPeerId == 0) {
              TLRPC.TL_messages_readDiscussion req = new TLRPC.TL_messages_readDiscussion();
              req.msg_id = (int) task.replyId;
-@@ -21129,7 +21132,7 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -19773,6 +19776,7 @@ public class MessagesController extends BaseController implements NotificationCe
+         }
+ 
+         if (pushMessages != null) {
++            org.telegram.messenger.amin.AminHooks.onNewMessages(pushMessages);
+             ArrayList<MessageObject> pushMessagesFinal = pushMessages;
+             getMessagesStorage().getStorageQueue().postRunnable(() -> AndroidUtilities.runOnUIThread(() -> getNotificationsController().processNewMessages(pushMessagesFinal, true, false, null)));
+         }
+@@ -21129,7 +21133,10 @@ public class MessagesController extends BaseController implements NotificationCe
                      getNotificationCenter().postNotificationName(NotificationCenter.messagesReadContent, key, value);
                  }
              }
 -            if (deletedMessagesFinal != null) {
++            if (deletedMessagesFinal != null && org.telegram.messenger.amin.AminHooks.antiDelete()) {
++                org.telegram.messenger.amin.AminHooks.onMessagesDeleted(this, deletedMessagesFinal);
++            }
 +            if (deletedMessagesFinal != null && !org.telegram.messenger.amin.AminHooks.antiDelete()) {
                  for (int a = 0, size = deletedMessagesFinal.size(); a < size; a++) {
                      long dialogId = deletedMessagesFinal.keyAt(a);
                      ArrayList<Integer> arrayList = deletedMessagesFinal.valueAt(a);
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/TranslateController.java b/TMessagesProj/src/main/java/org/telegram/messenger/TranslateController.java
-index ead28d5..ca96c3b 100644
+index ead28d5..d5f3a4f 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/TranslateController.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/TranslateController.java
 @@ -91,6 +91,9 @@ public class TranslateController extends BaseController {

@@ -2,8 +2,12 @@ package org.telegram.messenger.amin;
 
 import android.content.Context;
 
+import androidx.collection.LongSparseArray;
+
 import org.telegram.messenger.ApplicationLoader;
 import org.telegram.messenger.MessageObject;
+import org.telegram.messenger.MessagesController;
+import org.telegram.messenger.amin.core.DeletedStore;
 import org.telegram.messenger.amin.core.MessagePipeline;
 import org.telegram.messenger.amin.plugins.PluginRegistry;
 
@@ -41,6 +45,20 @@ public final class AminHooks {
 
     public static boolean freeTranslate() {
         return moduleEnabled("free_translate");
+    }
+
+    /** Anti-Delete v2: a server delete update is about to be applied.
+     *  Moves matching pipeline snapshots into the persistent Deleted
+     *  store so the content survives the delete (and restarts). */
+    public static void onMessagesDeleted(MessagesController controller,
+                                         LongSparseArray<ArrayList<Integer>> deleted) {
+        try {
+            Context context = ApplicationLoader.applicationContext;
+            if (context != null) {
+                DeletedStore.markDeleted(context, controller, deleted);
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     /** Phase 4: feed freshly arrived messages to the mod pipeline

@@ -49,6 +49,11 @@ public final class VaultStore {
         save(context, prefsName, key, items);
     }
 
+    /** Replaces the whole stored list (used by stores with upsert semantics). */
+    public static void putAll(Context context, String prefsName, String key, List<String> items) {
+        save(context, prefsName, key, items);
+    }
+
     public static void clear(Context context, String prefsName, String key) {
         context.getSharedPreferences(prefsName, Context.MODE_PRIVATE).edit().remove(key).apply();
     }

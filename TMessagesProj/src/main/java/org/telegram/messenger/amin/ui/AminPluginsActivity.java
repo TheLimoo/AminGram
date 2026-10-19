@@ -54,7 +54,8 @@ public class AminPluginsActivity extends BaseFragment {
     private int rowVault() { return modules.size() + 5; }
     private int rowRadarHits() { return modules.size() + 6; }
     private int rowSaverLog() { return modules.size() + 7; }
-    private int rowCount() { return modules.size() + 8; }
+    private int rowDeleted() { return modules.size() + 8; }
+    private int rowCount() { return modules.size() + 9; }
 
     @Override
     public View createView(Context context) {
@@ -126,6 +127,10 @@ public class AminPluginsActivity extends BaseFragment {
         } else if (position == rowSaverLog()) {
             presentFragment(new AminStoreListActivity("Auto-Saver log",
                     MessagePipeline.AUTOSAVER_PREFS, MessagePipeline.AUTOSAVER_ITEMS_KEY));
+        } else if (position == rowDeleted()) {
+            presentFragment(new AminStoreListActivity("Deleted messages",
+                    org.telegram.messenger.amin.core.DeletedStore.PREFS,
+                    org.telegram.messenger.amin.core.DeletedStore.DELETED_KEY));
         }
     }
 
@@ -280,6 +285,11 @@ public class AminPluginsActivity extends BaseFragment {
                 int count = VaultStore.getAll(context,
                         MessagePipeline.AUTOSAVER_PREFS, MessagePipeline.AUTOSAVER_ITEMS_KEY).size();
                 cell.setTextAndValue("Auto-Saver log", String.valueOf(count), !last);
+            } else if (position == rowDeleted()) {
+                int count = VaultStore.getAll(context,
+                        org.telegram.messenger.amin.core.DeletedStore.PREFS,
+                        org.telegram.messenger.amin.core.DeletedStore.DELETED_KEY).size();
+                cell.setTextAndValue("Deleted messages", String.valueOf(count), !last);
             }
         }
     }

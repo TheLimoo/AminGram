@@ -73,7 +73,8 @@ public final class MessagePipeline {
         boolean radar = PluginRegistry.isEnabledById(context, "keyword_radar");
         boolean vault = PluginRegistry.isEnabledById(context, "config_vault");
         boolean saver = PluginRegistry.isEnabledById(context, "auto_saver");
-        if (!radar && !vault && !saver) {
+        boolean anti = PluginRegistry.isEnabledById(context, "anti_delete");
+        if (!radar && !vault && !saver && !anti) {
             return;
         }
         List<String> keywords = radar ? loadKeywords(context) : null;
@@ -82,7 +83,7 @@ public final class MessagePipeline {
         }
         for (MessageObject obj : messages) {
             try {
-                processOne(context, obj, radar, keywords, vault, saver);
+                processOne(context, obj, radar, keywords, vault, saver, anti);
             } catch (Throwable ignored) {
                 // never break the upstream update flow
             }
@@ -91,9 +92,12 @@ public final class MessagePipeline {
 
     private static void processOne(Context context, MessageObject obj,
                                    boolean radar, List<String> keywords,
-                                   boolean vault, boolean saver) {
+                                   boolean vault, boolean saver, boolean anti) {
         if (obj == null || obj.messageOwner == null) {
             return;
+        }
+        if (anti) {
+            DeletedStore.snapshot(context, obj);
         }
         String text = obj.messageOwner.message;
 
