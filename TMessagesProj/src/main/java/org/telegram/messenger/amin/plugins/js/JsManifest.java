@@ -1,0 +1,140 @@
+package org.telegram.messenger.amin.plugins.js;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.regex.Pattern;
+
+/**
+ * Parser/validator for the ==AminGramPlugin== manifest header, exactly
+ * as documented in docs/PLUGIN-MASTER-PROMPT.md:
+ *
+ *   // ==AminGramPlugin==
+ *   // @id          shout
+ *   // @name        Shout
+ *   // @version     1.0
+ *   // @author      Amin
+ *   // @description ...
+ *   // @capabilities commands, send
+ *   // ==/AminGramPlugin==
+ *
+ * All six fields are required. @id must be lowercase letters, digits
+ * and '-'. @capabilities entries must come from the known set
+ * (observe, commands, send, settings, http, menu) — an unknown word
+ * makes the plugin invalid, per the master prompt.
+ */
+public final class JsManifest {
+
+    public String id;
+    public String name;
+    public String version;
+    public String author;
+    public String description;
+    public final List<String> capabilities = new ArrayList<>();
+
+    private static final Pattern ID_PATTERN = Pattern.compile("^[a-z0-9][a-z0-9-]*$");
+    private static final String[] KNOWN_CAPABILITIES = {
+            "observe", "commands", "send", "settings", "http", "menu"
+    };
+
+    private JsManifest() {
+    }
+
+    public boolean hasCapability(String capability) {
+        return capabilities.contains(capability);
+    }
+
+    /** Returns the parsed manifest, or throws IllegalArgumentException
+     *  with a user-readable reason. */
+    public static JsManifest parse(String source) {
+        if (source == null) {
+            throw new IllegalArgumentException("Empty plugin file.");
+        }
+        int start = source.indexOf("// ==AminGramPlugin==");
+        int end = source.indexOf("// ==/AminGramPlugin==");
+        if (start < 0 || end < 0 || end <= start) {
+            throw new IllegalArgumentException(
+                    "Missing manifest block (// ==AminGramPlugin== … // ==/AminGramPlugin==).");
+        }
+        String block = source.substring(start, end);
+        JsManifest manifest = new JsManifest();
+        for (String rawLine : block.split("\n")) {
+            String line = rawLine.trim();
+            if (!line.startsWith("//")) {
+                continue;
+            }
+            line = line.substring(2).trim();
+            if (!line.startsWith("@")) {
+                continue;
+            }
+            int space = line.indexOf(' ');
+            if (space < 0) {
+                continue;
+            }
+            String key = line.substring(1, space).trim();
+            String value = line.substring(space + 1).trim();
+            switch (key) {
+                case "id":
+                    manifest.id = value;
+                    break;
+                case "name":
+                    manifest.name = value;
+                    break;
+                case "version":
+                    manifest.version = value;
+                    break;
+                case "author":
+                    manifest.author = value;
+                    break;
+                case "description":
+                    manifest.description = value;
+                    break;
+                case "capabilities":
+                    for (String cap : value.split(",")) {
+                        String c = cap.trim().toLowerCase();
+                        if (!c.isEmpty()) {
+                            manifest.capabilities.add(c);
+                        }
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
+        if (manifest.id == null || !ID_PATTERN.matcher(manifest.id).matches()) {
+            throw new IllegalArgumentException(
+                    "@id is required and must be lowercase letters, digits and '-' only.");
+        }
+        if (isEmpty(manifest.name)) {
+            throw new IllegalArgumentException("@name is required.");
+        }
+        if (isEmpty(manifest.version)) {
+            throw new IllegalArgumentException("@version is required.");
+        }
+        if (isEmpty(manifest.author)) {
+            throw new IllegalArgumentException("@author is required.");
+        }
+        if (isEmpty(manifest.description)) {
+            throw new IllegalArgumentException("@description is required.");
+        }
+        if (manifest.capabilities.isEmpty()) {
+            throw new IllegalArgumentException("@capabilities is required.");
+        }
+        for (String cap : manifest.capabilities) {
+            boolean known = false;
+            for (String knownCap : KNOWN_CAPABILITIES) {
+                if (knownCap.equals(cap)) {
+                    known = true;
+                    break;
+                }
+            }
+            if (!known) {
+                throw new IllegalArgumentException("Unknown capability: " + cap);
+            }
+        }
+        return manifest;
+    }
+
+    private static boolean isEmpty(String s) {
+        return s == null || s.trim().isEmpty();
+    }
+}
