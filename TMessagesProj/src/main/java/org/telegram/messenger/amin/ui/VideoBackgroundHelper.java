@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.BitmapFactory;
 import android.graphics.ImageDecoder;
+import android.graphics.Matrix;
 import android.graphics.drawable.AnimatedImageDrawable;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
@@ -13,6 +14,8 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ImageView;
 
+import androidx.recyclerview.widget.RecyclerView;
+
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.amin.AminHooks;
 import org.telegram.ui.Components.VideoPlayer;
@@ -20,28 +23,49 @@ import org.telegram.ui.Components.VideoPlayer;
 import java.io.File;
 
 /**
- * AminGram video/GIF chat background: attaches an animated layer directly
- * above the static wallpaper inside a chat's content view. The file path
- * lives in our own prefs ("amingram_videobg"/"path"), set from the Plugins
- * hub. Lifecycle is driven by ChatActivity hooks.
+ * AminGram video/GIF chat background: an animated layer directly above
+ * the static wallpaper and directly below the message list inside a
+ * chat's content view. The file path lives in our own prefs
+ * ("amingram_videobg"/"path"), set from the Plugins hub. Lifecycle is
+ * driven by ChatActivity hooks (patch 0004, unchanged since v1.1).
  *
- * v1.1.1 fixes (black-layer bug): the layer stays INVISIBLE and the
- * TextureView non-opaque until the first frame actually renders; a player
- * error removes the layer entirely; .gif files are played with an
- * AnimatedImageDrawable (ExoPlayer cannot decode GIFs); and
- * {@link #shouldRelease} lets the onResume hook shed the layer the moment
- * the module is toggled off or the file changes — no destroy needed.
+ * v1.3 rework (the "renders nothing" fix). The v1.1/v1.2 helper
+ * inserted the TextureView during ChatActivity.createView — at that
+ * moment the message list does not exist yet (ChatActivity adds
+ * chatListView to contentView much later, createView line ~7027), so
+ * the layer's final z-position depended on insertion order side
+ * effects, and the view only became VISIBLE from the player's
+ * first-frame callback, which is not guaranteed to fire for a muted
+ * looping file surface. The rework:
+ *
+ * - attachIfEnabled (createView hook) only validates and remembers
+ *   the parent + file; nothing is inserted yet.
+ * - The layer is inserted lazily from resume() (the onResume hook),
+ *   when the chat hierarchy is complete, at the index of the message
+ *   list (the RecyclerView child) — i.e. directly UNDER the list and
+ *   above the wallpaper, regardless of what upstream added meanwhile.
+ * - The view is revealed when the player reaches STATE_READY as well
+ *   as on the first rendered frame; a center-crop texture transform
+ *   is applied on video-size changes.
+ * - A zero-length file (failed picker copy) is rejected up front.
+ *
+ * Playback stays strictly on-screen: pause() pauses on chat pause,
+ * release() tears everything down on fragment destroy. If anything
+ * fails, the layer removes itself — worst case is the stock
+ * wallpaper, never a crash (all entry points stay isolated).
  */
 public class VideoBackgroundHelper {
 
     private static final String PREFS = "amingram_videobg";
     private static final String KEY_PATH = "path";
 
+    private ViewGroup parent;
     private VideoPlayer player;
     private TextureView textureView;
     private ImageView imageView;
     private AnimatedImageDrawable animatedDrawable;
     private String attachedPath;
+    private boolean prepared;
     private boolean released;
 
     public static String getVideoPath(Context context) {
@@ -62,8 +86,8 @@ public class VideoBackgroundHelper {
         return path != null && path.toLowerCase().endsWith(".gif");
     }
 
-    /** Attach if the module is enabled and a media file is set. Returns the
-     *  helper to keep for lifecycle calls, or null when not applicable. */
+    /** Validate + remember. Called from the ChatActivity.createView
+     *  hook; the actual layer is inserted later, from resume(). */
     public static VideoBackgroundHelper attachIfEnabled(Context context, ViewGroup parent) {
         if (context == null || parent == null) {
             return null;
@@ -72,34 +96,63 @@ public class VideoBackgroundHelper {
             return null;
         }
         String path = getVideoPath(context);
-        if (path == null || !new File(path).exists()) {
+        if (path == null) {
+            return null;
+        }
+        File file = new File(path);
+        if (!file.exists() || file.length() == 0) {
+            FileLog.e("AminGram videobg: file missing or empty: " + path);
             return null;
         }
         VideoBackgroundHelper helper = new VideoBackgroundHelper();
+        helper.parent = parent;
         helper.attachedPath = path;
-        if (isGif(path)) {
-            if (!helper.attachGif(context, parent, path)) {
-                return null;
-            }
-        } else if (!helper.attachVideo(context, parent, path)) {
-            return null;
-        }
         return helper;
     }
 
+    /** The index directly under the message list: the first
+     *  RecyclerView child of the chat content view. Falls back to
+     *  just above the wallpaper slot when no list is found. */
+    private static int insertionIndex(ViewGroup parent) {
+        for (int i = 0; i < parent.getChildCount(); i++) {
+            if (parent.getChildAt(i) instanceof RecyclerView) {
+                return i;
+            }
+        }
+        return Math.min(1, parent.getChildCount());
+    }
+
+    private boolean ensureAttached(Context context) {
+        if (textureView != null || imageView != null) {
+            return true;
+        }
+        if (parent == null || attachedPath == null) {
+            return false;
+        }
+        if (isGif(attachedPath)) {
+            return attachGif(context, parent, attachedPath);
+        }
+        return attachVideo(context, parent, attachedPath);
+    }
+
     private boolean attachVideo(Context context, ViewGroup parent, String path) {
-        // Fully exception-isolated: this runs inside ChatActivity.createView,
-        // so any failure here must degrade to "no video layer", never a crash.
         try {
             textureView = new TextureView(context);
             textureView.setOpaque(false);
             textureView.setVisibility(View.INVISIBLE);
-            parent.addView(textureView, Math.min(1, parent.getChildCount()),
-                    new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            parent.addView(textureView, insertionIndex(parent),
+                    new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT));
             player = new VideoPlayer(false, true);
             player.setDelegate(new VideoPlayer.VideoPlayerDelegate() {
                 @Override
                 public void onStateChanged(boolean playWhenReady, int playbackState) {
+                    // STATE_READY is a reliable "frames are flowing"
+                    // signal; reveal there too, not only on the
+                    // first-frame callback (the v1.3 fix).
+                    if (playbackState == androidx.media3.common.Player.STATE_READY) {
+                        reveal();
+                    }
                 }
 
                 @Override
@@ -109,25 +162,26 @@ public class VideoBackgroundHelper {
                 }
 
                 @Override
-                public void onVideoSizeChanged(int width, int height, int unappliedRotationDegrees, float pixelWidthHeightRatio) {
+                public void onVideoSizeChanged(int width, int height,
+                                               int unappliedRotationDegrees,
+                                               float pixelWidthHeightRatio) {
+                    applyCenterCrop(width, height, pixelWidthHeightRatio);
                 }
 
                 @Override
                 public void onRenderedFirstFrame() {
-                    if (!released && textureView != null) {
-                        textureView.setVisibility(View.VISIBLE);
-                    }
+                    reveal();
                 }
             });
             player.setLooping(true);
             player.setTextureView(textureView);
-            // NOT preparePlayerLoop(uri, "file", null, null): upstream's loop
-            // API unconditionally builds a second (audio) media source and
-            // mediaSourceFromUri switches on the null type -> NPE inside
-            // ChatActivity.createView (the v1.0 crash). preparePlayer +
-            // setLooping gives the same muted loop with one source.
+            // NOT preparePlayerLoop(uri, "file", null, null): upstream's
+            // loop API unconditionally builds a second (audio) media
+            // source and mediaSourceFromUri switches on the null type
+            // -> NPE inside ChatActivity.createView (the v1.0 crash).
+            // preparePlayer + setLooping gives the same muted loop.
             player.preparePlayer(Uri.fromFile(new File(path)), "file");
-            player.play();
+            prepared = true;
             return true;
         } catch (Throwable t) {
             FileLog.e("AminGram videobg: attach failed, no layer", t);
@@ -136,10 +190,43 @@ public class VideoBackgroundHelper {
         }
     }
 
+    private void reveal() {
+        if (!released && textureView != null
+                && textureView.getVisibility() != View.VISIBLE) {
+            textureView.setVisibility(View.VISIBLE);
+        }
+    }
+
+    /** Center-crop the video into the (full-screen) texture view. */
+    private void applyCenterCrop(int videoWidth, int videoHeight, float pixelRatio) {
+        if (textureView == null || videoWidth <= 0 || videoHeight <= 0) {
+            return;
+        }
+        int viewWidth = textureView.getWidth();
+        int viewHeight = textureView.getHeight();
+        if (viewWidth <= 0 || viewHeight <= 0) {
+            return;
+        }
+        try {
+            float videoAspect = (float) videoWidth * pixelRatio / videoHeight;
+            float viewAspect = (float) viewWidth / viewHeight;
+            Matrix matrix = new Matrix();
+            float scaleX = 1f;
+            float scaleY = 1f;
+            if (videoAspect > viewAspect) {
+                scaleX = videoAspect / viewAspect;
+            } else {
+                scaleY = viewAspect / videoAspect;
+            }
+            matrix.setScale(scaleX, scaleY, viewWidth / 2f, viewHeight / 2f);
+            textureView.setTransform(matrix);
+        } catch (Throwable ignored) {
+        }
+    }
+
     private boolean attachGif(Context context, ViewGroup parent, String path) {
         imageView = new ImageView(context);
         imageView.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        imageView.setVisibility(View.INVISIBLE);
         try {
             Drawable drawable;
             if (Build.VERSION.SDK_INT >= 28) {
@@ -152,12 +239,12 @@ public class VideoBackgroundHelper {
                 if (drawable instanceof AnimatedImageDrawable) {
                     animatedDrawable = (AnimatedImageDrawable) drawable;
                     animatedDrawable.setRepeatCount(AnimatedImageDrawable.REPEAT_INFINITE);
-                    animatedDrawable.start();
                 }
             } else {
-                // Pre-28 fallback: static first frame is better than a black layer.
+                // Pre-28 fallback: static first frame beats no layer.
                 imageView.setImageBitmap(BitmapFactory.decodeFile(path));
                 if (imageView.getDrawable() == null) {
+                    imageView = null;
                     return false;
                 }
             }
@@ -166,15 +253,16 @@ public class VideoBackgroundHelper {
             imageView = null;
             return false;
         }
-        parent.addView(imageView, Math.min(1, parent.getChildCount()),
-                new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        imageView.setVisibility(View.VISIBLE);
+        parent.addView(imageView, insertionIndex(parent),
+                new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT));
         return true;
     }
 
     /** True when the layer must come off now: module toggled off, file
      *  unset/removed, or a different file was picked since attach. The
-     *  ChatActivity onResume hook releases the helper when this is true. */
+     *  ChatActivity onResume hook releases the helper when this is
+     *  true. */
     public boolean shouldRelease(Context context) {
         if (released || context == null) {
             return true;
@@ -187,11 +275,23 @@ public class VideoBackgroundHelper {
     }
 
     public void resume() {
-        if (player != null) {
-            player.play();
+        if (released || parent == null) {
+            return;
         }
-        if (animatedDrawable != null) {
-            animatedDrawable.start();
+        try {
+            Context context = parent.getContext();
+            if (!ensureAttached(context)) {
+                return;
+            }
+            if (player != null) {
+                player.play();
+            }
+            if (animatedDrawable != null) {
+                animatedDrawable.start();
+            }
+        } catch (Throwable t) {
+            FileLog.e("AminGram videobg: resume failed, removing layer", t);
+            release();
         }
     }
 
@@ -228,5 +328,7 @@ public class VideoBackgroundHelper {
             }
             imageView = null;
         }
+        parent = null;
+        prepared = false;
     }
 }
