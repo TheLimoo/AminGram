@@ -100,7 +100,17 @@ combined tree for a single patch — stage the split as above.
 - GhostMode — suppress read receipts / online status where client-controlled
 - AntiDelete — cache messages locally; deleted ones stay visible, marked
 - FreeTranslate — translation via free endpoints (no API key)
-- VideoBackground — mp4/gif as animated chat background
+- VideoBackground — mp4/gif as animated chat background. v1.1.1:
+  `VideoBackgroundHelper` layer is INVISIBLE + TextureView non-opaque
+  until `VideoPlayer` delegate `onRenderedFirstFrame`; `onError`
+  removes the layer; `.gif` uses an `ImageView` +
+  `AnimatedImageDrawable` (`ImageDecoder`, API 28+; static first
+  frame below) because ExoPlayer cannot decode GIF; the ChatActivity
+  `onResume` hook (patch 0004) calls `helper.shouldRelease(ctx)` and
+  releases+sheds the layer when the module was toggled off or the
+  file changed — open chats no longer keep a dead black layer.
+  Hooks verified inside `ChatActivity.onResume()` (l.29887) /
+  `onPause()` (l.30102) themselves.
 - KeywordRadar — (phase 2) keyword alerts across chats
 - ConfigVault — (phase 2) collects vless/sub/soar links from chats
 

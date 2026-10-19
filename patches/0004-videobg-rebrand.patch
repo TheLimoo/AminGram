@@ -1,5 +1,5 @@
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
-index 9dec6be..2c7bf24 100644
+index 9dec6be..3e7948a 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 @@ -496,6 +496,7 @@ public class ChatActivity extends BaseFragment implements
@@ -29,17 +29,22 @@ index 9dec6be..2c7bf24 100644
  
          emptyViewContainer = null;
  
-@@ -29901,6 +29907,9 @@ public class ChatActivity extends BaseFragment implements
+@@ -29901,6 +29907,14 @@ public class ChatActivity extends BaseFragment implements
          }
          if (contentView != null) {
              contentView.onResume();
 +            if (aminVideoBg != null) {
-+                aminVideoBg.resume();
++                if (aminVideoBg.shouldRelease(getContext())) {
++                    aminVideoBg.release();
++                    aminVideoBg = null;
++                } else {
++                    aminVideoBg.resume();
++                }
 +            }
          }
          checkChecksHint();
  
-@@ -30120,6 +30129,9 @@ public class ChatActivity extends BaseFragment implements
+@@ -30120,6 +30134,9 @@ public class ChatActivity extends BaseFragment implements
          }
          if (contentView != null) {
              contentView.onPause();
