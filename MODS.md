@@ -239,6 +239,17 @@ list in filename order):
   -1000-index (no collision with upstream ids 1..12 / LAYOUT_TYPE_*)
   and a click branch right after the click tag is read dispatches
   `AminHooks.onPluginMenuAction(id, dialogId)` and dismisses.
+- 0015 design-startup-hook (v1.3.3, LaunchActivity.onCreate): one
+  FQ line right after `ApplicationLoader.postInitApplication()` —
+  `org.telegram.messenger.amin.AminHooks.applyDesignOnStartup();` —
+  so an enabled design module (amin_design / ios_theme) owns the
+  day theme from the very first frame, not just after the hub is
+  opened. No-op unless a design is on AND the current theme is not
+  already that design (guard inside DesignThemes), so it cannot
+  loop on activity recreation. Added to both CI files' apply
+  lists; the full series (0001–0015) re-verified on pristine
+  f32ffee: applies cleanly, all 17 patch-touched files reproduce
+  the working clone byte-for-byte.
 
 Module changes (overlay):
 - ConfigVault DELETED completely: ConfigVaultModule +
@@ -440,3 +451,137 @@ the app. Radar scan-on-open covers the loaded history generously.
   per-message snapshot rewrite (works; a power nit only), SWO bulk
   mark-sent, observer registration covering accounts activated at
   first check.
+
+## v1.3.3 (2026-10-20, on top of 432f05c) — extera hub, engine switch, design themes
+
+Directed by Amin after seeing exteraGram's UI: the hub speaks
+extera's design language, a design becomes THE app design (no
+preset switcher UI — his simplification), iOS stays an optional
+module, and two more bundled JS plugins land. LOCAL ONLY (no push,
+no build).
+
+- Hub redesign (AminPluginsActivity, presentation; every row id,
+  action id, data flow and the durable video picker unchanged):
+  * ONE rounded group card (radius 22dp) per module SECTION —
+    assignSegments now joins all of a section's module/info/action
+    rows into a single card; hairlines inset from the text column
+    (InfoStatusView text + closing divider at 68dp; action rows
+    keep TextCell's own 20dp-inset divider, shown only mid-card).
+  * Section labels: ACCENT color (key_windowBackgroundWhite
+    BlueText), rmedium, natural case — no more gray uppercase.
+  * Status scheme unchanged and uniform: subtitle = description
+    (one line, ellipsized); status = colored dot + tiny line only
+    when on / needs attention (Off / Active / Needs…).
+  * Hub header block: centered shield (R.drawable.
+    amingram_foreground on its navy #01030F, 20dp radius) +
+    "AminGram" + package versionName.
+  * "Enable Plugins Engine" — full-width ACCENT PILL (28dp
+    radius, white label, display-only Switch; row click toggles),
+    backed by a REAL master pref (see engine switch below).
+  * JS plugins are RICH CARDS (new KIND_PLUGIN_CARD +
+    PluginCardView; the KIND_PLUGIN_TOGGLE / KIND_PLUGIN_INFO row
+    pair is gone): chip + working switch (transparent hit area —
+    the upstream Switch stays display-only), 19sp name,
+    "Version X · @author" (author accent-spanned), description
+    ≤2 lines, capability chips (accent on chipFill), bottom action
+    row — settings (msg_settings → plugin page), log (msg_log →
+    the page's own log viewer), delete (msg_delete, key_color_red
+    → the page's exact confirm dialog + JsPluginManager.delete +
+    "Plugin deleted" bulletin). Card tap opens the plugin page.
+    Cards dim to 55% content alpha while the engine is off.
+  * Bundled installs stay slim action rows (Installed — tap to
+    update preserved) in mini-cards with flat (16dp) taglines;
+    add-plugin rows keep their accent card, now after the bundled
+    cards (pill → plugin cards → bundled → add → note).
+  * moduleIcon additions (verified 13.0.2 glyphs): amin_design →
+    msg_palette, ios_theme → msg_colors; card action glyphs
+    msg_settings / msg_log / msg_delete verified in-tree.
+
+- Engine kill-switch (JsPluginManager): new pref
+  `engine_enabled` in amingram_jsplugins (default true) with
+  isEngineEnabled/setEngineEnabled. Gates: hasEnabledPlugins,
+  menuPlugins (attach menu shows nothing), dispatchMessage,
+  dispatchOutgoingCommand, dispatchCommandInternal,
+  dispatchMenuAction and warmUp (enabling a plugin while the
+  engine is off does not start its runtime). Engine off = no JS
+  plugin runs, anywhere.
+
+- Design themes (amin.core.DesignThemes + modules AminDesign
+  Module `amin_design` and IosThemeModule `ios_theme`, both
+  SECTION_TOOLS, registered FIRST so they lead the Tools section;
+  amin_design enabledByDefault = TRUE, ios_theme default off).
+  Mechanism — only 13.0.2 APIs verified in the tree (Theme.java):
+  the design's .attheme file is built from the COMPLETE color set
+  of a builtin base (Theme.getThemeFileValues(null, "night.
+  attheme" / "day.attheme", null) — partial files would fall back
+  to compiled Blue defaults for missing keys), a curated palette
+  subset overridden (keys resolved via ThemeColors.
+  stringKeyToInt, serialized via ThemeColors.getStringName,
+  key_wallpaperFileOffset skipped), then applied with
+  Theme.applyThemeFile(file, name, null, false) — the upstream
+  user-theme path: registers + persists the theme, full refresh
+  via the standard applyTheme/NotificationCenter flow. Before
+  applying, the current theme's key (Theme.getCurrentTheme().
+  getKey()) is snapshotted into prefs amingram_designs/
+  prev_theme_key — unless the current theme is already one of
+  ours. Disable → Theme.applyTheme(snapshot) restores the user's
+  own theme (builtin "Blue" fallback if the snapshot theme was
+  deleted). The two designs are mutually exclusive (hub toggle
+  handles it; the snapshot is never overwritten by our own
+  themes). Startup: patch 0015 (above) — DesignThemes.
+  applyEnabledDesigns reconciles drift (design on but a foreign
+  theme active → re-apply, snapshotting the foreign theme as the
+  restore target; no design on but ours stuck active → restore).
+  Design file names: amingram-design.attheme /
+  amingram-ios.attheme under filesDir/amingram/.
+  Palettes (all key names verified present in ThemeColors):
+  AminGram Design (32 keys on the Night base) — page
+  windowBackgroundGray #0B0B0E, surface windowBackgroundWhite
+  #1C1C21, accent #6E9BFF (blue-text/value keys, switch-checked,
+  chats action), text #FFFFFF / #8E8E93 / hint #636368, divider
+  #2A2A2E, bubbles in #26262B / out #3A5BA9 (deep periwinkle,
+  white text). iOS Theme (32 keys on the Day base) — white
+  surfaces, grouped windowBackgroundGray #F2F2F7, iOS blue
+  #007AFF (blue-text/value/action-bar icon/action), label
+  #000000 / secondary #8A8A8E / hint #AEAEB2, divider #C6C6C8,
+  in-bubble #E9E9EB, out-bubble #007AFF with white text, switch
+  green #34C759 on #E9E9EB track, service pill #D3E9E9EB.
+  Bounds: a design occupies the DAY theme slot like any file
+  theme (a separately configured auto-night theme is untouched);
+  wallpaper keys are deliberately not overridden (never fight
+  Video Background); theme accents derive from the palette the
+  upstream way.
+  Amin's scope call (2026-10-20): NO design-picker / preset
+  switcher UI was built — AminGram Design IS the design.
+
+- Bundled JS plugins 5 + 6 (assets amingram_plugins/, registered
+  in BundledPlugins; canonical copies also in
+  ~/workspace/amingram/plugins/):
+  * aesthetic-text (commands, send, menu): /wide (fullwidth:
+    ASCII 33–126 → U+FF01 block, space → U+3000), /space (letters
+    spread), /fliptext (upside-down map, all outputs BMP so the
+    char reversal can't split surrogate pairs); attach-menu
+    button posts the command hint in the chat.
+  * quick-translate (commands, send, http, settings): /tr <text>
+    (+ optional leading language code, /tr en …) via the keyless
+    translate.googleapis.com gtx endpoint, defensive array parse,
+    translation sent as a reply; default target setting "target"
+    (text, def "fa"); httpGet null / parse failure → one clean
+    error reply.
+  Both validated by evaluating them in a real Rhino 1.7.15 with a
+  stubbed amin bridge (wide/space/flip outputs codepoint-checked;
+  translate fa default + en override + usage + ignore-others).
+
+- Verified this round: JDK17 syntax parse clean on all touched
+  Java; full patch series incl. 0015 applies on pristine f32ffee
+  and reproduces the clone byte-for-byte (17 files); amin trees
+  byte-identical repo == overlay == clone (the clone had drifted
+  behind the v1.3.2 audit commit — re-mirrored from the repo);
+  patches dir identical repo == overlay; both CI files carry the
+  0015 apply line.
+- NOT verified (needs a build + device): visual result of the
+  hub redesign and of both designs on-device; theme apply at
+  first launch after upgrade (amin_design defaults ON — intended:
+  upgrading users get the design immediately, stock theme kept as
+  the restore snapshot); Rhino-on-Android behavior of the two new
+  plugins beyond the desktop-Rhino contract checks.
