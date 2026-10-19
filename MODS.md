@@ -43,6 +43,9 @@ Target: keep this list under 30 files, each with 1–3 line hooks.
 - `org/telegram/messenger/MessagesController.java` — GhostMode:
   `completeReadTask` early-return (no read receipts sent) and the
   `updateTimerProc` online-status branch skipped while ghost is on;
+  v1.1 adds typing suppression: the 5-arg `sendTyping` overload
+  returns false immediately while ghost is on (one FQ guard,
+  patch 0003) — no typing/record/upload indicators are sent.
   AntiDelete v1: the update-driven `deletedMessagesFinal` application
   block is skipped while enabled (patch 0003).
   AntiDelete v2 (v1.1, still patch 0003): one added call right before
@@ -66,7 +69,9 @@ Target: keep this list under 30 files, each with 1–3 line hooks.
   `amin.AminHooks.onNewMessages` before the notification dispatch
   (patch 0006). The pipeline (`amin.core.MessagePipeline` + `VaultStore`)
   powers KeywordRadar hits, ConfigVault link collection and AutoSaver
-  v1 (immediate download of self-destruct media documents).
+  (immediate download of self-destruct media documents; v1.1/v2 also
+  pulls the largest size of pure TL_photo secrets via ImageLocation,
+  logged with a `|photo` suffix).
 - `TMessagesProj_App/google-services.json` — added Firebase clients for
   `org.telegram.amingram` + `org.telegram.amingram.beta` (cloned from the
   upstream entries, patch 0005). Without this the google-services Gradle
@@ -74,6 +79,15 @@ Target: keep this list under 30 files, each with 1–3 line hooks.
   name 'org.telegram.amingram'", CI run #4). NOTE: this only satisfies the
   build; FCM push under Telegram's Firebase project will not deliver to
   the fork package at runtime — expected for a sideload fork.
+
+## Patch-series note (v1.1)
+Patches 0003 and 0006 both touch MessagesController; after the typing
+gate was added, the series was REBUILT from the clone by staged
+commits (base 0001/0002/0004/0005 → 0003 state = clone minus the one
+pipeline line → 0006 = that line alone) and re-verified: the full
+series applies cleanly on pristine f32ffee and reproduces the clone's
+MessagesController byte-for-byte. When regenerating, never diff the
+combined tree for a single patch — stage the split as above.
 
 ## Hook points (planned)
 - `MessagesController` — message update/delete events → AntiDelete, plugin bus

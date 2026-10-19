@@ -1,5 +1,5 @@
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
-index 93bc81c..7c31718 100644
+index 93bc81c..f91925b 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
 @@ -10510,7 +10510,7 @@ public class MessagesController extends BaseController implements NotificationCe
@@ -11,7 +11,17 @@ index 93bc81c..7c31718 100644
                          statusSettingState = 1;
  
                          if (statusRequest != 0) {
-@@ -14541,6 +14541,9 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -11367,6 +11367,9 @@ public class MessagesController extends BaseController implements NotificationCe
+     }
+ 
+     public boolean sendTyping(long dialogId, long threadMsgId, int action, String emojicon, int classGuid) {
++        if (org.telegram.messenger.amin.AminHooks.ghostMode()) {
++            return false;
++        }
+         if (action < 0 || action >= sendingTypings.length || dialogId == 0) {
+             return false;
+         }
+@@ -14541,6 +14544,9 @@ public class MessagesController extends BaseController implements NotificationCe
      }
  
      private void completeReadTask(ReadTask task) {
@@ -21,15 +31,7 @@ index 93bc81c..7c31718 100644
          if (task.replyId != 0 && task.monoForumPeerId == 0) {
              TLRPC.TL_messages_readDiscussion req = new TLRPC.TL_messages_readDiscussion();
              req.msg_id = (int) task.replyId;
-@@ -19773,6 +19776,7 @@ public class MessagesController extends BaseController implements NotificationCe
-         }
- 
-         if (pushMessages != null) {
-+            org.telegram.messenger.amin.AminHooks.onNewMessages(pushMessages);
-             ArrayList<MessageObject> pushMessagesFinal = pushMessages;
-             getMessagesStorage().getStorageQueue().postRunnable(() -> AndroidUtilities.runOnUIThread(() -> getNotificationsController().processNewMessages(pushMessagesFinal, true, false, null)));
-         }
-@@ -21129,7 +21133,10 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -21129,7 +21135,10 @@ public class MessagesController extends BaseController implements NotificationCe
                      getNotificationCenter().postNotificationName(NotificationCenter.messagesReadContent, key, value);
                  }
              }

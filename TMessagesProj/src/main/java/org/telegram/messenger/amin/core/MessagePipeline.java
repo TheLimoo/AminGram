@@ -3,6 +3,7 @@ package org.telegram.messenger.amin.core;
 import android.content.Context;
 
 import org.telegram.messenger.FileLoader;
+import org.telegram.messenger.ImageLocation;
 import org.telegram.messenger.MessageObject;
 import org.telegram.messenger.amin.plugins.PluginRegistry;
 import org.telegram.tgnet.TLRPC;
@@ -21,11 +22,11 @@ import java.util.List;
  *   hits in VaultStore ("amingram_radar"/"hits").
  * - ConfigVault: extracts proxy configs + subscription links into
  *   VaultStore ("amingram_vault"/"items").
- * - AutoSaver (v1): for self-destructing (secret/TTL) media messages,
- *   kicks off the document download immediately so the file lands in the
- *   app media cache before it expires, and logs it in VaultStore
- *   ("amingram_autosaver"/"items"). Photos arrive as documents in most
- *   clients; pure TL_photo secrets are a v2 item.
+ * - AutoSaver: for self-destructing (secret/TTL) media messages, kicks
+ *   off the download immediately so the file lands in the app media
+ *   cache before it expires, and logs it in VaultStore
+ *   ("amingram_autosaver"/"items"). v1 covered document media; v2 also
+ *   pulls the largest size of pure TL_photo secrets via ImageLocation.
  */
 public final class MessagePipeline {
 
@@ -131,6 +132,21 @@ public final class MessagePipeline {
                         .loadFile(document, obj, FileLoader.PRIORITY_HIGH, 0);
                 String record = obj.getDialogId() + "|" + obj.getId() + "|" + obj.messageOwner.date;
                 VaultStore.addUnique(context, AUTOSAVER_PREFS, AUTOSAVER_ITEMS_KEY, record, 300);
+            } else {
+                // v2: pure TL_photo secrets carry no document — pull the
+                // largest photo size into the media cache before it expires.
+                TLRPC.Photo photo = obj.getPhoto();
+                if (photo != null && photo.sizes != null && !photo.sizes.isEmpty()) {
+                    TLRPC.PhotoSize size = FileLoader.getClosestPhotoSizeWithSize(photo.sizes, 1280);
+                    if (size != null) {
+                        FileLoader.getInstance(obj.currentAccount).loadFile(
+                                ImageLocation.getForPhoto(size, photo), obj, "jpg",
+                                FileLoader.PRIORITY_HIGH, 0);
+                        String record = obj.getDialogId() + "|" + obj.getId() + "|"
+                                + obj.messageOwner.date + "|photo";
+                        VaultStore.addUnique(context, AUTOSAVER_PREFS, AUTOSAVER_ITEMS_KEY, record, 300);
+                    }
+                }
             }
         }
     }
