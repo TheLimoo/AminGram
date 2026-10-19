@@ -57,6 +57,17 @@ public class AminStoreListActivity extends BaseFragment {
             for (int i = 0; i < items.size(); i++) {
                 items.set(i, DeletedStore.formatEditRecord(currentAccount, items.get(i)));
             }
+        } else if (DeletedStore.DELETED_KEY.equals(key)) {
+            // Deleted records are raw too (dialogId|msgId|date|kind|text).
+            for (int i = 0; i < items.size(); i++) {
+                items.set(i, DeletedStore.formatDeletedRecord(currentAccount, items.get(i)));
+            }
+        } else if (org.telegram.messenger.amin.core.MessagePipeline.RADAR_HITS_KEY.equals(key)) {
+            // Radar hits are raw too (dialogId|msgId|keyword|date|snippet).
+            for (int i = 0; i < items.size(); i++) {
+                items.set(i, org.telegram.messenger.amin.core.MessagePipeline.formatRadarHit(
+                        currentAccount, items.get(i)));
+            }
         }
     }
 
@@ -142,7 +153,8 @@ public class AminStoreListActivity extends BaseFragment {
             }
             if (position < items.size()) {
                 String value = items.get(position);
-                int cap = DeletedStore.EDIT_KEY.equals(key) ? 600 : 140;
+                int cap = (DeletedStore.EDIT_KEY.equals(key) || DeletedStore.DELETED_KEY.equals(key)
+                        || org.telegram.messenger.amin.core.MessagePipeline.RADAR_HITS_KEY.equals(key)) ? 600 : 140;
                 if (value.length() > cap) {
                     value = value.substring(0, cap) + "…";
                 }

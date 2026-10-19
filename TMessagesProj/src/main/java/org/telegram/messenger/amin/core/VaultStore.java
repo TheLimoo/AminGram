@@ -9,7 +9,8 @@ import java.util.List;
 
 /**
  * Tiny persistent string-list store backed by SharedPreferences + JSONArray.
- * Used by Keyword Radar (hits), Config Vault (links) and Auto-Saver (log).
+ * Used by Keyword Radar (hits), the Anti-Delete / Edit History
+ * stores and JS plugin logs.
  * Lists are capped; newest entries are kept.
  */
 public final class VaultStore {
@@ -34,7 +35,7 @@ public final class VaultStore {
     }
 
     /** Appends value if not already present; trims the list to cap entries. */
-    public static void addUnique(Context context, String prefsName, String key, String value, int cap) {
+    public static synchronized void addUnique(Context context, String prefsName, String key, String value, int cap) {
         if (value == null || value.isEmpty()) {
             return;
         }
@@ -50,11 +51,11 @@ public final class VaultStore {
     }
 
     /** Replaces the whole stored list (used by stores with upsert semantics). */
-    public static void putAll(Context context, String prefsName, String key, List<String> items) {
+    public static synchronized void putAll(Context context, String prefsName, String key, List<String> items) {
         save(context, prefsName, key, items);
     }
 
-    public static void clear(Context context, String prefsName, String key) {
+    public static synchronized void clear(Context context, String prefsName, String key) {
         context.getSharedPreferences(prefsName, Context.MODE_PRIVATE).edit().remove(key).apply();
     }
 

@@ -165,6 +165,44 @@ public final class MessagePipeline {
         }
     }
 
+    /** Viewer rendering for a radar HIT record (dialogId|msgId|
+     *  keyword|date|snippet): "Title \u00b7 HH:mm \u00b7 dd MMM \u2014
+     *  \u201ckeyword\u201d: snippet" instead of the raw pipe line (v1.3.2
+     *  audit fix). Raw record back on any problem. */
+    public static String formatRadarHit(int account, String record) {
+        try {
+            String[] parts = record.split("\\|", 5);
+            if (parts.length < 5) {
+                return record;
+            }
+            long dialogId = Long.parseLong(parts[0]);
+            long dateSec = Long.parseLong(parts[3]);
+            String title = null;
+            org.telegram.messenger.MessagesController mc =
+                    org.telegram.messenger.MessagesController.getInstance(account);
+            if (dialogId > 0) {
+                org.telegram.tgnet.TLRPC.User user = mc.getUser(dialogId);
+                if (user != null) {
+                    title = ((user.first_name != null ? user.first_name : "") + " "
+                            + (user.last_name != null ? user.last_name : "")).trim();
+                }
+            } else if (dialogId < 0) {
+                org.telegram.tgnet.TLRPC.Chat chat = mc.getChat(-dialogId);
+                if (chat != null) {
+                    title = chat.title;
+                }
+            }
+            if (title == null || title.isEmpty()) {
+                title = "Chat " + dialogId;
+            }
+            String when = new java.text.SimpleDateFormat("HH:mm \u00b7 dd MMM",
+                    java.util.Locale.US).format(new java.util.Date(dateSec * 1000L));
+            return title + " \u00b7 " + when + " \u2014 \u201c" + parts[2] + "\u201d: " + parts[4];
+        } catch (Throwable t) {
+            return record;
+        }
+    }
+
     /** Auto-Saver v3 capture: start the download NOW (the media may be
      *  destroyed at any moment) and record a rich gallery entry with
      *  the resolved cache path. Covers secret-chat TTL media and

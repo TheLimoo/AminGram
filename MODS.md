@@ -407,3 +407,36 @@ Telegram's existing update flow and queues (NotificationCenter
 posts, processUpdateArray, globalQueue). Video background plays
 while its chat is open and pauses on leaving, like any media in
 the app. Radar scan-on-open covers the loaded history generously.
+
+## v1.3.2 audit pass (2026-10-20, overnight — full line-by-line review)
+
+- **Plugin dispatch moved OFF Telegram's shared queue**: JsPluginManager
+  now runs everything on one dedicated HandlerThread ("AminGramPlugins",
+  PluginQueue holder). A plugin's blocking amin.httpGet (up to ~30 s) used
+  to stall Utilities.globalQueue, which Telegram itself uses. Rhino's
+  single-thread confinement is unchanged (all runtime state still lives
+  on the one plugin thread).
+- **Crash-class guard completed**: enterContext() now sits INSIDE the
+  Throwable guard at every dispatch entry (warmUp, message, command,
+  outgoing command, menu action), with Context.exit() only when a
+  context was actually entered — the same defect class as the v1.3
+  install crash, in the remaining places it could occur.
+- **Reinstall revives broken plugins**: install() now clears the
+  session 'broken' flag; previously a plugin that failed evaluation
+  once stayed dead until toggled or the app restarted, even after
+  reinstalling fixed code. The 'broken' set is also synchronized now.
+- **Readable viewers everywhere**: the Deleted-messages viewer and the
+  Radar-hits viewer now render title + time + content like Edit
+  History does (DeletedStore.formatDeletedRecord,
+  MessagePipeline.formatRadarHit), instead of raw pipe records.
+- **VaultStore writes synchronized** (addUnique/putAll/clear) — cheap
+  insurance against read-modify-write races between the update thread
+  and the UI.
+- Audited with no change needed: AminHooks, AminBridge, JsManifest
+  (byte-verified), BackupManager, HiddenChatsStore,
+  SendWhenOnlineStore, AutoSaverStore, VideoBackgroundHelper, the
+  dialog picker, the saved-media viewer, PluginRegistry and all
+  module classes. Accepted as-is (noted, not fixed): DeletedStore's
+  per-message snapshot rewrite (works; a power nit only), SWO bulk
+  mark-sent, observer registration covering accounts activated at
+  first check.

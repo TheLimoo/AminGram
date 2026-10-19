@@ -222,6 +222,48 @@ public final class DeletedStore {
         }
     }
 
+    /** Viewer rendering for a DELETED record (dialogId|msgId|date|
+     *  kind|text): "Title \u00b7 HH:mm \u00b7 dd MMM \u2014 text" instead of
+     *  the raw pipe line (v1.3.2 audit fix \u2014 same readability problem
+     *  Amin reported for Edit History). Raw record back on any problem. */
+    public static String formatDeletedRecord(int account, String record) {
+        try {
+            String[] parts = record.split("\\|", 5);
+            if (parts.length < 5) {
+                return record;
+            }
+            long dialogId = Long.parseLong(parts[0]);
+            long dateSec = Long.parseLong(parts[2]);
+            String title = null;
+            org.telegram.messenger.MessagesController mc =
+                    org.telegram.messenger.MessagesController.getInstance(account);
+            if (dialogId > 0) {
+                org.telegram.tgnet.TLRPC.User user = mc.getUser(dialogId);
+                if (user != null) {
+                    title = ((user.first_name != null ? user.first_name : "") + " "
+                            + (user.last_name != null ? user.last_name : "")).trim();
+                }
+            } else if (dialogId < 0) {
+                org.telegram.tgnet.TLRPC.Chat chat = mc.getChat(-dialogId);
+                if (chat != null) {
+                    title = chat.title;
+                }
+            }
+            if (title == null || title.isEmpty()) {
+                title = "Chat " + dialogId;
+            }
+            String when = new java.text.SimpleDateFormat("HH:mm \u00b7 dd MMM",
+                    java.util.Locale.US).format(new java.util.Date(dateSec * 1000L));
+            String body = parts[4];
+            if (body == null || body.isEmpty()) {
+                body = "[" + parts[3] + "]";
+            }
+            return title + " \u00b7 " + when + " \u2014 " + body;
+        } catch (Throwable t) {
+            return record;
+        }
+    }
+
     public static String findSnapshotText(Context context, long dialogId, int msgId) {
         List<String> snaps = VaultStore.getAll(context, PREFS, SNAP_KEY);
         String prefix = dialogId + "|" + msgId + "|";

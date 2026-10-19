@@ -2,6 +2,8 @@ package org.telegram.messenger.amin.plugins.js;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.os.Handler;
+import android.os.HandlerThread;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -27,6 +29,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -45,8 +48,13 @@ import java.util.Set;
  * no Java classes, no Android APIs, no file or network access except
  * amin.httpGet.
  *
- * Execution model: all plugin code runs on Utilities.globalQueue (an
- * existing Telegram queue — no new threads, no timers, no polling).
+ * Execution model: all plugin code runs on ONE dedicated plugin
+ * thread (a private HandlerThread — see PluginQueue below). v1.3.2
+ * audit fix: dispatch used to ride Telegram's shared
+ * Utilities.globalQueue, where one plugin's blocking amin.httpGet
+ * (up to ~30 s) stalled Telegram's own background work. The private
+ * thread keeps Rhino's single-thread confinement AND takes plugins
+ * off the shared queue. No timers, no polling.
  * Events are dispatched from Telegram's own update flow via AminHooks.
  * A plugin that throws is caught and logged; it can never crash the
  * app, and it is NOT auto-disabled — its hooks simply fail until the
@@ -72,10 +80,11 @@ public final class JsPluginManager {
     private static final List<JsPlugin> cache = new ArrayList<>();
     private static boolean cacheLoaded;
 
-    /** Runtimes live only on the globalQueue thread (and are dropped
-     *  via runnables posted to it), keeping Rhino single-threaded. */
+    /** Runtimes live only on the dedicated plugin thread (and are
+     *  dropped via runnables posted to it), keeping Rhino
+     *  single-threaded. */
     private static final Map<String, Runtime> runtimes = new HashMap<>();
-    private static final Set<String> broken = new HashSet<>();
+    private static final Set<String> broken = Collections.synchronizedSet(new HashSet<>());
 
     private static volatile int dispatchAccount;
 
@@ -93,6 +102,21 @@ public final class JsPluginManager {
                     || fullClassName.equals("java.lang.Long");
         }
     };
+
+    /** The one dedicated plugin thread (see the class javadoc's
+     *  execution-model note). Lazily started on first use. */
+    private static final class PluginQueue {
+        static final Handler INSTANCE;
+        static {
+            HandlerThread thread = new HandlerThread("AminGramPlugins");
+            thread.start();
+            INSTANCE = new Handler(thread.getLooper());
+        }
+    }
+
+    private static void postToPluginThread(Runnable runnable) {
+        PluginQueue.INSTANCE.post(runnable);
+    }
 
     private static final class Runtime {
         JsPlugin plugin;
@@ -282,6 +306,7 @@ public final class JsPluginManager {
             }
             persistMeta(context, plugin);
             appendLog(plugin.id, "[info] installed v" + plugin.version + " by " + plugin.author);
+            broken.remove(plugin.id);
             dropRuntime(plugin.id);
             if (plugin.enabled) {
                 warmUp(plugin.id);
@@ -469,15 +494,15 @@ public final class JsPluginManager {
     }
 
     // ------------------------------------------------------------------
-    // Runtime lifecycle (globalQueue thread only)
+    // Runtime lifecycle (plugin thread only)
     // ------------------------------------------------------------------
 
     private static void dropRuntime(final String pluginId) {
-        Utilities.globalQueue.postRunnable(() -> runtimes.remove(pluginId));
+        postToPluginThread(() -> runtimes.remove(pluginId));
     }
 
     private static void warmUp(final String pluginId) {
-        Utilities.globalQueue.postRunnable(() -> {
+        postToPluginThread(() -> {
             Context context = ApplicationLoader.applicationContext;
             if (context == null) {
                 return;
@@ -486,12 +511,15 @@ public final class JsPluginManager {
             if (plugin == null || !plugin.enabled) {
                 return;
             }
-            org.mozilla.javascript.Context cx = enterContext();
+            org.mozilla.javascript.Context cx = null;
             try {
+                cx = enterContext();
                 ensureRuntime(cx, context, plugin);
             } catch (Throwable ignored) {
             } finally {
-                org.mozilla.javascript.Context.exit();
+                if (cx != null) {
+                    org.mozilla.javascript.Context.exit();
+                }
             }
         });
     }
@@ -547,7 +575,7 @@ public final class JsPluginManager {
     }
 
     // ------------------------------------------------------------------
-    // Dispatch (called from AminHooks; work runs on globalQueue)
+    // Dispatch (called from AminHooks; work runs on the plugin thread)
     // ------------------------------------------------------------------
 
     public static void dispatchMessage(final int account, final TLRPC.Message message) {
@@ -564,10 +592,11 @@ public final class JsPluginManager {
         if (targets.isEmpty()) {
             return;
         }
-        Utilities.globalQueue.postRunnable(() -> {
+        postToPluginThread(() -> {
             dispatchAccount = account;
-            org.mozilla.javascript.Context cx = enterContext();
+            org.mozilla.javascript.Context cx = null;
             try {
+                cx = enterContext();
                 for (JsPlugin plugin : targets) {
                     Runtime runtime = ensureRuntime(cx, context, plugin);
                     if (runtime == null) {
@@ -584,7 +613,9 @@ public final class JsPluginManager {
                 }
             } catch (Throwable ignored) {
             } finally {
-                org.mozilla.javascript.Context.exit();
+                if (cx != null) {
+                    org.mozilla.javascript.Context.exit();
+                }
             }
         });
     }
@@ -616,10 +647,11 @@ public final class JsPluginManager {
         final String text = params.message;
         final String command = parsed[0];
         final String args = parsed[1];
-        Utilities.globalQueue.postRunnable(() -> {
+        postToPluginThread(() -> {
             dispatchAccount = account;
-            org.mozilla.javascript.Context cx = enterContext();
+            org.mozilla.javascript.Context cx = null;
             try {
+                cx = enterContext();
                 long selfId = UserConfig.getInstance(account).getClientUserId();
                 for (JsPlugin plugin : enabledCommandPlugins(context)) {
                     Runtime runtime = ensureRuntime(cx, context, plugin);
@@ -646,7 +678,9 @@ public final class JsPluginManager {
                 }
             } catch (Throwable ignored) {
             } finally {
-                org.mozilla.javascript.Context.exit();
+                if (cx != null) {
+                    org.mozilla.javascript.Context.exit();
+                }
             }
         });
     }
@@ -658,10 +692,11 @@ public final class JsPluginManager {
         if (context == null) {
             return;
         }
-        Utilities.globalQueue.postRunnable(() -> {
+        postToPluginThread(() -> {
             dispatchAccount = account;
-            org.mozilla.javascript.Context cx = enterContext();
+            org.mozilla.javascript.Context cx = null;
             try {
+                cx = enterContext();
                 for (JsPlugin plugin : enabledCommandPlugins(context)) {
                     Runtime runtime = ensureRuntime(cx, context, plugin);
                     if (runtime == null) {
@@ -681,7 +716,9 @@ public final class JsPluginManager {
                 }
             } catch (Throwable ignored) {
             } finally {
-                org.mozilla.javascript.Context.exit();
+                if (cx != null) {
+                    org.mozilla.javascript.Context.exit();
+                }
             }
         });
     }
@@ -691,14 +728,15 @@ public final class JsPluginManager {
         if (context == null) {
             return;
         }
-        Utilities.globalQueue.postRunnable(() -> {
+        postToPluginThread(() -> {
             JsPlugin plugin = get(context, pluginId);
             if (plugin == null || !plugin.enabled) {
                 return;
             }
             dispatchAccount = UserConfig.selectedAccount;
-            org.mozilla.javascript.Context cx = enterContext();
+            org.mozilla.javascript.Context cx = null;
             try {
+                cx = enterContext();
                 Runtime runtime = ensureRuntime(cx, context, plugin);
                 if (runtime == null) {
                     return;
@@ -708,7 +746,9 @@ public final class JsPluginManager {
                 callHook(cx, runtime, "onMenuAction", new Object[]{ctx});
             } catch (Throwable ignored) {
             } finally {
-                org.mozilla.javascript.Context.exit();
+                if (cx != null) {
+                    org.mozilla.javascript.Context.exit();
+                }
             }
         });
     }
