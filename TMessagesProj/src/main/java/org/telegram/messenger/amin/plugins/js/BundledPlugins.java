@@ -76,8 +76,8 @@ public final class BundledPlugins {
             in.close();
             String source = out.toString("UTF-8");
             return JsPluginManager.install(context, source);
-        } catch (Exception e) {
-            return "Could not read the bundled plugin: " + e.getMessage();
+        } catch (Throwable t) {
+            return "Could not read the bundled plugin: " + t.getMessage();
         }
     }
 }

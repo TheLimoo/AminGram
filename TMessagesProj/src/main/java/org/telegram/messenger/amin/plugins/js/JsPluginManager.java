@@ -203,6 +203,18 @@ public final class JsPluginManager {
      *  probe evaluation (SETTINGS schema + hook detection) → store.
      *  Returns null on success, or a user-readable error. */
     public static String install(Context context, String source) {
+        try {
+            return installInternal(context, source);
+        } catch (Throwable t) {
+            // Installing a plugin must NEVER take the app down (field
+            // report, v1.3: an engine-level Error escaped install() and
+            // closed the app). Any failure becomes a readable error.
+            return "Plugin install failed: " + t.getClass().getSimpleName()
+                    + (t.getMessage() != null ? ": " + t.getMessage() : "");
+        }
+    }
+
+    private static String installInternal(Context context, String source) {
         JsManifest manifest;
         try {
             manifest = JsManifest.parse(source);

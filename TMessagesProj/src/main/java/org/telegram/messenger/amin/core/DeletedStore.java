@@ -177,6 +177,51 @@ public final class DeletedStore {
         }
     }
 
+    /** Renders one raw edit record ("dialogId|msgId|date|old -> new")
+     *  readably for the hub viewer: chat title + time + quoted change.
+     *  Field report (v1.3): the viewer printed the raw record, which
+     *  looked like an unreadable log line. Falls back to the raw
+     *  record on any problem. */
+    public static String formatEditRecord(int account, String record) {
+        try {
+            String[] parts = record.split("\\|", 4);
+            if (parts.length < 4) {
+                return record;
+            }
+            long dialogId = Long.parseLong(parts[0]);
+            long dateSec = Long.parseLong(parts[2]);
+            String title = null;
+            org.telegram.messenger.MessagesController mc =
+                    org.telegram.messenger.MessagesController.getInstance(account);
+            if (dialogId > 0) {
+                org.telegram.tgnet.TLRPC.User user = mc.getUser(dialogId);
+                if (user != null) {
+                    title = ((user.first_name != null ? user.first_name : "") + " "
+                            + (user.last_name != null ? user.last_name : "")).trim();
+                }
+            } else if (dialogId < 0) {
+                org.telegram.tgnet.TLRPC.Chat chat = mc.getChat(-dialogId);
+                if (chat != null) {
+                    title = chat.title;
+                }
+            }
+            if (title == null || title.isEmpty()) {
+                title = "Chat " + dialogId;
+            }
+            String when = new java.text.SimpleDateFormat("HH:mm · dd MMM",
+                    java.util.Locale.US).format(new java.util.Date(dateSec * 1000L));
+            String change = parts[3];
+            int arrow = change.indexOf(" -> ");
+            if (arrow > 0) {
+                change = "\"" + change.substring(0, arrow) + "\" → \""
+                        + change.substring(arrow + 4) + "\"";
+            }
+            return title + " · " + when + " — " + change;
+        } catch (Throwable t) {
+            return record;
+        }
+    }
+
     public static String findSnapshotText(Context context, long dialogId, int msgId) {
         List<String> snaps = VaultStore.getAll(context, PREFS, SNAP_KEY);
         String prefix = dialogId + "|" + msgId + "|";

@@ -127,7 +127,7 @@ function doResolve(chatId, msg, url) {
     var r = resolveAny(url);
     amin.log("media-dl resolved " + url + " -> " + (r && r.video ? r.video : "none"));
     amin.reply(msg, formatResult(r, url));
-    amin.toast("✅ Media link resolved");
+    amin.toast(r && (r.video || r.audio) ? "✅ Media link resolved" : "❌ Couldn't resolve that link");
   } catch (e) {
     amin.log("media-dl error: " + e);
     amin.toast("❌ media-dl failed — see plugin log");

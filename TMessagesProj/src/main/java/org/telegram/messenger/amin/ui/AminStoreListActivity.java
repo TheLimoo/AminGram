@@ -10,6 +10,7 @@ import androidx.recyclerview.widget.RecyclerView;
 
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.R;
+import org.telegram.messenger.amin.core.DeletedStore;
 import org.telegram.messenger.amin.core.VaultStore;
 import org.telegram.ui.ActionBar.ActionBar;
 import org.telegram.ui.ActionBar.BaseFragment;
@@ -49,6 +50,13 @@ public class AminStoreListActivity extends BaseFragment {
             String tmp = items.get(i);
             items.set(i, items.get(j));
             items.set(j, tmp);
+        }
+        if (DeletedStore.EDIT_KEY.equals(key)) {
+            // Edit records are stored raw (dialogId|msgId|date|old -> new);
+            // render them readably (title + time + quoted change).
+            for (int i = 0; i < items.size(); i++) {
+                items.set(i, DeletedStore.formatEditRecord(currentAccount, items.get(i)));
+            }
         }
     }
 
@@ -134,8 +142,9 @@ public class AminStoreListActivity extends BaseFragment {
             }
             if (position < items.size()) {
                 String value = items.get(position);
-                if (value.length() > 140) {
-                    value = value.substring(0, 140) + "…";
+                int cap = DeletedStore.EDIT_KEY.equals(key) ? 600 : 140;
+                if (value.length() > cap) {
+                    value = value.substring(0, cap) + "…";
                 }
                 cell.setText(value, position < items.size() - 1);
             } else {
