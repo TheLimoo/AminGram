@@ -12,6 +12,7 @@ import org.telegram.messenger.SendMessagesHelper;
 import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.Utilities;
 import org.telegram.messenger.amin.core.DeletedStore;
+import org.telegram.messenger.amin.core.DesignThemes;
 import org.telegram.messenger.amin.core.HiddenChatsStore;
 import org.telegram.messenger.amin.core.MessagePipeline;
 import org.telegram.messenger.amin.core.SendWhenOnlineStore;
@@ -73,6 +74,24 @@ public final class AminHooks {
 
     public static boolean hideStories() {
         return moduleEnabled("hide_stories");
+    }
+
+    /** Design themes at app startup (patch 0015, LaunchActivity.
+     *  onCreate right after ApplicationLoader.postInitApplication):
+     *  the enabled design module (amin_design / ios_theme) owns the
+     *  day theme — see amin.core.DesignThemes. Designs persist
+     *  natively once applied, so this only reconciles drift (theme
+     *  changed in Appearance while a design stayed on, or a restore
+     *  that could not complete). Throwable-isolated like everything
+     *  here: it must never break app startup. */
+    public static void applyDesignOnStartup() {
+        try {
+            Context context = ApplicationLoader.applicationContext;
+            if (context != null) {
+                DesignThemes.applyEnabledDesigns(context);
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     // ------------------------------------------------------------------

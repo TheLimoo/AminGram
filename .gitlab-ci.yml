@@ -124,6 +124,7 @@ build:
       git apply ../patches/0012-ghost-stories.patch
       git apply ../patches/0013-outgoing-command-hook.patch
       git apply ../patches/0014-attach-menu-plugins.patch
+      git apply ../patches/0015-design-startup-hook.patch
       cd ..
     # --- Mirror: "Register fork package in google-services.json" ----------
     - |
