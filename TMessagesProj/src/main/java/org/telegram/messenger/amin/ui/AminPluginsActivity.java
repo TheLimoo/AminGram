@@ -8,7 +8,10 @@ import android.graphics.PorterDuffColorFilter;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.text.InputType;
+import android.text.SpannableString;
+import android.text.Spanned;
 import android.text.TextUtils;
+import android.text.style.ForegroundColorSpan;
 import android.webkit.MimeTypeMap;
 import android.view.Gravity;
 import android.view.View;
@@ -29,6 +32,7 @@ import org.telegram.messenger.R;
 import org.telegram.messenger.amin.core.AutoSaverStore;
 import org.telegram.messenger.amin.core.BackupManager;
 import org.telegram.messenger.amin.core.DeletedStore;
+import org.telegram.messenger.amin.core.DesignThemes;
 import org.telegram.messenger.amin.core.HiddenChatsStore;
 import org.telegram.messenger.amin.core.MessagePipeline;
 import org.telegram.messenger.amin.core.SendWhenOnlineStore;
@@ -79,8 +83,22 @@ import java.util.Locale;
  * white cards on the gray page: icon-chip header + switch, ONE
  * truncated subtitle line, a colored status dot line, and the
  * module's actions as hairline-separated rows inside the card.
- * Presentation only: row ids, actions, data and flows are exactly
- * the v1.3 ones (see assignSegments() and the custom views below).
+ *
+ * v1.3.3 presentation (exteraGram design language, Amin's pick):
+ * ONE rounded group card per module SECTION (all of Privacy / Media
+ * / Tools in a single card, extera "General page" style) with
+ * accent-colored medium section labels and inset hairlines; a hub
+ * header block (shield + name + version); a full-width accent
+ * "Enable Plugins Engine" pill driving JsPluginManager's real
+ * engine_enabled kill-switch; and each JS plugin as a RICH CARD
+ * (icon + working switch, big name, Version · @author line,
+ * capability chips, settings/log/delete action row) replacing the
+ * old toggle+info row pair — the card's buttons run the exact
+ * operations the plugin page runs, and tapping the card still
+ * opens that page. The two design modules (amin_design /
+ * ios_theme) toggle through amin.core.DesignThemes with mutual
+ * exclusion and snapshot restore. Row ids, action ids, data and
+ * flows are otherwise exactly the v1.3 ones.
  */
 public class AminPluginsActivity extends BaseFragment {
 
@@ -93,9 +111,10 @@ public class AminPluginsActivity extends BaseFragment {
     private static final int KIND_MODULE = 1;
     private static final int KIND_INFO = 2;
     private static final int KIND_ACTION = 3;
-    private static final int KIND_PLUGIN_TOGGLE = 4;
-    private static final int KIND_PLUGIN_INFO = 5;
     private static final int KIND_FOOTER = 6;
+    private static final int KIND_HUB_HEADER = 7;
+    private static final int KIND_ENGINE = 8;
+    private static final int KIND_PLUGIN_CARD = 9;
 
     // v1.3.2 card presentation: consecutive rows that belong together
     // (a module header + its subtitle/status + its action rows, a
@@ -126,12 +145,15 @@ public class AminPluginsActivity extends BaseFragment {
         BundledPlugins.Bundled bundled;
         SendWhenOnlineStore.Entry swoEntry;
         long hiddenId;
-        // v1.3.2 presentation-only fields:
+        // Presentation-only fields:
         int seg = SEG_NONE;
         String statusText;
         int statusTone = TONE_NONE;
         boolean accent;
         boolean multiline;
+        /** Info rows that align at the plain 16dp text inset instead
+         *  of the module text column (bundled taglines, the note). */
+        boolean flat;
     }
 
     private RecyclerListView listView;
@@ -188,6 +210,9 @@ public class AminPluginsActivity extends BaseFragment {
             return;
         }
         rows.clear();
+        Row brand = new Row();
+        brand.kind = KIND_HUB_HEADER;
+        rows.add(brand);
         addSection(context, "Privacy", ModModule.SECTION_PRIVACY);
         addSection(context, "Media", ModModule.SECTION_MEDIA);
         addSection(context, "Tools", ModModule.SECTION_TOOLS);
@@ -204,47 +229,69 @@ public class AminPluginsActivity extends BaseFragment {
         }
     }
 
-    /** Groups consecutive rows into card segments. A group starts at
-     *  a module header, a plugin header, a "bundled" row or the
-     *  first add-plugin row, and continues through the info/action
-     *  rows that belong to it. Headers, the footer and the standalone
-     *  "no plugins yet" note stay uncarded. */
+    /** Groups rows into card segments (v1.3.3): ONE group card per
+     *  module section — every module header + info + action row
+     *  between two section labels joins a single card (sections are
+     *  separated by their labels). The engine pill and each plugin
+     *  rich card are standalone (SEG_ONLY). In Your Plugins, each
+     *  bundled row + its tagline and the two add-plugin rows form
+     *  their own small cards. Labels, the hub header, the footer
+     *  and the standalone "no plugins yet" note stay uncarded. */
     private void assignSegments() {
         for (Row row : rows) {
             row.seg = SEG_NONE;
         }
         int start = -1;
         for (int i = 0; i <= rows.size(); i++) {
-            boolean boundary = i == rows.size() || startsCard(rows.get(i))
-                    || rows.get(i).kind == KIND_HEADER || rows.get(i).kind == KIND_FOOTER
-                    || (rows.get(i).kind == KIND_INFO && "note".equals(rows.get(i).action));
-            if (boundary && start >= 0) {
-                if (start == i - 1) {
-                    rows.get(start).seg = SEG_ONLY;
-                } else {
-                    rows.get(start).seg = SEG_FIRST;
-                    rows.get(i - 1).seg = SEG_LAST;
-                    for (int j = start + 1; j < i - 1; j++) {
-                        rows.get(j).seg = SEG_MID;
-                    }
+            // 0 = join the open group, 1 = close the group (row
+            // itself uncarded), 2 = close + standalone card,
+            // 3 = close + start a fresh group at this row.
+            int mode;
+            if (i == rows.size()) {
+                mode = 1;
+            } else {
+                Row row = rows.get(i);
+                switch (row.kind) {
+                    case KIND_ENGINE:
+                    case KIND_PLUGIN_CARD:
+                        mode = 2;
+                        break;
+                    case KIND_ACTION:
+                        mode = "bundled".equals(row.action)
+                                || "add_plugin_file".equals(row.action) ? 3 : 0;
+                        break;
+                    case KIND_INFO:
+                        mode = "note".equals(row.action) ? 1 : 0;
+                        break;
+                    case KIND_MODULE:
+                        mode = 0;
+                        break;
+                    default: // KIND_HEADER, KIND_HUB_HEADER, KIND_FOOTER
+                        mode = 1;
+                        break;
                 }
+            }
+            if (mode != 0 && start >= 0) {
+                closeGroup(start, i);
                 start = -1;
             }
-            if (i < rows.size() && startsCard(rows.get(i))) {
+            if (mode == 2) {
+                rows.get(i).seg = SEG_ONLY;
+            } else if (mode == 3 || (mode == 0 && start < 0)) {
                 start = i;
             }
         }
     }
 
-    private static boolean startsCard(Row row) {
-        switch (row.kind) {
-            case KIND_MODULE:
-            case KIND_PLUGIN_TOGGLE:
-                return true;
-            case KIND_ACTION:
-                return "bundled".equals(row.action) || "add_plugin_file".equals(row.action);
-            default:
-                return false;
+    private void closeGroup(int start, int endExclusive) {
+        if (endExclusive - start == 1) {
+            rows.get(start).seg = SEG_ONLY;
+        } else {
+            rows.get(start).seg = SEG_FIRST;
+            rows.get(endExclusive - 1).seg = SEG_LAST;
+            for (int j = start + 1; j < endExclusive - 1; j++) {
+                rows.get(j).seg = SEG_MID;
+            }
         }
     }
 
@@ -389,10 +436,19 @@ public class AminPluginsActivity extends BaseFragment {
         header.kind = KIND_HEADER;
         header.title = "Your Plugins";
         rows.add(header);
-        Row addFile = action("add_plugin_file", "Add plugin from file…", ".js");
-        addFile.accent = true;
-        Row addPaste = action("add_plugin_paste", "Paste plugin code…", null);
-        addPaste.accent = true;
+        // v1.3.3: the engine kill-switch pill sits at the top.
+        Row engine = new Row();
+        engine.kind = KIND_ENGINE;
+        rows.add(engine);
+        // v1.3.3: each installed plugin is ONE rich card (switch,
+        // name, version/author, description, capability chips and
+        // an action row), replacing the toggle + info row pair.
+        for (JsPlugin plugin : JsPluginManager.plugins(context)) {
+            Row card = new Row();
+            card.kind = KIND_PLUGIN_CARD;
+            card.plugin = plugin;
+            rows.add(card);
+        }
         for (BundledPlugins.Bundled bundled : BundledPlugins.all()) {
             Row row = new Row();
             row.kind = KIND_ACTION;
@@ -404,26 +460,19 @@ public class AminPluginsActivity extends BaseFragment {
             rows.add(row);
             Row info = new Row();
             info.kind = KIND_INFO;
+            info.flat = true;
             info.title = bundled.tagline;
             rows.add(info);
         }
-        for (JsPlugin plugin : JsPluginManager.plugins(context)) {
-            Row toggle = new Row();
-            toggle.kind = KIND_PLUGIN_TOGGLE;
-            toggle.plugin = plugin;
-            rows.add(toggle);
-            Row info = new Row();
-            info.kind = KIND_PLUGIN_INFO;
-            info.plugin = plugin;
-            info.title = plugin.description;
-            info.statusText = "Capabilities: " + plugin.capabilitiesText();
-            info.statusTone = TONE_NONE;
-            rows.add(info);
-        }
+        Row addFile = action("add_plugin_file", "Add plugin from file…", ".js");
+        addFile.accent = true;
+        Row addPaste = action("add_plugin_paste", "Paste plugin code…", null);
+        addPaste.accent = true;
         if (JsPluginManager.plugins(context).isEmpty()) {
             Row info = new Row();
             info.kind = KIND_INFO;
             info.multiline = true;
+            info.flat = true;
             info.action = "note";
             info.title = "No plugins installed yet. Plugins are single JavaScript files — "
                     + "the full guide is PLUGIN-MASTER-PROMPT.md in the AminGram repo (docs/).";
@@ -443,18 +492,22 @@ public class AminPluginsActivity extends BaseFragment {
         Row row = rows.get(position);
         switch (row.kind) {
             case KIND_MODULE: {
-                boolean now = !PluginRegistry.isEnabled(context, row.module);
-                PluginRegistry.setEnabled(context, row.module, now);
-                rebuild();
+                if ("amin_design".equals(row.module.id())
+                        || "ios_theme".equals(row.module.id())) {
+                    toggleDesignModule(context, row.module);
+                } else {
+                    boolean now = !PluginRegistry.isEnabled(context, row.module);
+                    PluginRegistry.setEnabled(context, row.module, now);
+                    rebuild();
+                }
                 break;
             }
-            case KIND_PLUGIN_TOGGLE: {
-                boolean now = !row.plugin.enabled;
-                JsPluginManager.setEnabled(context, row.plugin, now);
+            case KIND_ENGINE:
+                JsPluginManager.setEngineEnabled(context,
+                        !JsPluginManager.isEngineEnabled(context));
                 rebuild();
                 break;
-            }
-            case KIND_PLUGIN_INFO:
+            case KIND_PLUGIN_CARD:
                 presentFragment(new AminJsPluginActivity(row.plugin.id));
                 break;
             case KIND_ACTION:
@@ -464,6 +517,76 @@ public class AminPluginsActivity extends BaseFragment {
                 break;
         }
     }
+
+    /** The two design modules apply / restore REAL themes via
+     *  DesignThemes, and are mutually exclusive: turning one on
+     *  switches the other off (keeping the user's original theme
+     *  snapshot); turning the active one off restores the snapshot. */
+    private void toggleDesignModule(Context context, ModModule module) {
+        boolean aminDesign = "amin_design".equals(module.id());
+        String thisDesign = aminDesign ? DesignThemes.DESIGN_AMIN : DesignThemes.DESIGN_IOS;
+        String otherDesign = aminDesign ? DesignThemes.DESIGN_IOS : DesignThemes.DESIGN_AMIN;
+        String otherModuleId = aminDesign ? "ios_theme" : "amin_design";
+        if (!PluginRegistry.isEnabled(context, module)) {
+            PluginRegistry.setEnabled(context, module, true);
+            for (ModModule other : PluginRegistry.modules()) {
+                if (otherModuleId.equals(other.id())) {
+                    PluginRegistry.setEnabled(context, other, false);
+                }
+            }
+            DesignThemes.applyDesign(context, thisDesign);
+        } else {
+            PluginRegistry.setEnabled(context, module, false);
+            if (PluginRegistry.isEnabledById(context, otherModuleId)) {
+                DesignThemes.applyDesign(context, otherDesign);
+            } else {
+                DesignThemes.restorePrevious(context);
+            }
+        }
+        rebuild();
+    }
+
+    /** Rich-card buttons run the exact operations the plugin page
+     *  runs (same JsPluginManager calls, same strings). */
+    private final PluginCardView.Callbacks pluginCardCallbacks = new PluginCardView.Callbacks() {
+        @Override
+        public void onTogglePlugin(JsPlugin plugin) {
+            Context context = getContext();
+            if (context != null) {
+                JsPluginManager.setEnabled(context, plugin, !plugin.enabled);
+                rebuild();
+            }
+        }
+
+        @Override
+        public void onOpenPlugin(JsPlugin plugin) {
+            presentFragment(new AminJsPluginActivity(plugin.id));
+        }
+
+        @Override
+        public void onPluginLog(JsPlugin plugin) {
+            presentFragment(new AminStoreListActivity(plugin.name + " — log",
+                    JsPluginManager.PREFS, "log_" + plugin.id));
+        }
+
+        @Override
+        public void onDeletePlugin(JsPlugin plugin) {
+            Context context = getContext();
+            if (context == null || getParentActivity() == null) {
+                return;
+            }
+            AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+            builder.setTitle("Delete " + plugin.name + "?");
+            builder.setMessage("The plugin file, its settings and its log are removed.");
+            builder.setPositiveButton("Delete", (dialog, which) -> {
+                JsPluginManager.delete(context, plugin);
+                bulletin(R.raw.ic_delete, "Plugin deleted");
+                rebuild();
+            });
+            builder.setNegativeButton("Cancel", null);
+            showDialog(builder.create());
+        }
+    };
 
     private void onAction(Context context, Row row) {
         switch (row.action) {
@@ -979,7 +1102,7 @@ public class AminPluginsActivity extends BaseFragment {
      *  fill for the add-plugin card), corners rounded only where the
      *  segment touches the card's outer edge. */
     private static GradientDrawable segmentDrawable(int seg, int fillColor) {
-        float r = AndroidUtilities.dp(16);
+        float r = AndroidUtilities.dp(22);
         float[] radii;
         switch (seg) {
             case SEG_ONLY:
@@ -1036,6 +1159,10 @@ public class AminPluginsActivity extends BaseFragment {
     /** Verified 13.0.2 R.drawable glyphs for the module icon chips. */
     private static int moduleIcon(String id) {
         switch (id) {
+            case "amin_design":
+                return R.drawable.msg_palette;
+            case "ios_theme":
+                return R.drawable.msg_colors;
             case "ghost_mode":
                 return R.drawable.msg_mask;
             case "ghost_stories":
@@ -1065,20 +1192,22 @@ public class AminPluginsActivity extends BaseFragment {
         }
     }
 
-    /** Small uppercase gray section label (replaces the blue HeaderCell). */
+    /** Section label in the extera language (v1.3.3): theme ACCENT
+     *  color (key_windowBackgroundWhiteBlueText — the same key as
+     *  upstream's blue section headers), medium weight, natural
+     *  case; NOT the gray uppercase of the v1.3.2 hub. */
     private static class SectionLabelView extends TextView {
         SectionLabelView(Context context) {
             super(context);
-            setTextSize(13);
+            setTextSize(14);
             setTypeface(AndroidUtilities.getTypeface("fonts/rmedium.ttf"));
-            setLetterSpacing(0.08f);
-            setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText));
+            setTextColor(accentColor());
             setPadding(AndroidUtilities.dp(28), AndroidUtilities.dp(22),
                     AndroidUtilities.dp(16), AndroidUtilities.dp(2));
         }
 
         void setLabel(String title) {
-            setText(title == null ? "" : title.toUpperCase(Locale.US));
+            setText(title == null ? "" : title);
         }
     }
 
@@ -1161,11 +1290,14 @@ public class AminPluginsActivity extends BaseFragment {
         }
     }
 
-    /** The block under a card header: ONE truncated subtitle line and
-     *  a status line rendered as a colored dot + short text, visually
-     *  separate from the description (the v1.3 hub glued them into a
-     *  single gray paragraph). Also used for plugin info rows
-     *  (capabilities as a muted no-dot line) and the standalone note. */
+    /** The block under a module header inside the section group
+     *  card: ONE truncated subtitle line (the description) and a
+     *  status line rendered as a colored dot + short text — the one
+     *  status scheme used across the hub. v1.3.3: the text column
+     *  indents to align under the module title (68dp) and the
+     *  hairline closing the block is inset by the same amount
+     *  (extera style); bundled taglines and the standalone note use
+     *  the flat 16dp inset instead. */
     private static class InfoStatusView extends LinearLayout {
         private final TextView subtitle;
         private final LinearLayout statusRow;
@@ -1215,7 +1347,7 @@ public class AminPluginsActivity extends BaseFragment {
         }
 
         void bind(String subtitleText, boolean multiline, String status, int tone,
-                  int seg, boolean carded) {
+                  int seg, boolean carded, boolean flat) {
             subtitle.setText(subtitleText == null ? "" : subtitleText);
             subtitle.setSingleLine(!multiline);
             subtitle.setMaxLines(multiline ? Integer.MAX_VALUE : 1);
@@ -1238,9 +1370,351 @@ public class AminPluginsActivity extends BaseFragment {
                 }
             }
             divider.setVisibility(seg == SEG_MID ? VISIBLE : GONE);
-            setPadding(AndroidUtilities.dp(16), 0, AndroidUtilities.dp(16),
+            int left = flat || !carded ? AndroidUtilities.dp(16) : AndroidUtilities.dp(68);
+            setPadding(left, 0, AndroidUtilities.dp(16),
                     seg == SEG_LAST || seg == SEG_ONLY ? AndroidUtilities.dp(12) : AndroidUtilities.dp(2));
             setBackground(carded ? segmentDrawable(seg, cardFill()) : null);
+        }
+    }
+
+    /** Hub header block (v1.3.3): the AminGram shield (the launcher
+     *  icon's own foreground vector on its navy), the app name and
+     *  the package version, centered at the very top of the hub. */
+    private static class HubHeaderView extends LinearLayout {
+        private final TextView versionView;
+
+        HubHeaderView(Context context) {
+            super(context);
+            setOrientation(VERTICAL);
+            setGravity(Gravity.CENTER_HORIZONTAL);
+            setPadding(AndroidUtilities.dp(16), AndroidUtilities.dp(24),
+                    AndroidUtilities.dp(16), AndroidUtilities.dp(2));
+
+            FrameLayout badge = new FrameLayout(context);
+            GradientDrawable badgeBg = new GradientDrawable();
+            badgeBg.setShape(GradientDrawable.RECTANGLE);
+            badgeBg.setColor(0xFF01030F);
+            badgeBg.setCornerRadius(AndroidUtilities.dp(20));
+            badge.setBackground(badgeBg);
+            ImageView shield = new ImageView(context);
+            shield.setImageResource(R.drawable.amingram_foreground);
+            shield.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            badge.addView(shield, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            addView(badge, new LinearLayout.LayoutParams(
+                    AndroidUtilities.dp(72), AndroidUtilities.dp(72)));
+
+            TextView nameView = new TextView(context);
+            nameView.setText("AminGram");
+            nameView.setTextSize(21);
+            nameView.setTypeface(AndroidUtilities.getTypeface("fonts/rmedium.ttf"));
+            nameView.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText));
+            LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            nameParams.topMargin = AndroidUtilities.dp(12);
+            addView(nameView, nameParams);
+
+            versionView = new TextView(context);
+            versionView.setTextSize(13.5f);
+            versionView.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText));
+            LinearLayout.LayoutParams versionParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            versionParams.topMargin = AndroidUtilities.dp(3);
+            addView(versionView, versionParams);
+            bind();
+        }
+
+        void bind() {
+            String version = null;
+            try {
+                Context context = getContext();
+                version = context.getPackageManager()
+                        .getPackageInfo(context.getPackageName(), 0).versionName;
+            } catch (Throwable ignored) {
+            }
+            versionView.setText(version == null || version.isEmpty()
+                    ? "" : "Version " + version);
+        }
+    }
+
+    /** Full-width accent pill (v1.3.3): the JS engine master
+     *  switch, extera style — accent fill, white medium label, and
+     *  a display-only switch (the row click toggles, like every
+     *  other hub row). Backed by JsPluginManager's engine_enabled
+     *  pref: off means no JS plugin runs anywhere. */
+    private static class EnginePillView extends LinearLayout {
+        private final Switch switchView;
+
+        EnginePillView(Context context) {
+            super(context);
+            setOrientation(HORIZONTAL);
+            setGravity(Gravity.CENTER_VERTICAL);
+            setMinimumHeight(AndroidUtilities.dp(56));
+            setPadding(AndroidUtilities.dp(18), AndroidUtilities.dp(6),
+                    AndroidUtilities.dp(12), AndroidUtilities.dp(6));
+            TextView label = new TextView(context);
+            label.setText("Enable Plugins Engine");
+            label.setTextSize(16);
+            label.setTypeface(AndroidUtilities.getTypeface("fonts/rmedium.ttf"));
+            label.setTextColor(0xFFFFFFFF);
+            addView(label, new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            switchView = new Switch(context);
+            switchView.setFocusable(false);
+            switchView.setClickable(false);
+            addView(switchView, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        }
+
+        void bind(boolean on) {
+            GradientDrawable bg = new GradientDrawable();
+            bg.setShape(GradientDrawable.RECTANGLE);
+            bg.setColor(accentColor());
+            bg.setCornerRadius(AndroidUtilities.dp(28));
+            setBackground(bg);
+            switchView.setChecked(on, false);
+        }
+    }
+
+    /** extera-style rich plugin card (v1.3.3), one per installed JS
+     *  plugin: icon chip + working enable switch, big name, a
+     *  "Version X · @author" line (author in accent), description
+     *  up to two lines, capability chips, and a bottom action row
+     *  (settings page, view log, delete in red). The buttons run
+     *  the plugin page's own operations via Callbacks; tapping the
+     *  card itself still opens the plugin page. The switch is
+     *  display-only like the module headers — a transparent hit
+     *  area over it performs the toggle. */
+    private static class PluginCardView extends LinearLayout {
+        interface Callbacks {
+            void onTogglePlugin(JsPlugin plugin);
+            void onOpenPlugin(JsPlugin plugin);
+            void onPluginLog(JsPlugin plugin);
+            void onDeletePlugin(JsPlugin plugin);
+        }
+
+        private final FrameLayout chip;
+        private final TextView chipLetter;
+        private final Switch switchView;
+        private final TextView nameView;
+        private final TextView metaView;
+        private final TextView descView;
+        private final LinearLayout chipsRow;
+        private final ImageView settingsBtn;
+        private final ImageView logBtn;
+        private final ImageView deleteBtn;
+        private JsPlugin bound;
+        private Callbacks callbacks;
+
+        PluginCardView(Context context) {
+            super(context);
+            setOrientation(VERTICAL);
+            setPadding(AndroidUtilities.dp(16), AndroidUtilities.dp(14),
+                    AndroidUtilities.dp(16), AndroidUtilities.dp(6));
+
+            LinearLayout header = new LinearLayout(context);
+            header.setOrientation(HORIZONTAL);
+            header.setGravity(Gravity.CENTER_VERTICAL);
+            addView(header, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+            chip = new FrameLayout(context);
+            header.addView(chip, new LinearLayout.LayoutParams(
+                    AndroidUtilities.dp(40), AndroidUtilities.dp(40)));
+            chipLetter = new TextView(context);
+            chipLetter.setTextSize(17);
+            chipLetter.setTypeface(AndroidUtilities.getTypeface("fonts/rmedium.ttf"));
+            chipLetter.setGravity(Gravity.CENTER);
+            chip.addView(chipLetter, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+            View spacer = new View(context);
+            header.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
+
+            FrameLayout switchBox = new FrameLayout(context);
+            header.addView(switchBox, new LinearLayout.LayoutParams(
+                    AndroidUtilities.dp(56), AndroidUtilities.dp(40)));
+            switchView = new Switch(context);
+            switchView.setFocusable(false);
+            switchView.setClickable(false);
+            switchBox.addView(switchView, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.RIGHT | Gravity.CENTER_VERTICAL));
+            View switchHit = new View(context);
+            switchHit.setOnClickListener(v -> {
+                if (callbacks != null && bound != null) {
+                    callbacks.onTogglePlugin(bound);
+                }
+            });
+            switchBox.addView(switchHit, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+            nameView = new TextView(context);
+            nameView.setTextSize(19);
+            nameView.setTypeface(AndroidUtilities.getTypeface("fonts/rmedium.ttf"));
+            nameView.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText));
+            nameView.setSingleLine(true);
+            nameView.setEllipsize(TextUtils.TruncateAt.END);
+            LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            nameParams.topMargin = AndroidUtilities.dp(10);
+            addView(nameView, nameParams);
+
+            metaView = new TextView(context);
+            metaView.setTextSize(13);
+            metaView.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText));
+            metaView.setSingleLine(true);
+            metaView.setEllipsize(TextUtils.TruncateAt.END);
+            LinearLayout.LayoutParams metaParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            metaParams.topMargin = AndroidUtilities.dp(2);
+            addView(metaView, metaParams);
+
+            descView = new TextView(context);
+            descView.setTextSize(14);
+            descView.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText));
+            descView.setMaxLines(2);
+            descView.setEllipsize(TextUtils.TruncateAt.END);
+            LinearLayout.LayoutParams descParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            descParams.topMargin = AndroidUtilities.dp(6);
+            addView(descView, descParams);
+
+            chipsRow = new LinearLayout(context);
+            chipsRow.setOrientation(HORIZONTAL);
+            LinearLayout.LayoutParams chipsParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            chipsParams.topMargin = AndroidUtilities.dp(10);
+            addView(chipsRow, chipsParams);
+
+            View hairline = new View(context);
+            hairline.setBackgroundColor(Theme.getColor(Theme.key_divider));
+            LinearLayout.LayoutParams hairlineParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 1);
+            hairlineParams.topMargin = AndroidUtilities.dp(12);
+            addView(hairline, hairlineParams);
+
+            LinearLayout actions = new LinearLayout(context);
+            actions.setOrientation(HORIZONTAL);
+            actions.setGravity(Gravity.CENTER_VERTICAL);
+            addView(actions, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, AndroidUtilities.dp(44)));
+
+            settingsBtn = actionButton(context, R.drawable.msg_settings);
+            settingsBtn.setOnClickListener(v -> {
+                if (callbacks != null && bound != null) {
+                    callbacks.onOpenPlugin(bound);
+                }
+            });
+            actions.addView(settingsBtn);
+            logBtn = actionButton(context, R.drawable.msg_log);
+            logBtn.setOnClickListener(v -> {
+                if (callbacks != null && bound != null) {
+                    callbacks.onPluginLog(bound);
+                }
+            });
+            actions.addView(logBtn);
+            View actionSpacer = new View(context);
+            actions.addView(actionSpacer, new LinearLayout.LayoutParams(0, 1, 1f));
+            deleteBtn = actionButton(context, R.drawable.msg_delete);
+            deleteBtn.setOnClickListener(v -> {
+                if (callbacks != null && bound != null) {
+                    callbacks.onDeletePlugin(bound);
+                }
+            });
+            actions.addView(deleteBtn);
+        }
+
+        private static ImageView actionButton(Context context, int iconRes) {
+            ImageView button = new ImageView(context);
+            button.setImageResource(iconRes);
+            button.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+            button.setPadding(AndroidUtilities.dp(9), AndroidUtilities.dp(9),
+                    AndroidUtilities.dp(9), AndroidUtilities.dp(9));
+            button.setLayoutParams(new LinearLayout.LayoutParams(
+                    AndroidUtilities.dp(42), AndroidUtilities.dp(42)));
+            return button;
+        }
+
+        void setCallbacks(Callbacks callbacks) {
+            this.callbacks = callbacks;
+        }
+
+        void bind(JsPlugin plugin, boolean engineOn) {
+            bound = plugin;
+            setBackground(segmentDrawable(SEG_ONLY, cardFill()));
+
+            GradientDrawable chipBg = new GradientDrawable();
+            chipBg.setShape(GradientDrawable.RECTANGLE);
+            chipBg.setColor(chipFill());
+            chipBg.setCornerRadius(AndroidUtilities.dp(12));
+            chip.setBackground(chipBg);
+            chipLetter.setText(plugin.name == null || plugin.name.isEmpty() ? "?"
+                    : plugin.name.substring(0, 1).toUpperCase(Locale.US));
+            chipLetter.setTextColor(accentColor());
+
+            switchView.setChecked(plugin.enabled, false);
+            nameView.setText(plugin.name);
+
+            String meta = "Version " + (plugin.version == null ? "?" : plugin.version);
+            if (plugin.author != null && !plugin.author.isEmpty()) {
+                String author = plugin.author.startsWith("@")
+                        ? plugin.author : "@" + plugin.author;
+                String full = meta + " · " + author;
+                SpannableString spanned = new SpannableString(full);
+                spanned.setSpan(new ForegroundColorSpan(accentColor()),
+                        full.length() - author.length(), full.length(),
+                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                metaView.setText(spanned);
+            } else {
+                metaView.setText(meta);
+            }
+
+            if (plugin.description == null || plugin.description.isEmpty()) {
+                descView.setVisibility(GONE);
+            } else {
+                descView.setVisibility(VISIBLE);
+                descView.setText(plugin.description);
+            }
+
+            chipsRow.removeAllViews();
+            if (plugin.capabilities == null || plugin.capabilities.isEmpty()) {
+                chipsRow.setVisibility(GONE);
+            } else {
+                chipsRow.setVisibility(VISIBLE);
+                for (String capability : plugin.capabilities) {
+                    TextView chipView = new TextView(getContext());
+                    chipView.setText(capability);
+                    chipView.setTextSize(11);
+                    chipView.setTypeface(AndroidUtilities.getTypeface("fonts/rmedium.ttf"));
+                    chipView.setTextColor(accentColor());
+                    chipView.setSingleLine(true);
+                    chipView.setPadding(AndroidUtilities.dp(8), AndroidUtilities.dp(3),
+                            AndroidUtilities.dp(8), AndroidUtilities.dp(3));
+                    GradientDrawable chipDrawable = new GradientDrawable();
+                    chipDrawable.setShape(GradientDrawable.RECTANGLE);
+                    chipDrawable.setColor(chipFill());
+                    chipDrawable.setCornerRadius(AndroidUtilities.dp(8));
+                    chipView.setBackground(chipDrawable);
+                    LinearLayout.LayoutParams chipParams = new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT);
+                    chipParams.rightMargin = AndroidUtilities.dp(6);
+                    chipsRow.addView(chipView, chipParams);
+                }
+            }
+
+            int gray = Theme.getColor(Theme.key_windowBackgroundWhiteGrayText);
+            settingsBtn.setColorFilter(new PorterDuffColorFilter(gray, PorterDuff.Mode.SRC_IN));
+            logBtn.setColorFilter(new PorterDuffColorFilter(gray, PorterDuff.Mode.SRC_IN));
+            deleteBtn.setColorFilter(new PorterDuffColorFilter(
+                    Theme.getColor(Theme.key_color_red), PorterDuff.Mode.SRC_IN));
+
+            float contentAlpha = engineOn ? 1f : 0.55f;
+            nameView.setAlpha(contentAlpha);
+            metaView.setAlpha(contentAlpha);
+            descView.setAlpha(contentAlpha);
+            chipsRow.setAlpha(contentAlpha);
         }
     }
 
@@ -1267,7 +1741,8 @@ public class AminPluginsActivity extends BaseFragment {
                 return false;
             }
             int kind = rows.get(position).kind;
-            return kind != KIND_HEADER && kind != KIND_INFO && kind != KIND_FOOTER;
+            return kind != KIND_HEADER && kind != KIND_INFO && kind != KIND_FOOTER
+                    && kind != KIND_HUB_HEADER;
         }
 
         @Override
@@ -1278,12 +1753,22 @@ public class AminPluginsActivity extends BaseFragment {
                 case KIND_HEADER:
                     view = new SectionLabelView(context);
                     break;
+                case KIND_HUB_HEADER:
+                    view = new HubHeaderView(context);
+                    break;
+                case KIND_ENGINE:
+                    view = new EnginePillView(context);
+                    break;
                 case KIND_MODULE:
-                case KIND_PLUGIN_TOGGLE:
                     view = new CardHeaderView(context);
                     break;
+                case KIND_PLUGIN_CARD: {
+                    PluginCardView card = new PluginCardView(context);
+                    card.setCallbacks(pluginCardCallbacks);
+                    view = card;
+                    break;
+                }
                 case KIND_INFO:
-                case KIND_PLUGIN_INFO:
                     view = new InfoStatusView(context);
                     break;
                 case KIND_FOOTER:
@@ -1316,6 +1801,13 @@ public class AminPluginsActivity extends BaseFragment {
                 case KIND_HEADER:
                     ((SectionLabelView) holder.itemView).setLabel(row.title);
                     break;
+                case KIND_HUB_HEADER:
+                    ((HubHeaderView) holder.itemView).bind();
+                    break;
+                case KIND_ENGINE:
+                    ((EnginePillView) holder.itemView)
+                            .bind(JsPluginManager.isEngineEnabled(context));
+                    break;
                 case KIND_FOOTER:
                     ((TextInfoPrivacyCell) holder.itemView).setText(row.title);
                     break;
@@ -1324,14 +1816,13 @@ public class AminPluginsActivity extends BaseFragment {
                             moduleIcon(row.module.id()),
                             PluginRegistry.isEnabled(context, row.module), row.seg);
                     break;
-                case KIND_PLUGIN_TOGGLE:
-                    ((CardHeaderView) holder.itemView).bind(row.plugin.name, 0,
-                            row.plugin.enabled, row.seg);
+                case KIND_PLUGIN_CARD:
+                    ((PluginCardView) holder.itemView).bind(row.plugin,
+                            JsPluginManager.isEngineEnabled(context));
                     break;
                 case KIND_INFO:
-                case KIND_PLUGIN_INFO:
                     ((InfoStatusView) holder.itemView).bind(row.title, row.multiline,
-                            row.statusText, row.statusTone, row.seg, carded);
+                            row.statusText, row.statusTone, row.seg, carded, row.flat);
                     break;
                 default:
                     TextCell cell = (TextCell) holder.itemView;

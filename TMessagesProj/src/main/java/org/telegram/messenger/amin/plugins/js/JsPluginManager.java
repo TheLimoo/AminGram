@@ -75,6 +75,7 @@ public final class JsPluginManager {
     private static final String KEY_ORDER = "order";
     private static final String KEY_META_PREFIX = "meta_";
     private static final String KEY_LOG_PREFIX = "log_";
+    private static final String KEY_ENGINE = "engine_enabled";
     private static final int LOG_CAP = 200;
 
     private static final List<JsPlugin> cache = new ArrayList<>();
@@ -154,7 +155,27 @@ public final class JsPluginManager {
         return null;
     }
 
+    /** Master engine switch (hub → "Enable Plugins Engine", v1.3.3).
+     *  When off, NO JS plugin runs: hasEnabledPlugins() is false,
+     *  every dispatch entry returns immediately and the attach menu
+     *  shows no plugin buttons. Default on. Pure prefs read. */
+    public static boolean isEngineEnabled(Context context) {
+        if (context == null) {
+            return false;
+        }
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getBoolean(KEY_ENGINE, true);
+    }
+
+    public static void setEngineEnabled(Context context, boolean enabled) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().putBoolean(KEY_ENGINE, enabled).apply();
+    }
+
     public static boolean hasEnabledPlugins(Context context) {
+        if (!isEngineEnabled(context)) {
+            return false;
+        }
         for (JsPlugin plugin : plugins(context)) {
             if (plugin.enabled) {
                 return true;
@@ -167,6 +188,9 @@ public final class JsPluginManager {
      *  {id, name} pairs in install order. Pure prefs read. */
     public static List<String[]> menuPlugins(Context context) {
         List<String[]> out = new ArrayList<>();
+        if (!isEngineEnabled(context)) {
+            return out;
+        }
         for (JsPlugin plugin : plugins(context)) {
             if (plugin.enabled && plugin.hasMenu && plugin.hasCapability("menu")) {
                 out.add(new String[]{plugin.id, plugin.name});
@@ -508,7 +532,7 @@ public final class JsPluginManager {
                 return;
             }
             JsPlugin plugin = get(context, pluginId);
-            if (plugin == null || !plugin.enabled) {
+            if (plugin == null || !plugin.enabled || !isEngineEnabled(context)) {
                 return;
             }
             org.mozilla.javascript.Context cx = null;
@@ -580,7 +604,7 @@ public final class JsPluginManager {
 
     public static void dispatchMessage(final int account, final TLRPC.Message message) {
         final Context context = ApplicationLoader.applicationContext;
-        if (context == null || message == null) {
+        if (context == null || message == null || !isEngineEnabled(context)) {
             return;
         }
         final List<JsPlugin> targets = new ArrayList<>();
@@ -635,7 +659,8 @@ public final class JsPluginManager {
     /** Own command sent from THIS device (SendMessagesHelper hook). */
     public static void dispatchOutgoingCommand(final SendMessagesHelper.SendMessageParams params) {
         final Context context = ApplicationLoader.applicationContext;
-        if (context == null || params == null || params.message == null) {
+        if (context == null || params == null || params.message == null
+                || !isEngineEnabled(context)) {
             return;
         }
         String[] parsed = parseCommand(params.message);
@@ -689,7 +714,7 @@ public final class JsPluginManager {
                                                 final String command, final String args,
                                                 Object unused) {
         final Context context = ApplicationLoader.applicationContext;
-        if (context == null) {
+        if (context == null || !isEngineEnabled(context)) {
             return;
         }
         postToPluginThread(() -> {
@@ -725,7 +750,7 @@ public final class JsPluginManager {
 
     public static void dispatchMenuAction(final String pluginId, final long chatId) {
         final Context context = ApplicationLoader.applicationContext;
-        if (context == null) {
+        if (context == null || !isEngineEnabled(context)) {
             return;
         }
         postToPluginThread(() -> {
