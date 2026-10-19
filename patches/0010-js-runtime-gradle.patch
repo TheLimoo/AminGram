@@ -10,3 +10,16 @@ index 70c567d..25f6831 100644
  
      compileOnly 'org.checkerframework:checker-qual:2.5.2'
      compileOnly 'org.checkerframework:checker-compat-qual:2.5.0'
+diff --git a/TMessagesProj/proguard-rules.pro b/TMessagesProj/proguard-rules.pro
+index 049c7b7..e0aea31 100644
+--- a/TMessagesProj/proguard-rules.pro
++++ b/TMessagesProj/proguard-rules.pro
+@@ -57,4 +57,6 @@
+ 
+ # Use -keep to explicitly keep any other classes shrinking would remove
+ #-dontoptimize
+-#-dontobfuscate
+\ No newline at end of file
++#-dontobfuscate
++# AminGram: Rhino (JS plugin runtime) references desktop java.beans classes that do not exist on Android; without this, R8 fails the release build on missing classes.
++-dontwarn java.beans.**
