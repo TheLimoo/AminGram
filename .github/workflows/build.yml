@@ -5,6 +5,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -26,8 +29,35 @@ jobs:
           git apply ../patches/0002-rebrand-package.patch
           git apply ../patches/0003-phase2-hooks.patch
           git apply ../patches/0004-videobg-rebrand.patch
-          git apply ../patches/0005-google-services-amingram.patch
           git apply ../patches/0006-message-pipeline-hook.patch
+
+      - name: Register fork package in google-services.json
+        run: |
+          python3 - <<'PYEOF'
+          import json, copy
+          path = "upstream/TMessagesProj_App/google-services.json"
+          with open(path) as f:
+              data = json.load(f)
+          clients = data.get("client", [])
+          base = None
+          for c in clients:
+              if c.get("client_info", {}).get("android_client_info", {}).get("package_name") == "org.telegram.messenger":
+                  base = c
+                  break
+          assert base is not None, "upstream org.telegram.messenger client not found"
+          have = {c.get("client_info", {}).get("android_client_info", {}).get("package_name") for c in clients}
+          for pkg in ("org.telegram.amingram", "org.telegram.amingram.beta"):
+              if pkg in have:
+                  continue
+              clone = copy.deepcopy(base)
+              clone["client_info"]["android_client_info"]["package_name"] = pkg
+              clients.append(clone)
+          data["client"] = clients
+          with open(path, "w") as f:
+              json.dump(data, f, indent=2)
+          print("google-services.json clients:", sorted(
+              c["client_info"]["android_client_info"]["package_name"] for c in clients))
+          PYEOF
 
       - name: Install AminGram signing keystore
         env:
@@ -98,3 +128,11 @@ jobs:
           name: AminGram-apk
           path: upstream/TMessagesProj_App/build/outputs/apk/afat/release/*.apk
           if-no-files-found: warn
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v13.0.2-amingram.${{ github.run_number }}
+          name: AminGram ${{ github.run_number }}
+          files: upstream/TMessagesProj_App/build/outputs/apk/afat/release/*.apk
+          fail_on_unmatched_files: true
