@@ -1,0 +1,232 @@
+# AminGram — GitLab CI port of .github/workflows/build.yml
+#
+# Mirrors the GitHub Actions workflow step-for-step (each script block is
+# labelled with the GitHub step it mirrors). Differences forced by the
+# platform are commented inline; see ~/workspace/amingram/GITLAB-MIGRATION.md
+# for the go-live checklist and the full equivalence table.
+#
+# Required CI/CD variables (Settings > CI/CD > Variables, masked):
+#   API_ID, API_HASH                                    (Amin's Telegram API creds)
+#   AMINGRAM_KEYSTORE_B64                               (base64 -w0 of amingram.keystore)
+#   AMINGRAM_KEYSTORE_PASSWORD, AMINGRAM_KEY_ALIAS, AMINGRAM_KEY_PASSWORD
+# The build fails loudly at the first step if any of them is unset.
+
+workflow:
+  rules:
+    # Mirror of GitHub: `on: push: branches: [main]` + `workflow_dispatch`
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "api"'
+
+stages:
+  - build
+  - release
+
+variables:
+  UPSTREAM_SHA: "f32ffeec763f0bdbf4bec25b52d654f77bff733d"  # DrKLO/Telegram 13.0.2 (7175)
+  NDK_VERSION: "27.2.12479018"
+  # Keep SDK + Gradle home INSIDE the project dir: GitLab cache only
+  # supports paths relative to $CI_PROJECT_DIR (GitHub cached an absolute
+  # SDK path; this is the translation of that cache to GitLab).
+  ANDROID_SDK_ROOT: "$CI_PROJECT_DIR/android-sdk"
+  ANDROID_HOME: "$CI_PROJECT_DIR/android-sdk"
+  GRADLE_USER_HOME: "$CI_PROJECT_DIR/.gradle-user-home"
+
+build:
+  stage: build
+  # GitHub used ubuntu-latest + actions/setup-java (temurin 17). GitLab
+  # equivalent: the temurin image directly. The image carries no Android
+  # SDK, so cmdline-tools are bootstrapped in before_script (pinned).
+  image: eclipse-temurin:17-jdk-jammy
+  timeout: 3h          # GitHub: timeout-minutes: 180. Also raise the
+                       # project maximum job timeout to 3h (see migration doc).
+  interruptible: false # a half-built Telegram is worthless; cancel manually
+  cache:
+    # Translation of the GitHub NDK actions/cache restore/save pair plus
+    # Gradle caches. GitLab cache is a single pull-push definition per job
+    # (no restore/save split, no "save only if install ran" condition) —
+    # the sdkmanager step below is a fast no-op when the NDK is present.
+    key: amingram-build-v1
+    paths:
+      - .gradle-user-home/caches
+      - .gradle-user-home/wrapper
+      - android-sdk/cmdline-tools
+      - android-sdk/platform-tools
+      - android-sdk/platforms
+      - android-sdk/build-tools
+      - android-sdk/ndk/27.2.12479018
+  before_script:
+    # Tool bootstrap (GitHub runners preinstall all of this).
+    - |
+      set -e
+      if ! command -v git >/dev/null || ! command -v python3 >/dev/null; then
+        apt-get update -qq && apt-get install -y -qq git python3 unzip curl > /dev/null
+      fi
+      git --version; java -version; python3 --version
+    # Android cmdline-tools (pinned) — only downloaded on a cold cache.
+    - |
+      set -e
+      SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+      if [ ! -x "$SDKMANAGER" ]; then
+        mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+        curl -sSL -o /tmp/cmdline-tools.zip \
+          "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+        unzip -q /tmp/cmdline-tools.zip -d "$ANDROID_SDK_ROOT/cmdline-tools"
+        mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+        rm -f /tmp/cmdline-tools.zip
+      fi
+      echo "sdkmanager: $("$SDKMANAGER" --version)"
+  script:
+    # --- Guard: fail loudly on missing CI/CD variables -------------------
+    # (GitHub fails on empty secrets only indirectly; explicit is better.)
+    - |
+      set -e
+      missing=""
+      for v in API_ID API_HASH AMINGRAM_KEYSTORE_B64 AMINGRAM_KEYSTORE_PASSWORD AMINGRAM_KEY_ALIAS AMINGRAM_KEY_PASSWORD; do
+        eval "val=\${$v:-}"
+        if [ -z "$val" ]; then missing="$missing $v"; fi
+      done
+      if [ -n "$missing" ]; then
+        echo "ERROR: required CI/CD variables are unset:$missing" >&2
+        echo "Set them under Settings > CI/CD > Variables (see GITLAB-MIGRATION.md)." >&2
+        exit 1
+      fi
+      echo "All required CI/CD variables are present."
+    # --- Mirror: "Fetch upstream Telegram source (pinned)" ----------------
+    # GitHub cloned HEAD with --depth 1 --recurse-submodules; the pin only
+    # held because HEAD was f32ffee. Here the commit is pinned explicitly:
+    # fetch by full SHA, detach, then init submodules shallowly.
+    - |
+      set -e
+      git init upstream
+      cd upstream
+      git remote add origin https://github.com/DrKLO/Telegram.git
+      git fetch --depth 1 origin "$UPSTREAM_SHA"
+      git checkout --detach FETCH_HEAD
+      git submodule update --init --recursive --depth 1
+      git log --oneline -1
+      cd ..
+    # --- Mirror: "Apply AminGram overlay" ---------------------------------
+    - |
+      set -e
+      cp -r TMessagesProj upstream/
+      cd upstream
+      git apply ../patches/0001-settings-plugins-entry.patch
+      git apply ../patches/0002-rebrand-package.patch
+      git apply ../patches/0003-phase2-hooks.patch
+      git apply ../patches/0004-videobg-rebrand.patch
+      git apply ../patches/0006-message-pipeline-hook.patch
+      git apply ../patches/0007-icon-changer.patch
+      git apply ../patches/0008-hide-stories.patch
+      cd ..
+    # --- Mirror: "Register fork package in google-services.json" ----------
+    - |
+      python3 - <<'PYEOF'
+      import json, copy
+      path = "upstream/TMessagesProj_App/google-services.json"
+      with open(path) as f:
+          data = json.load(f)
+      clients = data.get("client", [])
+      base = None
+      for c in clients:
+          if c.get("client_info", {}).get("android_client_info", {}).get("package_name") == "org.telegram.messenger":
+              base = c
+              break
+      assert base is not None, "upstream org.telegram.messenger client not found"
+      have = {c.get("client_info", {}).get("android_client_info", {}).get("package_name") for c in clients}
+      for pkg in ("org.telegram.amingram", "org.telegram.amingram.beta"):
+          if pkg in have:
+              continue
+          clone = copy.deepcopy(base)
+          clone["client_info"]["android_client_info"]["package_name"] = pkg
+          clients.append(clone)
+      data["client"] = clients
+      with open(path, "w") as f:
+          json.dump(data, f, indent=2)
+      print("google-services.json clients:", sorted(
+          c["client_info"]["android_client_info"]["package_name"] for c in clients))
+      PYEOF
+    # --- Mirror: "Install AminGram signing keystore" ----------------------
+    - |
+      set -e
+      echo "$AMINGRAM_KEYSTORE_B64" | base64 -d > upstream/TMessagesProj/config/release.keystore
+      test -s upstream/TMessagesProj/config/release.keystore
+    # --- Mirror: "Inject API credentials from secrets" --------------------
+    - |
+      set -e
+      cd upstream
+      sed -i "s/public static int APP_ID = 4;/public static int APP_ID = ${API_ID};/" TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java
+      sed -i 's/public static String APP_HASH = "014b35b6184100b085b0d0572f9b5103";/public static String APP_HASH = "'"${API_HASH}"'";/' TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java
+      grep -c "APP_ID" TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java
+      cd ..
+    # --- Mirror: "Install NDK 27.2.12479018" (with the 3-retry loop) -------
+    # Also installs the SDK platform/build-tools/cmake the GitHub runner
+    # image provided implicitly. Everything is a no-op on a warm cache.
+    - |
+      set -e
+      SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+      yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+      "$SDKMANAGER" "platform-tools" "platforms;android-36" "build-tools;36.0.0" "cmake;3.22.1"
+      if [ -f "$ANDROID_SDK_ROOT/ndk/$NDK_VERSION/source.properties" ]; then
+        echo "NDK $NDK_VERSION already present (cache) — skipping install"
+      else
+        ok=0
+        for i in 1 2 3; do
+          if "$SDKMANAGER" "ndk;$NDK_VERSION"; then ok=1; break; fi
+          echo "sdkmanager attempt $i failed; retrying in 15s"
+          rm -rf "$ANDROID_SDK_ROOT/ndk/$NDK_VERSION"
+          sleep 15
+        done
+        test "$ok" = 1 && test -f "$ANDROID_SDK_ROOT/ndk/$NDK_VERSION/source.properties"
+      fi
+    # --- Mirror: "Build release APK (afat)" -------------------------------
+    - |
+      set -e
+      cd upstream
+      chmod +x gradlew
+      ./gradlew :TMessagesProj_App:assembleAfatRelease --stacktrace -PRELEASE_STORE_PASSWORD="$AMINGRAM_KEYSTORE_PASSWORD" -PRELEASE_KEY_ALIAS="$AMINGRAM_KEY_ALIAS" -PRELEASE_KEY_PASSWORD="$AMINGRAM_KEY_PASSWORD"
+      cd ..
+    # --- Publish the APK to the Generic Package Registry ------------------
+    # GitHub attached the APK to a Release in one action; GitLab needs the
+    # file somewhere stable first. The package registry is that place, and
+    # the release job below links to it as the release asset.
+    - |
+      set -e
+      APK_VERSION="13.0.2-amingram.${CI_PIPELINE_IID}"
+      APK_FILE="$(ls upstream/TMessagesProj_App/build/outputs/apk/afat/release/*.apk | head -1)"
+      test -n "$APK_FILE"
+      echo "Uploading $APK_FILE as generic package amingram/$APK_VERSION/AminGram.apk"
+      curl --fail --silent --show-error \
+        --header "JOB-TOKEN: $CI_JOB_TOKEN" \
+        --upload-file "$APK_FILE" \
+        "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/amingram/${APK_VERSION}/AminGram.apk"
+  artifacts:
+    # Mirror: "Upload APK" (actions/upload-artifact, name AminGram-apk)
+    name: "AminGram-apk"
+    paths:
+      - upstream/TMessagesProj_App/build/outputs/apk/afat/release/*.apk
+    expire_in: 90 days
+    when: on_success
+
+# Mirror: "Publish GitHub Release" (softprops/action-gh-release)
+# Tag scheme kept identical: v13.0.2-amingram.<n>, with CI_PIPELINE_IID as
+# the run-number equivalent. Requires the build job's package upload.
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  script:
+    - echo "Creating release v13.0.2-amingram.${CI_PIPELINE_IID}"
+  release:
+    tag_name: "v13.0.2-amingram.$CI_PIPELINE_IID"
+    name: "AminGram $CI_PIPELINE_IID"
+    description: |
+      Automated AminGram build (Telegram 13.0.2 overlay, upstream f32ffee).
+      Signed with the AminGram keystore. Pipeline: $CI_PIPELINE_URL
+    assets:
+      links:
+        - name: "AminGram.apk"
+          url: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/amingram/13.0.2-amingram.$CI_PIPELINE_IID/AminGram.apk"
+        - name: "Build job artifacts"
+          url: "$CI_PROJECT_URL/-/pipelines/$CI_PIPELINE_ID"
