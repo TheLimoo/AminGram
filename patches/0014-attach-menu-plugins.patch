@@ -1,0 +1,68 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java
+index 8a33d8a..bcb08ae 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java
+@@ -2779,6 +2779,18 @@ public class ChatAttachAlert extends BottomSheet implements NotificationCenter.N
+             if (view instanceof AttachButton) {
+                 final Activity activity = lastFragment.getParentActivity();
+                 int num = view.getTag() instanceof Integer ? (Integer) view.getTag() : -1;
++                if (num <= -1000) {
++                    int aminIndex = -1000 - num;
++                    if (buttonsAdapter != null && buttonsAdapter.aminMenuPlugins != null
++                            && aminIndex >= 0 && aminIndex < buttonsAdapter.aminMenuPlugins.size()) {
++                        String aminPluginId = buttonsAdapter.aminMenuPlugins.get(aminIndex)[0];
++                        long aminChatId = baseFragment instanceof ChatActivity
++                                ? ((ChatActivity) baseFragment).getDialogId() : 0;
++                        org.telegram.messenger.amin.AminHooks.onPluginMenuAction(aminPluginId, aminChatId);
++                    }
++                    dismiss();
++                    return;
++                }
+                 if (num == 1) {
+                     if (!photosEnabled && !videosEnabled && checkCanRemoveRestrictionsByBoosts()) {
+                         return;
+@@ -6588,6 +6600,10 @@ public class ChatAttachAlert extends BottomSheet implements NotificationCenter.N
+         private int attachBotsEndRow;
+         private List<TLRPC.TL_attachMenuBot> attachMenuBots = new ArrayList<>();
+ 
++        private int aminPluginStartRow;
++        private int aminPluginEndRow;
++        private List<String[]> aminMenuPlugins = new ArrayList<>();
++
+         private int documentButton;
+         private int moneyButton;
+         private int musicButton;
+@@ -6679,6 +6695,11 @@ public class ChatAttachAlert extends BottomSheet implements NotificationCenter.N
+                         attachButton.setTextAndIcon(LAYOUT_TYPE_RICH, getString(R.string.AttachArticle), GlassTabView.TabAnimation.ARTICLE);
+                         attachButton.setTag(LAYOUT_TYPE_RICH);
+                         needPremium = !MessagesController.getInstance(currentAccount).storyEntitiesAllowed();
++                    } else if (position >= aminPluginStartRow && position < aminPluginEndRow && aminMenuPlugins != null) {
++                        String[] aminPlugin = aminMenuPlugins.get(position - aminPluginStartRow);
++                        int aminTag = -1000 - (position - aminPluginStartRow);
++                        attachButton.setTextAndIcon(aminTag, aminPlugin[1], GlassTabView.TabAnimation.ARTICLE);
++                        attachButton.setTag(aminTag);
+                     }
+                     attachButton.glassTabView.setCounter(err ? "!" : null, err, false);
+                     attachButton.glassTabView.setPremiumBadge(needPremium && !UserConfig.getInstance(currentAccount).isPremium());
+@@ -6738,6 +6759,8 @@ public class ChatAttachAlert extends BottomSheet implements NotificationCenter.N
+             emojiButton = -1;
+             attachBotsStartRow = -1;
+             attachBotsEndRow = -1;
++            aminPluginStartRow = -1;
++            aminPluginEndRow = -1;
+             moneyButton = -1;
+ 
+             if (isPollAttach) {
+@@ -6829,6 +6852,12 @@ public class ChatAttachAlert extends BottomSheet implements NotificationCenter.N
+                         attachBotsEndRow = buttonsCount;
+                     }
+                 }
++                aminPluginStartRow = buttonsCount;
++                aminMenuPlugins = org.telegram.messenger.amin.AminHooks.attachMenuPlugins();
++                if (aminMenuPlugins != null) {
++                    buttonsCount += aminMenuPlugins.size();
++                }
++                aminPluginEndRow = buttonsCount;
+             }
+             super.notifyDataSetChanged();
+         }

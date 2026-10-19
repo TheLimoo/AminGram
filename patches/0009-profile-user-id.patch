@@ -1,0 +1,77 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+index f0a3ad0..895fc4d 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+@@ -615,6 +615,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+     private int channelDividerRow;
+     private int numberSectionRow;
+     private int numberRow;
++    private int aminIdRow;
+     public int birthdayRow;
+     private int setUsernameRow;
+     private int bioRow;
+@@ -7407,6 +7408,10 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+             return true;
+         } else if (position == noteRow) {
+ 
++        } else if (position == aminIdRow) {
++            AndroidUtilities.addToClipboard(userId != 0 ? String.valueOf(userId) : String.valueOf(chatId));
++            BulletinFactory.of(this).createCopyBulletin(LocaleController.getString(R.string.TextCopied)).show();
++            return true;
+         } else if (position == phoneRow || position == numberRow) {
+             if (editRow(view, position)) return true;
+ 
+@@ -10520,6 +10525,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+         infoHeaderRowEmpty = -1;
+         infoEndRowEmpty = -1;
+         phoneRow = -1;
++        aminIdRow = -1;
+         noteRow = -1;
+         userInfoRow = -1;
+         locationRow = -1;
+@@ -10626,6 +10632,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                 numberRow = rowCount++;
+                 setUsernameRow = rowCount++;
+                 bioRow = rowCount++;
++                aminIdRow = rowCount++;
+ 
+                 settingsSectionRow = rowCount++;
+ 
+@@ -10737,6 +10744,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                 if (isBot && user != null && user.bot_has_main_app) {
+                     botAppRow = rowCount++;
+                 }
++                aminIdRow = rowCount++;
+                 infoEndRow = rowCount - 1;
+                 infoSectionRow = rowCount++;
+ 
+@@ -10883,6 +10891,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                     emptyRow = rowCount++;
+                 }
+             }
++            aminIdRow = rowCount++;
+             if (actionsView == null) {
+                 if (infoHeaderRow != -1) {
+                     notificationsDividerRow = rowCount++;
+@@ -13506,6 +13515,12 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                         }
+                         isFragmentPhoneNumber = phoneNumber != null && phoneNumber.matches("888\\d{8}");
+                         detailCell.setTextAndValue(text, LocaleController.getString(isFragmentPhoneNumber ? R.string.AnonymousNumber : R.string.PhoneMobile), false);
++                    } else if (position == aminIdRow) {
++                        if (userId != 0) {
++                            detailCell.setTextAndValue(String.valueOf(userId), "ID", false);
++                        } else {
++                            detailCell.setTextAndValue(String.valueOf(chatId), "Chat ID", false);
++                        }
+                     } else if (position == noteRow) {
+                         final TLRPC.UserFull userInfo = getMessagesController().getUserFull(userId);
+                         if (userInfo == null) return;
+@@ -14321,7 +14336,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+             if (position == infoHeaderRow || position == membersHeaderRow || position == settingsSectionRow2 ||
+                     position == numberSectionRow || position == helpHeaderRow || position == debugHeaderRow || position == botPermissionsHeader) {
+                 return VIEW_TYPE_HEADER;
+-            } else if (position == phoneRow || position == locationRow || position == numberRow || position == birthdayRow) {
++            } else if (position == phoneRow || position == locationRow || position == numberRow || position == birthdayRow || position == aminIdRow) {
+                 return VIEW_TYPE_TEXT_DETAIL;
+             } else if (position == usernameRow || position == setUsernameRow) {
+                 return VIEW_TYPE_TEXT_DETAIL_MULTILINE;

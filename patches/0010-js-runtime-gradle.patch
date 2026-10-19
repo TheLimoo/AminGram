@@ -1,0 +1,12 @@
+diff --git a/TMessagesProj/build.gradle b/TMessagesProj/build.gradle
+index 70c567d..25f6831 100644
+--- a/TMessagesProj/build.gradle
++++ b/TMessagesProj/build.gradle
+@@ -59,6 +59,7 @@ dependencies {
+     implementation 'androidx.car.app:app:1.4.0'
+     implementation 'androidx.car.app:app-projected:1.4.0'
+     implementation 'org.nanohttpd:nanohttpd:2.3.1'
++    implementation 'org.mozilla:rhino:1.7.15'
+ 
+     compileOnly 'org.checkerframework:checker-qual:2.5.2'
+     compileOnly 'org.checkerframework:checker-compat-qual:2.5.0'

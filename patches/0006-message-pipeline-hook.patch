@@ -1,20 +1,20 @@
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
-index ef6e87e..7013feb 100644
+index 93bc81c..faaef9e 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
-@@ -18420,6 +18420,7 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -18414,6 +18414,7 @@ public class MessagesController extends BaseController implements NotificationCe
      }
  
      public boolean processUpdateArray(ArrayList<TLRPC.Update> updates, ArrayList<TLRPC.User> usersArr, ArrayList<TLRPC.Chat> chatsArr, boolean fromGetDifference, int date) {
-+        org.telegram.messenger.amin.AminHooks.onRawUpdates(updates);
++        org.telegram.messenger.amin.AminHooks.onRawUpdates(updates, currentAccount);
          if (updates.isEmpty()) {
              if (usersArr != null || chatsArr != null) {
                  AndroidUtilities.runOnUIThread(() -> {
-@@ -19779,6 +19780,7 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -19773,6 +19774,7 @@ public class MessagesController extends BaseController implements NotificationCe
          }
  
          if (pushMessages != null) {
-+            org.telegram.messenger.amin.AminHooks.onNewMessages(pushMessages);
++            org.telegram.messenger.amin.AminHooks.onNewMessages(pushMessages, currentAccount);
              ArrayList<MessageObject> pushMessagesFinal = pushMessages;
              getMessagesStorage().getStorageQueue().postRunnable(() -> AndroidUtilities.runOnUIThread(() -> getNotificationsController().processNewMessages(pushMessagesFinal, true, false, null)));
          }

@@ -118,6 +118,12 @@ build:
       git apply ../patches/0006-message-pipeline-hook.patch
       git apply ../patches/0007-icon-changer.patch
       git apply ../patches/0008-hide-stories.patch
+      git apply ../patches/0009-profile-user-id.patch
+      git apply ../patches/0010-js-runtime-gradle.patch
+      git apply ../patches/0011-hidden-chats-dialogs-filter.patch
+      git apply ../patches/0012-ghost-stories.patch
+      git apply ../patches/0013-outgoing-command-hook.patch
+      git apply ../patches/0014-attach-menu-plugins.patch
       cd ..
     # --- Mirror: "Register fork package in google-services.json" ----------
     - |

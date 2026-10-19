@@ -1,0 +1,14 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Stories/StoriesController.java b/TMessagesProj/src/main/java/org/telegram/ui/Stories/StoriesController.java
+index 12dc19d..3bc42df 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Stories/StoriesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Stories/StoriesController.java
+@@ -1286,6 +1286,9 @@ public class StoriesController {
+         if (storyItem.justUploaded) {
+             storyItem.justUploaded = false;
+         }
++        if (org.telegram.messenger.amin.AminHooks.ghostStoriesEnabled()) {
++            return false;
++        }
+         int currentReadId = dialogIdToMaxReadId.get(dialogId);
+         int newReadId = Math.max(userStories.max_read_id, Math.max(currentReadId, storyItem.id));
+         NotificationsController.getInstance(currentAccount).processReadStories(dialogId, newReadId);
