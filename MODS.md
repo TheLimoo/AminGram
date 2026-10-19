@@ -18,6 +18,20 @@ Upstream files may only be touched with minimal hook calls into that package.
 Every upstream file touched is listed here — this list is the rebase contract.
 Target: keep this list under 30 files, each with 1–3 line hooks.
 
+## Overlay file overrides (whole-file copies over upstream, v1.1)
+- `TMessagesProj/src/main/res/mipmap-anydpi-v26/ic_launcher.xml` +
+  `ic_launcher_round.xml` — adaptive icons now point at the AminGram
+  assets below (foreground/monochrome), backgrounds unchanged in name.
+- `TMessagesProj/src/main/res/drawable/icon_background.xml` +
+  `icon_background_round.xml` — replaced the layer-list chain with a
+  solid deep-navy (#01030F) shape.
+- New files: `drawable/amingram_foreground.xml` (blue shield #0275F2 +
+  navy A cut-out + #03A9FD crossbar, 108×108 vector) and
+  `drawable/amingram_mono.xml` (single-color silhouette for themed
+  icons). Legacy pre-API-26 mipmap PNGs still show the Telegram plane —
+  known cosmetic limit; the alternate in-app icons (icon_2…6) are
+  untouched.
+
 ## Upstream files touched
 - `org/telegram/ui/SettingsActivity.java` — 3 micro-hooks (base 13.0.2):
   import of `amin.ui.AminPluginsActivity`; an "AminGram" header + Plugins row
