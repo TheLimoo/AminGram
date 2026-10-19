@@ -55,7 +55,9 @@ public class AminPluginsActivity extends BaseFragment {
     private int rowRadarHits() { return modules.size() + 6; }
     private int rowSaverLog() { return modules.size() + 7; }
     private int rowDeleted() { return modules.size() + 8; }
-    private int rowCount() { return modules.size() + 9; }
+    private int rowEditHistory() { return modules.size() + 9; }
+    private int rowAppIcon() { return modules.size() + 10; }
+    private int rowCount() { return modules.size() + 11; }
 
     @Override
     public View createView(Context context) {
@@ -131,7 +133,48 @@ public class AminPluginsActivity extends BaseFragment {
             presentFragment(new AminStoreListActivity("Deleted messages",
                     org.telegram.messenger.amin.core.DeletedStore.PREFS,
                     org.telegram.messenger.amin.core.DeletedStore.DELETED_KEY));
+        } else if (position == rowEditHistory()) {
+            presentFragment(new AminStoreListActivity("Edit history",
+                    org.telegram.messenger.amin.core.DeletedStore.PREFS,
+                    org.telegram.messenger.amin.core.DeletedStore.EDIT_KEY));
+        } else if (position == rowAppIcon()) {
+            pickAppIcon(context);
         }
+    }
+
+    /** App Icon changer (v1.2): lists every LauncherIconController entry —
+     *  upstream's six icons plus the AminGram customs added by patch 0007 —
+     *  and switches the launcher icon via upstream's own controller. */
+    private void pickAppIcon(Context context) {
+        org.telegram.ui.LauncherIconController.LauncherIcon[] icons =
+                org.telegram.ui.LauncherIconController.LauncherIcon.values();
+        CharSequence[] items = new CharSequence[icons.length];
+        for (int i = 0; i < icons.length; i++) {
+            String title = org.telegram.messenger.LocaleController.getString(icons[i].title);
+            boolean active = org.telegram.ui.LauncherIconController.isEnabled(icons[i]);
+            items[i] = active ? title + "  ✓" : title;
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle("App Icon");
+        builder.setItems(items, (dialog, which) -> {
+            org.telegram.ui.LauncherIconController.setIcon(icons[which]);
+            bulletin(R.raw.contact_check, "App icon changed");
+            if (adapter != null) {
+                adapter.notifyDataSetChanged();
+            }
+        });
+        builder.setNegativeButton("Cancel", null);
+        showDialog(builder.create());
+    }
+
+    private static String currentIconTitle(Context context) {
+        for (org.telegram.ui.LauncherIconController.LauncherIcon icon
+                : org.telegram.ui.LauncherIconController.LauncherIcon.values()) {
+            if (org.telegram.ui.LauncherIconController.isEnabled(icon)) {
+                return org.telegram.messenger.LocaleController.getString(icon.title);
+            }
+        }
+        return "Default";
     }
 
     private void bulletin(int icon, String text) {
@@ -290,6 +333,13 @@ public class AminPluginsActivity extends BaseFragment {
                         org.telegram.messenger.amin.core.DeletedStore.PREFS,
                         org.telegram.messenger.amin.core.DeletedStore.DELETED_KEY).size();
                 cell.setTextAndValue("Deleted messages", String.valueOf(count), !last);
+            } else if (position == rowEditHistory()) {
+                int count = VaultStore.getAll(context,
+                        org.telegram.messenger.amin.core.DeletedStore.PREFS,
+                        org.telegram.messenger.amin.core.DeletedStore.EDIT_KEY).size();
+                cell.setTextAndValue("Edit history", String.valueOf(count), !last);
+            } else if (position == rowAppIcon()) {
+                cell.setTextAndValue("App Icon", currentIconTitle(context), !last);
             }
         }
     }

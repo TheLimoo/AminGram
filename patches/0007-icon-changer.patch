@@ -1,0 +1,71 @@
+diff --git a/TMessagesProj/src/main/AndroidManifest.xml b/TMessagesProj/src/main/AndroidManifest.xml
+index 63c819b..999f104 100644
+--- a/TMessagesProj/src/main/AndroidManifest.xml
++++ b/TMessagesProj/src/main/AndroidManifest.xml
+@@ -207,6 +207,38 @@
+             <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
+         </activity-alias>
+ 
++        <activity-alias
++            android:enabled="false"
++            android:name="org.telegram.messenger.AminBlueIcon"
++            android:targetActivity="org.telegram.ui.LaunchActivity"
++            android:icon="@mipmap/amingram_icon_blue_launcher"
++            android:roundIcon="@mipmap/amingram_icon_blue_launcher_round"
++            android:exported="true">
++
++            <intent-filter>
++                <action android:name="android.intent.action.MAIN" />
++                <category android:name="android.intent.category.LAUNCHER" />
++                <category android:name="android.intent.category.MULTIWINDOW_LAUNCHER" />
++            </intent-filter>
++            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
++        </activity-alias>
++
++        <activity-alias
++            android:enabled="false"
++            android:name="org.telegram.messenger.AminMonoIcon"
++            android:targetActivity="org.telegram.ui.LaunchActivity"
++            android:icon="@mipmap/amingram_icon_mono_launcher"
++            android:roundIcon="@mipmap/amingram_icon_mono_launcher_round"
++            android:exported="true">
++
++            <intent-filter>
++                <action android:name="android.intent.action.MAIN" />
++                <category android:name="android.intent.category.LAUNCHER" />
++                <category android:name="android.intent.category.MULTIWINDOW_LAUNCHER" />
++            </intent-filter>
++            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
++        </activity-alias>
++
+         <activity
+             android:name="org.telegram.ui.LaunchActivity"
+             android:theme="@style/Theme.TMessages.Start"
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/LauncherIconController.java b/TMessagesProj/src/main/java/org/telegram/ui/LauncherIconController.java
+index 49bf821..83f942f 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/LauncherIconController.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/LauncherIconController.java
+@@ -39,7 +39,9 @@ public class LauncherIconController {
+         AQUA("AquaIcon", R.drawable.icon_4_background_sa, R.mipmap.icon_foreground_sa, R.string.AppIconAqua),
+         PREMIUM("PremiumIcon", R.drawable.icon_3_background_sa, R.mipmap.icon_3_foreground_sa, R.string.AppIconPremium, true),
+         TURBO("TurboIcon", R.drawable.icon_5_background_sa, R.mipmap.icon_5_foreground_sa, R.string.AppIconTurbo, true),
+-        NOX("NoxIcon", R.mipmap.icon_2_background_sa, R.mipmap.icon_foreground_sa, R.string.AppIconNox, true);
++        NOX("NoxIcon", R.mipmap.icon_2_background_sa, R.mipmap.icon_foreground_sa, R.string.AppIconNox, true),
++        AMIN_BLUE("AminBlueIcon", R.drawable.amingram_icon_blue_background, R.drawable.amingram_foreground_onblue, R.string.AppIconAminBlue),
++        AMIN_MONO("AminMonoIcon", R.drawable.amingram_icon_mono_background, R.drawable.amingram_foreground_light, R.string.AppIconAminMono);
+ 
+         public final String key;
+         public final int background;
+diff --git a/TMessagesProj/src/main/res/values/strings.xml b/TMessagesProj/src/main/res/values/strings.xml
+index dbe613d..cd0e8c5 100644
+--- a/TMessagesProj/src/main/res/values/strings.xml
++++ b/TMessagesProj/src/main/res/values/strings.xml
+@@ -5802,6 +5802,8 @@
+     <string name="AppIconPremium">Premium</string>
+     <string name="AppIconTurbo">Turbo</string>
+     <string name="AppIconNox">Nox</string>
++    <string name="AppIconAminBlue">Amin Blue</string>
++    <string name="AppIconAminMono">Amin Mono</string>
+     <string name="AppIconChangedTo">App icon has been changed to %1$s</string>
+     <string name="FileTooLarge">File Too Large</string>
+     <string name="PremiumPreviewAppIcon">Premium App Icon</string>

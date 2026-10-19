@@ -1,8 +1,16 @@
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
-index f91925b..275b644 100644
+index f91925b..37091ad 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
-@@ -19779,6 +19779,7 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -18420,6 +18420,7 @@ public class MessagesController extends BaseController implements NotificationCe
+     }
+ 
+     public boolean processUpdateArray(ArrayList<TLRPC.Update> updates, ArrayList<TLRPC.User> usersArr, ArrayList<TLRPC.Chat> chatsArr, boolean fromGetDifference, int date) {
++        org.telegram.messenger.amin.AminHooks.onRawUpdates(updates);
+         if (updates.isEmpty()) {
+             if (usersArr != null || chatsArr != null) {
+                 AndroidUtilities.runOnUIThread(() -> {
+@@ -19779,6 +19780,7 @@ public class MessagesController extends BaseController implements NotificationCe
          }
  
          if (pushMessages != null) {

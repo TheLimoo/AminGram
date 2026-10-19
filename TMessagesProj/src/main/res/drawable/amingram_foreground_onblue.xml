@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AminGram mark for the blue background: white shield, blue A cut-out. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,19 C63.5,25.8 73.5,28.4 85.5,29 C86,55.5 79.5,77.5 54,91 C28.5,77.5 22,55.5 22.5,29 C34.5,28.4 44.5,25.8 54,19 Z" />
+    <path
+        android:fillColor="#0275F2"
+        android:pathData="M54,37 L71.5,73 L62.8,73 L59.2,64.5 L48.8,64.5 L45.2,73 L36.5,73 Z M54,49.5 L57.6,60 L50.4,60 Z"
+        android:fillType="evenOdd" />
+    <path
+        android:fillColor="#BFE3FF"
+        android:pathData="M48.8,64.5 L59.2,64.5 L60.6,68 L47.4,68 Z" />
+</vector>

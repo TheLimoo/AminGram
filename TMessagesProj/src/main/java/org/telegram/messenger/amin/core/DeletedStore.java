@@ -30,6 +30,8 @@ public final class DeletedStore {
     public static final String PREFS = "amingram_antidelete";
     public static final String SNAP_KEY = "snapshots";
     public static final String DELETED_KEY = "deleted";
+    public static final String EDIT_KEY = "edits";
+    private static final int EDIT_CAP = 300;
     private static final int SNAP_CAP = 1000;
     private static final int DELETED_CAP = 500;
     private static final int TEXT_CAP = 500;
@@ -95,6 +97,82 @@ public final class DeletedStore {
         if (snapsChanged) {
             VaultStore.putAll(context, PREFS, SNAP_KEY, snaps);
         }
+    }
+
+    // ---- Edit History (v1.2): pre-edit snapshots double as the "before"
+    // text. Fed by AminHooks.onRawUpdates with the raw update list BEFORE
+    // upstream applies the edits; records land in PREFS/EDIT_KEY and are
+    // shown by the hub's "Edit history" viewer.
+
+    public static void recordEdits(Context context, ArrayList<org.telegram.tgnet.TLRPC.Update> updates) {
+        if (context == null || updates == null) {
+            return;
+        }
+        for (org.telegram.tgnet.TLRPC.Update update : updates) {
+            org.telegram.tgnet.TLRPC.Message msg = null;
+            if (update instanceof org.telegram.tgnet.tl.TL_update.TL_updateEditMessage) {
+                msg = ((org.telegram.tgnet.tl.TL_update.TL_updateEditMessage) update).message;
+            } else if (update instanceof org.telegram.tgnet.tl.TL_update.TL_updateEditChannelMessage) {
+                msg = ((org.telegram.tgnet.tl.TL_update.TL_updateEditChannelMessage) update).message;
+            }
+            if (msg == null || msg.message == null || msg.message.isEmpty()) {
+                continue;
+            }
+            long dialogId = 0;
+            if (msg.peer_id != null) {
+                if (msg.peer_id.channel_id != 0) {
+                    dialogId = -msg.peer_id.channel_id;
+                } else if (msg.peer_id.chat_id != 0) {
+                    dialogId = -msg.peer_id.chat_id;
+                } else if (msg.peer_id.user_id != 0) {
+                    dialogId = msg.peer_id.user_id;
+                }
+            }
+            if (dialogId == 0) {
+                continue;
+            }
+            String oldText = findSnapshotText(context, dialogId, msg.id);
+            String newText = flatten(msg.message);
+            if (oldText == null || oldText.equals(newText)) {
+                continue;
+            }
+            String record = dialogId + "|" + msg.id + "|" + msg.date + "|"
+                    + cap(oldText, 220) + " -> " + cap(newText, 220);
+            VaultStore.addUnique(context, PREFS, EDIT_KEY, record, EDIT_CAP);
+            updateSnapshotText(context, dialogId, msg.id, msg.date, newText);
+        }
+    }
+
+    public static String findSnapshotText(Context context, long dialogId, int msgId) {
+        List<String> snaps = VaultStore.getAll(context, PREFS, SNAP_KEY);
+        String prefix = dialogId + "|" + msgId + "|";
+        for (String s : snaps) {
+            if (s.startsWith(prefix)) {
+                String[] parts = s.split("\\|", 5);
+                return parts.length == 5 ? parts[4] : null;
+            }
+        }
+        return null;
+    }
+
+    private static void updateSnapshotText(Context context, long dialogId, int msgId, int date, String newText) {
+        List<String> snaps = VaultStore.getAll(context, PREFS, SNAP_KEY);
+        String prefix = dialogId + "|" + msgId + "|";
+        for (int i = 0; i < snaps.size(); i++) {
+            if (snaps.get(i).startsWith(prefix)) {
+                snaps.set(i, dialogId + "|" + msgId + "|" + date + "|text|" + cap(newText, TEXT_CAP));
+                VaultStore.putAll(context, PREFS, SNAP_KEY, snaps);
+                return;
+            }
+        }
+    }
+
+    private static String flatten(String text) {
+        return text.replace('\n', ' ').replace('|', '/');
+    }
+
+    private static String cap(String text, int max) {
+        return text.length() > max ? text.substring(0, max) : text;
     }
 
     private static String takeSnapshot(List<String> snaps, long dialogKey, int msgId) {

@@ -1,0 +1,22 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+index 0c5dc3f..2935d26 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+@@ -12850,7 +12850,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                 @Override
+                 public void onAnimationEnd(Animator animation) {
+                     storiesVisibilityAnimator = null;
+-                    hasStories = newVisibility;
++                    hasStories = newVisibility && !org.telegram.messenger.amin.AminHooks.hideStories();
+                     if (!hasStories && !hasOnlySlefStories) {
+                         dialogStoriesCell.setVisibility(View.GONE);
+                     }
+@@ -12876,7 +12876,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+             storiesVisibilityAnimator.start();
+         } else {
+             progressToShowStories = newVisibility ? 1f : 0;
+-            hasStories = newVisibility;
++            hasStories = newVisibility && !org.telegram.messenger.amin.AminHooks.hideStories();
+             dialogStoriesCell.setVisibility((hasStories || hasOnlySlefStories) && !isInPreviewMode() ? View.VISIBLE : View.GONE);
+             if (!newVisibility) {
+                 setScrollY(0);

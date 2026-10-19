@@ -47,6 +47,24 @@ public final class AminHooks {
         return moduleEnabled("free_translate");
     }
 
+    public static boolean hideStories() {
+        return moduleEnabled("hide_stories");
+    }
+
+    /** Edit History (v1.2): raw update list at the top of
+     *  MessagesController.processUpdateArray, BEFORE edits are applied.
+     *  Edit updates are matched against Anti-Delete snapshots to recover
+     *  the pre-edit text. Fully isolated like every other hook. */
+    public static void onRawUpdates(ArrayList<org.telegram.tgnet.TLRPC.Update> updates) {
+        try {
+            Context context = ApplicationLoader.applicationContext;
+            if (context != null && updates != null && moduleEnabled("edit_history")) {
+                DeletedStore.recordEdits(context, updates);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
     /** Anti-Delete v2: a server delete update is about to be applied.
      *  Moves matching pipeline snapshots into the persistent Deleted
      *  store so the content survives the delete (and restarts). */

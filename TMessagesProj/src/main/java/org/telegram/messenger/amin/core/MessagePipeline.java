@@ -75,8 +75,13 @@ public final class MessagePipeline {
         boolean vault = PluginRegistry.isEnabledById(context, "config_vault");
         boolean saver = PluginRegistry.isEnabledById(context, "auto_saver");
         boolean anti = PluginRegistry.isEnabledById(context, "anti_delete");
-        if (!radar && !vault && !saver && !anti) {
+        boolean hist = PluginRegistry.isEnabledById(context, "edit_history");
+        if (!radar && !vault && !saver && !anti && !hist) {
             return;
+        }
+        // Snapshots feed both Anti-Delete and Edit History (pre-edit text).
+        if (hist) {
+            anti = true;
         }
         List<String> keywords = radar ? loadKeywords(context) : null;
         if (radar && (keywords == null || keywords.isEmpty())) {

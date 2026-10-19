@@ -30,6 +30,8 @@ jobs:
           git apply ../patches/0003-phase2-hooks.patch
           git apply ../patches/0004-videobg-rebrand.patch
           git apply ../patches/0006-message-pipeline-hook.patch
+          git apply ../patches/0007-icon-changer.patch
+          git apply ../patches/0008-hide-stories.patch
 
       - name: Register fork package in google-services.json
         run: |

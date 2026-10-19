@@ -5,6 +5,8 @@ import android.content.SharedPreferences;
 
 import org.telegram.messenger.amin.modules.AntiDeleteModule;
 import org.telegram.messenger.amin.modules.AutoSaverModule;
+import org.telegram.messenger.amin.modules.EditHistoryModule;
+import org.telegram.messenger.amin.modules.HideStoriesModule;
 import org.telegram.messenger.amin.modules.ConfigVaultModule;
 import org.telegram.messenger.amin.modules.FreeTranslateModule;
 import org.telegram.messenger.amin.modules.GhostModeModule;
@@ -42,6 +44,8 @@ public final class PluginRegistry {
         MODULES.add(new KeywordRadarModule());
         MODULES.add(new ConfigVaultModule());
         MODULES.add(new AutoSaverModule());
+        MODULES.add(new EditHistoryModule());
+        MODULES.add(new HideStoriesModule());
     }
 
     public static List<ModModule> modules() {
