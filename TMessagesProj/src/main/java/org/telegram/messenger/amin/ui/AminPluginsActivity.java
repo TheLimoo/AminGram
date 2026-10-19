@@ -3,13 +3,22 @@ package org.telegram.messenger.amin.ui;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffColorFilter;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.text.InputType;
+import android.text.TextUtils;
+import android.webkit.MimeTypeMap;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 
+import androidx.core.graphics.ColorUtils;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
@@ -33,24 +42,25 @@ import org.telegram.ui.ActionBar.ActionBar;
 import org.telegram.ui.ActionBar.AlertDialog;
 import org.telegram.ui.ActionBar.BaseFragment;
 import org.telegram.ui.ActionBar.Theme;
-import org.telegram.ui.Cells.HeaderCell;
 import org.telegram.ui.Cells.TextCell;
-import org.telegram.ui.Cells.TextCheckCell;
 import org.telegram.ui.Cells.TextInfoPrivacyCell;
 import org.telegram.ui.Components.BulletinFactory;
 import org.telegram.ui.Components.EditTextBoldCursor;
 import org.telegram.ui.Components.RecyclerListView;
+import org.telegram.ui.Components.Switch;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
- * AminGram Plugins hub (v1.3 redesign). Sectioned, settings-style:
+ * AminGram Plugins hub. Sectioned, settings-style:
  *
  * - Privacy / Media / Tools: the built-in modules from PluginRegistry,
  *   each with a switch, a one-line description and a live STATUS line
@@ -63,8 +73,14 @@ import java.util.List;
  *   its toggle; tapping a plugin's description opens its page
  *   (settings generated from its SETTINGS schema, log, delete).
  *
- * Everything here is upstream cells and theme colors — no custom
- * design system.
+ * v1.3.2 presentation: the flat v1.3 list (upstream cells wall to
+ * wall, multi-line gray descriptions with the status glued on) was
+ * replaced by a card design — modules/plugins render as rounded
+ * white cards on the gray page: icon-chip header + switch, ONE
+ * truncated subtitle line, a colored status dot line, and the
+ * module's actions as hairline-separated rows inside the card.
+ * Presentation only: row ids, actions, data and flows are exactly
+ * the v1.3 ones (see assignSegments() and the custom views below).
  */
 public class AminPluginsActivity extends BaseFragment {
 
@@ -81,6 +97,25 @@ public class AminPluginsActivity extends BaseFragment {
     private static final int KIND_PLUGIN_INFO = 5;
     private static final int KIND_FOOTER = 6;
 
+    // v1.3.2 card presentation: consecutive rows that belong together
+    // (a module header + its subtitle/status + its action rows, a
+    // plugin header + its info, a bundled row + its tagline, the two
+    // add-plugin rows) are rendered as segments of ONE rounded card
+    // floating on the gray page background. Segments are assigned in
+    // assignSegments() after the row list is built; all ids, actions
+    // and click behaviour are unchanged from the flat v1.3 list.
+    private static final int SEG_NONE = 0;
+    private static final int SEG_ONLY = 1;
+    private static final int SEG_FIRST = 2;
+    private static final int SEG_MID = 3;
+    private static final int SEG_LAST = 4;
+
+    // Status-dot tones for InfoStatusView.
+    private static final int TONE_NONE = 0;
+    private static final int TONE_ACTIVE = 1;
+    private static final int TONE_ATTENTION = 2;
+    private static final int TONE_MUTED = 3;
+
     private static final class Row {
         int kind;
         String title;
@@ -91,6 +126,12 @@ public class AminPluginsActivity extends BaseFragment {
         BundledPlugins.Bundled bundled;
         SendWhenOnlineStore.Entry swoEntry;
         long hiddenId;
+        // v1.3.2 presentation-only fields:
+        int seg = SEG_NONE;
+        String statusText;
+        int statusTone = TONE_NONE;
+        boolean accent;
+        boolean multiline;
     }
 
     private RecyclerListView listView;
@@ -157,8 +198,53 @@ public class AminPluginsActivity extends BaseFragment {
                 + "work, no polling. If Android force-stops the app, queued actions "
                 + "(like Send When Online) fire on the next launch.";
         rows.add(footer);
+        assignSegments();
         if (adapter != null) {
             adapter.notifyDataSetChanged();
+        }
+    }
+
+    /** Groups consecutive rows into card segments. A group starts at
+     *  a module header, a plugin header, a "bundled" row or the
+     *  first add-plugin row, and continues through the info/action
+     *  rows that belong to it. Headers, the footer and the standalone
+     *  "no plugins yet" note stay uncarded. */
+    private void assignSegments() {
+        for (Row row : rows) {
+            row.seg = SEG_NONE;
+        }
+        int start = -1;
+        for (int i = 0; i <= rows.size(); i++) {
+            boolean boundary = i == rows.size() || startsCard(rows.get(i))
+                    || rows.get(i).kind == KIND_HEADER || rows.get(i).kind == KIND_FOOTER
+                    || (rows.get(i).kind == KIND_INFO && "note".equals(rows.get(i).action));
+            if (boundary && start >= 0) {
+                if (start == i - 1) {
+                    rows.get(start).seg = SEG_ONLY;
+                } else {
+                    rows.get(start).seg = SEG_FIRST;
+                    rows.get(i - 1).seg = SEG_LAST;
+                    for (int j = start + 1; j < i - 1; j++) {
+                        rows.get(j).seg = SEG_MID;
+                    }
+                }
+                start = -1;
+            }
+            if (i < rows.size() && startsCard(rows.get(i))) {
+                start = i;
+            }
+        }
+    }
+
+    private static boolean startsCard(Row row) {
+        switch (row.kind) {
+            case KIND_MODULE:
+            case KIND_PLUGIN_TOGGLE:
+                return true;
+            case KIND_ACTION:
+                return "bundled".equals(row.action) || "add_plugin_file".equals(row.action);
+            default:
+                return false;
         }
     }
 
@@ -180,10 +266,23 @@ public class AminPluginsActivity extends BaseFragment {
                 status = module.status(context);
             } catch (Throwable ignored) {
             }
+            if (status == null) {
+                status = "";
+            }
             Row info = new Row();
             info.kind = KIND_INFO;
-            info.title = module.description()
-                    + (status == null || status.isEmpty() ? "" : "\n" + status);
+            info.title = module.description();
+            boolean enabled = PluginRegistry.isEnabled(context, module);
+            if (!enabled) {
+                info.statusText = "Off";
+                info.statusTone = TONE_MUTED;
+            } else if (status.startsWith("Needs")) {
+                info.statusText = status;
+                info.statusTone = TONE_ATTENTION;
+            } else {
+                info.statusText = status.isEmpty() ? "Active" : status;
+                info.statusTone = TONE_ACTIVE;
+            }
             rows.add(info);
             addModuleActions(context, module);
         }
@@ -290,8 +389,10 @@ public class AminPluginsActivity extends BaseFragment {
         header.kind = KIND_HEADER;
         header.title = "Your Plugins";
         rows.add(header);
-        action("add_plugin_file", "Add plugin from file…", ".js");
-        action("add_plugin_paste", "Paste plugin code…", null);
+        Row addFile = action("add_plugin_file", "Add plugin from file…", ".js");
+        addFile.accent = true;
+        Row addPaste = action("add_plugin_paste", "Paste plugin code…", null);
+        addPaste.accent = true;
         for (BundledPlugins.Bundled bundled : BundledPlugins.all()) {
             Row row = new Row();
             row.kind = KIND_ACTION;
@@ -314,12 +415,16 @@ public class AminPluginsActivity extends BaseFragment {
             Row info = new Row();
             info.kind = KIND_PLUGIN_INFO;
             info.plugin = plugin;
-            info.title = plugin.description + "\nCapabilities: " + plugin.capabilitiesText();
+            info.title = plugin.description;
+            info.statusText = "Capabilities: " + plugin.capabilitiesText();
+            info.statusTone = TONE_NONE;
             rows.add(info);
         }
         if (JsPluginManager.plugins(context).isEmpty()) {
             Row info = new Row();
             info.kind = KIND_INFO;
+            info.multiline = true;
+            info.action = "note";
             info.title = "No plugins installed yet. Plugins are single JavaScript files — "
                     + "the full guide is PLUGIN-MASTER-PROMPT.md in the AminGram repo (docs/).";
             rows.add(info);
@@ -648,7 +753,8 @@ public class AminPluginsActivity extends BaseFragment {
     private void pickVideo() {
         try {
             Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
-            intent.setType("video/*");
+            intent.setType("*/*");
+            intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"video/*", "image/gif"});
             intent.addCategory(Intent.CATEGORY_OPENABLE);
             startActivityForResult(intent, REQUEST_VIDEO_BG);
         } catch (Exception e) {
@@ -703,10 +809,7 @@ public class AminPluginsActivity extends BaseFragment {
         Uri uri = data.getData();
         try {
             if (requestCode == REQUEST_VIDEO_BG) {
-                String path = AndroidUtilities.getPath(uri);
-                if (path == null || path.startsWith("content://")) {
-                    path = MediaController.copyFileToCache(uri, "mp4");
-                }
+                String path = copyVideoToPrivateStorage(context, uri);
                 if (path != null && new File(path).length() > 0) {
                     VideoBackgroundHelper.setVideoPath(context, path);
                     bulletin(R.raw.contact_check, "Video background set — reopen a chat");
@@ -756,6 +859,94 @@ public class AminPluginsActivity extends BaseFragment {
         }
     }
 
+    /**
+     * Copies a picked video/GIF into durable app-private storage
+     * (filesDir/amingram/videobg.&lt;ext&gt;) and returns its absolute
+     * path, or null on failure. v1.3.2 fix: the previous flow stored
+     * the picker's own path (AndroidUtilities.getPath) or a copy in
+     * Telegram's CACHE directory (MediaController.copyFileToCache) —
+     * cache files get purged, so after an app restart the stored path
+     * dangled, VideoBackgroundHelper validation failed and chats
+     * silently fell back to the static wallpaper. filesDir is never
+     * purged, so the pick now survives restarts. The copy goes
+     * through ContentResolver.openInputStream so content:// sources
+     * work without getPath; a previous pick with a different
+     * extension is removed so stale files don't accumulate.
+     */
+    private static String copyVideoToPrivateStorage(Context context, Uri uri) {
+        File out = null;
+        try {
+            String ext = videoExtension(context, uri);
+            File dir = new File(context.getFilesDir(), "amingram");
+            if (!dir.exists() && !dir.mkdirs()) {
+                return null;
+            }
+            out = new File(dir, "videobg." + ext);
+            InputStream in = context.getContentResolver().openInputStream(uri);
+            if (in == null) {
+                return null;
+            }
+            OutputStream os = new FileOutputStream(out);
+            byte[] buffer = new byte[8192];
+            int read;
+            long total = 0;
+            while ((read = in.read(buffer)) > 0) {
+                os.write(buffer, 0, read);
+                total += read;
+            }
+            os.close();
+            in.close();
+            if (total == 0) {
+                out.delete();
+                return null;
+            }
+            File[] files = dir.listFiles();
+            if (files != null) {
+                for (File f : files) {
+                    if (f.getName().startsWith("videobg.") && !f.equals(out)) {
+                        f.delete();
+                    }
+                }
+            }
+            return out.getAbsolutePath();
+        } catch (Exception e) {
+            FileLog.e(e);
+            if (out != null) {
+                out.delete();
+            }
+            return null;
+        }
+    }
+
+    /** Real extension of the picked file: from the resolved filesystem
+     *  path's suffix when there is one, else from the content type via
+     *  MimeTypeMap, else "mp4". (The old code hardcoded "mp4" for the
+     *  cache copy, so GIF picks never matched the helper's isGif() and
+     *  were fed to the video player.) */
+    private static String videoExtension(Context context, Uri uri) {
+        String path = AndroidUtilities.getPath(uri);
+        if (path != null) {
+            int dot = path.lastIndexOf('.');
+            if (dot > 0 && dot > path.lastIndexOf('/')) {
+                String ext = path.substring(dot + 1).toLowerCase(Locale.US);
+                if (ext.length() <= 5 && ext.matches("[a-z0-9]+")) {
+                    return ext;
+                }
+            }
+        }
+        try {
+            String type = context.getContentResolver().getType(uri);
+            if (type != null) {
+                String ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(type);
+                if (ext != null && !ext.isEmpty()) {
+                    return ext.toLowerCase(Locale.US);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return "mp4";
+    }
+
     private static String readTextFile(File file) {
         try {
             return readStream(new FileInputStream(file));
@@ -778,6 +969,279 @@ public class AminPluginsActivity extends BaseFragment {
         }
         in.close();
         return out.toString("UTF-8");
+    }
+
+    // ------------------------------------------------------------------
+    // Card presentation helpers (v1.3.2)
+    // ------------------------------------------------------------------
+
+    /** Background for one card segment: white (or the accent-tinted
+     *  fill for the add-plugin card), corners rounded only where the
+     *  segment touches the card's outer edge. */
+    private static GradientDrawable segmentDrawable(int seg, int fillColor) {
+        float r = AndroidUtilities.dp(16);
+        float[] radii;
+        switch (seg) {
+            case SEG_ONLY:
+                radii = new float[]{r, r, r, r, r, r, r, r};
+                break;
+            case SEG_FIRST:
+                radii = new float[]{r, r, r, r, 0, 0, 0, 0};
+                break;
+            case SEG_LAST:
+                radii = new float[]{0, 0, 0, 0, r, r, r, r};
+                break;
+            default:
+                radii = new float[]{0, 0, 0, 0, 0, 0, 0, 0};
+                break;
+        }
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setShape(GradientDrawable.RECTANGLE);
+        drawable.setColor(fillColor);
+        drawable.setCornerRadii(radii);
+        return drawable;
+    }
+
+    private static int cardFill() {
+        return Theme.getColor(Theme.key_windowBackgroundWhite);
+    }
+
+    private static int accentColor() {
+        return Theme.getColor(Theme.key_windowBackgroundWhiteBlueText);
+    }
+
+    /** Soft accent-tinted card fill (chips, the add-plugin card). */
+    private static int accentFill() {
+        return ColorUtils.blendARGB(cardFill(), accentColor(), 0.10f);
+    }
+
+    /** Chip glyph background: a slightly stronger tint than the card fill. */
+    private static int chipFill() {
+        return ColorUtils.blendARGB(cardFill(), accentColor(), 0.16f);
+    }
+
+    private static int toneColor(int tone) {
+        switch (tone) {
+            case TONE_ACTIVE:
+                return Theme.getColor(Theme.key_windowBackgroundWhiteGreenText);
+            case TONE_ATTENTION:
+                return Theme.getColor(Theme.key_text_RedRegular);
+            case TONE_MUTED:
+                return Theme.getColor(Theme.key_windowBackgroundWhiteGrayText);
+            default:
+                return Theme.getColor(Theme.key_windowBackgroundWhiteGrayText);
+        }
+    }
+
+    /** Verified 13.0.2 R.drawable glyphs for the module icon chips. */
+    private static int moduleIcon(String id) {
+        switch (id) {
+            case "ghost_mode":
+                return R.drawable.msg_mask;
+            case "ghost_stories":
+                return R.drawable.msg_filled_stories;
+            case "anti_delete":
+                return R.drawable.msg_delete;
+            case "edit_history":
+                return R.drawable.msg_edit;
+            case "hidden_chats":
+                return R.drawable.msg_mini_lock2;
+            case "hide_stories":
+                return R.drawable.msg_archive_stories;
+            case "local_premium":
+                return R.drawable.msg_gift_premium;
+            case "video_background":
+                return R.drawable.msg_background;
+            case "auto_saver":
+                return R.drawable.msg_download;
+            case "keyword_radar":
+                return R.drawable.msg_search;
+            case "free_translate":
+                return R.drawable.msg_translate;
+            case "send_when_online":
+                return R.drawable.msg_online;
+            default:
+                return 0;
+        }
+    }
+
+    /** Small uppercase gray section label (replaces the blue HeaderCell). */
+    private static class SectionLabelView extends TextView {
+        SectionLabelView(Context context) {
+            super(context);
+            setTextSize(13);
+            setTypeface(AndroidUtilities.getTypeface("fonts/rmedium.ttf"));
+            setLetterSpacing(0.08f);
+            setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText));
+            setPadding(AndroidUtilities.dp(28), AndroidUtilities.dp(22),
+                    AndroidUtilities.dp(16), AndroidUtilities.dp(2));
+        }
+
+        void setLabel(String title) {
+            setText(title == null ? "" : title.toUpperCase(Locale.US));
+        }
+    }
+
+    /** Card header: icon chip (tinted rounded square with a glyph, or
+     *  the module's initial letter when no glyph fits) + title + the
+     *  module/plugin switch. The switch is display-only — the row
+     *  click toggles, exactly like the old TextCheckCell rows. */
+    private static class CardHeaderView extends FrameLayout {
+        private final FrameLayout chip;
+        private final ImageView glyph;
+        private final TextView letter;
+        private final TextView titleView;
+        private final Switch switchView;
+
+        CardHeaderView(Context context) {
+            super(context);
+            setPadding(AndroidUtilities.dp(16), AndroidUtilities.dp(12),
+                    AndroidUtilities.dp(16), AndroidUtilities.dp(12));
+
+            chip = new FrameLayout(context);
+            addView(chip, new FrameLayout.LayoutParams(
+                    AndroidUtilities.dp(40), AndroidUtilities.dp(40),
+                    Gravity.LEFT | Gravity.CENTER_VERTICAL));
+
+            glyph = new ImageView(context);
+            glyph.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+            chip.addView(glyph, new FrameLayout.LayoutParams(
+                    AndroidUtilities.dp(22), AndroidUtilities.dp(22), Gravity.CENTER));
+
+            letter = new TextView(context);
+            letter.setTextSize(17);
+            letter.setTypeface(AndroidUtilities.getTypeface("fonts/rmedium.ttf"));
+            letter.setGravity(Gravity.CENTER);
+            chip.addView(letter, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+            titleView = new TextView(context);
+            titleView.setTextSize(16);
+            titleView.setTypeface(AndroidUtilities.getTypeface("fonts/rmedium.ttf"));
+            titleView.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText));
+            titleView.setSingleLine(true);
+            titleView.setEllipsize(TextUtils.TruncateAt.END);
+            FrameLayout.LayoutParams titleParams = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.LEFT | Gravity.CENTER_VERTICAL);
+            titleParams.leftMargin = AndroidUtilities.dp(40 + 12);
+            titleParams.rightMargin = AndroidUtilities.dp(52);
+            addView(titleView, titleParams);
+
+            switchView = new Switch(context);
+            switchView.setFocusable(false);
+            switchView.setClickable(false);
+            FrameLayout.LayoutParams switchParams = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.RIGHT | Gravity.CENTER_VERTICAL);
+            addView(switchView, switchParams);
+        }
+
+        void bind(String title, int iconRes, boolean checked, int seg) {
+            titleView.setText(title);
+            switchView.setChecked(checked, false);
+            GradientDrawable chipBg = new GradientDrawable();
+            chipBg.setShape(GradientDrawable.RECTANGLE);
+            chipBg.setColor(chipFill());
+            chipBg.setCornerRadius(AndroidUtilities.dp(12));
+            chip.setBackground(chipBg);
+            if (iconRes != 0) {
+                glyph.setImageResource(iconRes);
+                glyph.setColorFilter(new PorterDuffColorFilter(accentColor(), PorterDuff.Mode.SRC_IN));
+                glyph.setVisibility(VISIBLE);
+                letter.setVisibility(GONE);
+            } else {
+                glyph.setVisibility(GONE);
+                letter.setText(title == null || title.isEmpty() ? "?"
+                        : title.substring(0, 1).toUpperCase(Locale.US));
+                letter.setTextColor(accentColor());
+                letter.setVisibility(VISIBLE);
+            }
+            setBackground(segmentDrawable(seg, cardFill()));
+        }
+    }
+
+    /** The block under a card header: ONE truncated subtitle line and
+     *  a status line rendered as a colored dot + short text, visually
+     *  separate from the description (the v1.3 hub glued them into a
+     *  single gray paragraph). Also used for plugin info rows
+     *  (capabilities as a muted no-dot line) and the standalone note. */
+    private static class InfoStatusView extends LinearLayout {
+        private final TextView subtitle;
+        private final LinearLayout statusRow;
+        private final View dot;
+        private final TextView statusText;
+        private final View divider;
+
+        InfoStatusView(Context context) {
+            super(context);
+            setOrientation(VERTICAL);
+            setPadding(AndroidUtilities.dp(16), 0, AndroidUtilities.dp(16), 0);
+
+            subtitle = new TextView(context);
+            subtitle.setTextSize(13);
+            subtitle.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText));
+            subtitle.setLineSpacing(AndroidUtilities.dp(2), 1.0f);
+            addView(subtitle, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+            statusRow = new LinearLayout(context);
+            statusRow.setOrientation(HORIZONTAL);
+            statusRow.setGravity(Gravity.CENTER_VERTICAL);
+            LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            statusParams.topMargin = AndroidUtilities.dp(5);
+            addView(statusRow, statusParams);
+
+            dot = new View(context);
+            LinearLayout.LayoutParams dotParams = new LinearLayout.LayoutParams(
+                    AndroidUtilities.dp(7), AndroidUtilities.dp(7));
+            dotParams.rightMargin = AndroidUtilities.dp(6);
+            statusRow.addView(dot, dotParams);
+
+            statusText = new TextView(context);
+            statusText.setTextSize(13);
+            statusText.setSingleLine(true);
+            statusText.setEllipsize(TextUtils.TruncateAt.END);
+            statusRow.addView(statusText, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+            divider = new View(context);
+            divider.setBackgroundColor(Theme.getColor(Theme.key_divider));
+            LinearLayout.LayoutParams dividerParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 1);
+            dividerParams.topMargin = AndroidUtilities.dp(10);
+            addView(divider, dividerParams);
+        }
+
+        void bind(String subtitleText, boolean multiline, String status, int tone,
+                  int seg, boolean carded) {
+            subtitle.setText(subtitleText == null ? "" : subtitleText);
+            subtitle.setSingleLine(!multiline);
+            subtitle.setMaxLines(multiline ? Integer.MAX_VALUE : 1);
+            subtitle.setEllipsize(multiline ? null : TextUtils.TruncateAt.END);
+            if (status == null || status.isEmpty()) {
+                statusRow.setVisibility(GONE);
+            } else {
+                statusRow.setVisibility(VISIBLE);
+                int color = toneColor(tone);
+                statusText.setText(status);
+                statusText.setTextColor(color);
+                if (tone == TONE_NONE) {
+                    dot.setVisibility(GONE);
+                } else {
+                    GradientDrawable dotBg = new GradientDrawable();
+                    dotBg.setShape(GradientDrawable.OVAL);
+                    dotBg.setColor(color);
+                    dot.setBackground(dotBg);
+                    dot.setVisibility(VISIBLE);
+                }
+            }
+            divider.setVisibility(seg == SEG_MID ? VISIBLE : GONE);
+            setPadding(AndroidUtilities.dp(16), 0, AndroidUtilities.dp(16),
+                    seg == SEG_LAST || seg == SEG_ONLY ? AndroidUtilities.dp(12) : AndroidUtilities.dp(2));
+            setBackground(carded ? segmentDrawable(seg, cardFill()) : null);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -812,20 +1276,21 @@ public class AminPluginsActivity extends BaseFragment {
             Context context = parent.getContext();
             switch (viewType) {
                 case KIND_HEADER:
-                    view = new HeaderCell(context);
-                    break;
-                case KIND_INFO:
-                case KIND_FOOTER:
-                    view = new TextInfoPrivacyCell(context);
+                    view = new SectionLabelView(context);
                     break;
                 case KIND_MODULE:
                 case KIND_PLUGIN_TOGGLE:
-                    view = new TextCheckCell(context);
-                    view.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite));
+                    view = new CardHeaderView(context);
+                    break;
+                case KIND_INFO:
+                case KIND_PLUGIN_INFO:
+                    view = new InfoStatusView(context);
+                    break;
+                case KIND_FOOTER:
+                    view = new TextInfoPrivacyCell(context);
                     break;
                 default:
                     view = new TextCell(context);
-                    view.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite));
                     break;
             }
             view.setLayoutParams(new RecyclerView.LayoutParams(
@@ -837,34 +1302,51 @@ public class AminPluginsActivity extends BaseFragment {
         public void onBindViewHolder(RecyclerView.ViewHolder holder, int position) {
             Context context = holder.itemView.getContext();
             Row row = rows.get(position);
-            boolean last = position == rows.size() - 1
-                    || rows.get(position + 1).kind == KIND_HEADER;
+            // Card rows float on the gray page: 12dp side margins and
+            // a 10dp gap above the first segment of each card.
+            RecyclerView.LayoutParams lp =
+                    (RecyclerView.LayoutParams) holder.itemView.getLayoutParams();
+            boolean carded = row.seg != SEG_NONE;
+            lp.leftMargin = carded ? AndroidUtilities.dp(12) : 0;
+            lp.rightMargin = carded ? AndroidUtilities.dp(12) : 0;
+            lp.topMargin = row.seg == SEG_FIRST || row.seg == SEG_ONLY
+                    ? AndroidUtilities.dp(10) : 0;
+            holder.itemView.setLayoutParams(lp);
             switch (row.kind) {
                 case KIND_HEADER:
-                    ((HeaderCell) holder.itemView).setText(row.title);
+                    ((SectionLabelView) holder.itemView).setLabel(row.title);
                     break;
-                case KIND_INFO:
                 case KIND_FOOTER:
                     ((TextInfoPrivacyCell) holder.itemView).setText(row.title);
                     break;
                 case KIND_MODULE:
-                    ((TextCheckCell) holder.itemView).setTextAndCheck(row.module.title(),
-                            PluginRegistry.isEnabled(context, row.module), true);
+                    ((CardHeaderView) holder.itemView).bind(row.module.title(),
+                            moduleIcon(row.module.id()),
+                            PluginRegistry.isEnabled(context, row.module), row.seg);
                     break;
                 case KIND_PLUGIN_TOGGLE:
-                    ((TextCheckCell) holder.itemView).setTextAndCheck(row.plugin.name,
-                            row.plugin.enabled, true);
+                    ((CardHeaderView) holder.itemView).bind(row.plugin.name, 0,
+                            row.plugin.enabled, row.seg);
                     break;
+                case KIND_INFO:
                 case KIND_PLUGIN_INFO:
-                    ((TextInfoPrivacyCell) holder.itemView).setText(row.title);
+                    ((InfoStatusView) holder.itemView).bind(row.title, row.multiline,
+                            row.statusText, row.statusTone, row.seg, carded);
                     break;
                 default:
                     TextCell cell = (TextCell) holder.itemView;
-                    if (row.value != null) {
-                        cell.setTextAndValue(row.title, row.value, !last);
-                    } else {
-                        cell.setText(row.title, !last);
+                    boolean divider = row.seg == SEG_MID;
+                    String title = row.title;
+                    if (row.accent && title != null && !title.startsWith("+")) {
+                        title = "+ " + title;
                     }
+                    if (row.value != null) {
+                        cell.setTextAndValue(title, row.value, divider);
+                    } else {
+                        cell.setText(title, divider);
+                    }
+                    cell.setBackground(segmentDrawable(row.seg,
+                            row.accent ? accentFill() : cardFill()));
                     break;
             }
         }

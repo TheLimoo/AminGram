@@ -368,6 +368,36 @@ Module changes (overlay):
   settings generated from SETTINGS (values live in the same store
   amin.storage reads), log viewer, delete.
 
+## v1.3.2 (2026-10-20, on top of 5d34ae4) — overlay-only, no new patches
+
+- Video background durability (hub, AminPluginsActivity): a picked
+  video/GIF is now ALWAYS copied into app-private storage
+  (filesDir/amingram/videobg.<ext>) via ContentResolver and that
+  durable path is stored in the amingram_videobg prefs. Previously
+  the hub stored the picker's getPath() result or a
+  MediaController.copyFileToCache copy — Telegram's cache dir is
+  purged, so the stored path dangled after a restart and the helper
+  (validation unchanged) attached nothing. The real extension is
+  derived (path suffix → MimeTypeMap from the content type →
+  "mp4"), which also fixes GIF picks (the old hardcoded "mp4" copy
+  never matched VideoBackgroundHelper.isGif); the picker now
+  offers image/gif next to video/*.
+- Plugins hub card redesign (AminPluginsActivity, presentation
+  only — same row kinds, action ids, flows and data): rows are
+  grouped into card segments (assignSegments: SEG_FIRST/MID/
+  LAST/ONLY; a card = module/plugin header + its info + its
+  action rows, each bundled row + tagline, the two add-plugin
+  rows). Custom views in the hub adapter: SectionLabelView
+  (uppercase gray section labels), CardHeaderView (40dp
+  accent-tinted icon chip with a verified 13.0.2 R.drawable glyph
+  per module — letter fallback — 16sp title, display-only
+  upstream Switch), InfoStatusView (one-line ellipsized subtitle
+  + separate status line: colored dot + text; tones green /
+  red / gray from Row.statusTone). Action rows remain TextCells
+  rendered as card segments (accent-tinted fill + "+ " prefix for
+  the add-plugin card); description and status are separate Row
+  fields now instead of one glued "\n" string.
+
 ## Power design (v1.3, recalibrated by Amin 2026-10-19)
 Design goal: **no noticeable extra drain vs official Telegram** —
 features full-strength and unrestricted in feel. Baseline sanity
