@@ -20,6 +20,10 @@ import java.util.List;
  *               (/dl, /mp3, attach-menu button).
  * - temp-mail:  disposable email + verification-code reader via
  *               1secmail (/tm …, attach-menu button).
+ * - aesthetic-text: text restyling commands (/wide, /space,
+ *               /fliptext, attach-menu hint).
+ * - quick-translate: /tr translation via the keyless Google
+ *               endpoint (default target Persian, /tr en …).
  */
 public final class BundledPlugins {
 
@@ -48,6 +52,10 @@ public final class BundledPlugins {
                 "Direct MP4/MP3 links from TikTok, X, Reddit and Instagram posts. /dl, /mp3 or the attach menu."));
         LIST.add(new Bundled("temp-mail", "Temp Mail", "amingram_plugins/temp-mail.js",
                 "Disposable email addresses + verification codes inside Telegram. /tm or the attach menu."));
+        LIST.add(new Bundled("aesthetic-text", "Aesthetic Text", "amingram_plugins/aesthetic-text.js",
+                "Restyle text: /wide ｆｕｌｌｗｉｄｔｈ, /space s p a c e d, /fliptext upside down."));
+        LIST.add(new Bundled("quick-translate", "Quick Translate", "amingram_plugins/quick-translate.js",
+                "/tr <text> translates (default: Persian; /tr en <text> for English)."));
     }
 
     private BundledPlugins() {
