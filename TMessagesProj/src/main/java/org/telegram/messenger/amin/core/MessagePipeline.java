@@ -135,7 +135,11 @@ public final class MessagePipeline {
             if (document != null) {
                 FileLoader.getInstance(obj.currentAccount)
                         .loadFile(document, obj, FileLoader.PRIORITY_HIGH, 0);
-                String record = obj.getDialogId() + "|" + obj.getId() + "|" + obj.messageOwner.date;
+                // Include the file name so the saved cache file is findable;
+                // a bare dialog|id|date record (v1.0) left saves invisible.
+                String name = obj.getFileName();
+                String record = obj.getDialogId() + "|" + obj.getId() + "|" + obj.messageOwner.date
+                        + (name != null && !name.isEmpty() ? "|" + name : "");
                 VaultStore.addUnique(context, AUTOSAVER_PREFS, AUTOSAVER_ITEMS_KEY, record, 300);
             } else {
                 // v2: pure TL_photo secrets carry no document — pull the

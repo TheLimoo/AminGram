@@ -12,7 +12,8 @@ import java.util.regex.Pattern;
 public final class ConfigExtractor {
 
     private static final Pattern CONFIG_PATTERN = Pattern.compile(
-            "(vless|vmess|trojan|ss|ssr|hysteria2?|tuic)://[^\\s]+");
+            "(vless|vmess|trojan|ss|ssr|hysteria2?|tuic)://[^\\s]+",
+            Pattern.CASE_INSENSITIVE);
     private static final Pattern SUB_PATTERN = Pattern.compile(
             "https?://[^\\s]+");
 

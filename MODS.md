@@ -57,6 +57,17 @@ Target: keep this list under 30 files, each with 1–3 line hooks.
   enabled, and the hook falls back to the controller's in-memory
   message maps for messages that were never snapshotted. Viewer =
   hub "Deleted messages" row (`AminStoreListActivity`).
+  AntiDelete v3 (audit fix, still patch 0003): the STORAGE purge in
+  `processUpdateArray` (`if (deletedMessages != null)` →
+  `markMessagesAsDeleted` + `updateDialogsWithDeletedMessages`) is
+  now gated with `!AminHooks.antiDelete()` too. The v1.0/v1.1 code
+  gated only the UI block, so messages were deleted from SQLite
+  immediately and vanished on chat re-entry/restart — the module
+  could not work as designed. With both gates, update-driven deletes
+  are fully suppressed while the module is on (rows stay in the DB
+  and in the UI; the DeletedStore snapshot/viewer remains as the
+  record). User-initiated deletes (his own delete actions) are a
+  different code path and are NOT blocked.
 - `org/telegram/messenger/TranslateController.java` — FreeTranslate:
   premium gates in both `isFeatureAvailable` variants bypassed when
   enabled; the translate runnable routes to the built-in keyless
@@ -100,6 +111,38 @@ combined tree for a single patch — stage the split as above.
 - GhostMode — suppress read receipts / online status where client-controlled
 - AntiDelete — cache messages locally; deleted ones stay visible, marked
 - FreeTranslate — translation via free endpoints (no API key)
+- EditHistory — (v1.2) pre-edit message text, from the AntiDelete
+  snapshot store. Hook: ONE added line at the top of
+  `MessagesController.processUpdateArray` (patch 0006) →
+  `AminHooks.onRawUpdates(updates)`; `DeletedStore.recordEdits`
+  matches TL_updateEditMessage / TL_updateEditChannelMessage
+  (`org.telegram.tgnet.tl.TL_update.*`) against snapshots, records
+  `dialog|id|date|old -> new` in the store (PREFS/EDIT_KEY) and
+  re-snapshots the new text so chained edits diff correctly. The
+  pipeline snapshots when anti_delete OR edit_history is enabled.
+  Viewer: hub Tools → "Edit history". Limits: only messages received
+  while a snapshot module was on; text flattened (newlines/pipes),
+  media edits not tracked.
+- HideStories — (v1.2) patch 0008: the two `hasStories =
+  newVisibility;` assignments in DialogsActivity's stories-visibility
+  updater gated with `&& !AminHooks.hideStories()` (2 lines, 1 file).
+  Stories still load in the background; only the row/header hides.
+- Icon changer — (v1.2) patch 0007 mirrors upstream's own mechanism
+  (NOTE: aliases live in **TMessagesProj**'s AndroidManifest.xml,
+  not the App module's): two activity-aliases
+  `org.telegram.messenger.AminBlueIcon` / `AminMonoIcon` →
+  LaunchActivity with overlay adaptive icons
+  (@mipmap/amingram_icon_blue_launcher / _mono_launcher, API 26+;
+  no legacy per-density PNGs), plus two entries in
+  `LauncherIconController.LauncherIcon` (AMIN_BLUE / AMIN_MONO,
+  non-premium) — required because ApplicationLoader calls
+  tryFixLauncherIconIfNeeded() at startup and would reset any icon
+  the enum doesn't know. Titles: strings AppIconAminBlue/AppIconAminMono
+  (patch 0007 also touches strings.xml, a different region than
+  0004's AppName hunk). Bonus: upstream's Appearance → App Icon UI
+  lists the customs too. Hub: Plugins → Tools → "App Icon" row opens
+  a picker over ALL LauncherIcon values and switches via
+  `LauncherIconController.setIcon` (no extra patch).
 - VideoBackground — mp4/gif as animated chat background. v1.1.1:
   `VideoBackgroundHelper` layer is INVISIBLE + TextureView non-opaque
   until `VideoPlayer` delegate `onRenderedFirstFrame`; `onError`
@@ -111,8 +154,22 @@ combined tree for a single patch — stage the split as above.
   file changed — open chats no longer keep a dead black layer.
   Hooks verified inside `ChatActivity.onResume()` (l.29887) /
   `onPause()` (l.30102) themselves.
+  Audit fix (overlay-only, no patch change): playback now uses
+  `VideoPlayer.setLooping(true)` + `preparePlayer(uri, "file")` —
+  NEVER `preparePlayerLoop(uri, type, null, null)`: upstream's loop
+  API unconditionally builds a second (audio) media source and
+  `mediaSourceFromUri` switches on the null type, throwing an NPE
+  inside `ChatActivity.createView` (the v1.0 chat-breaking crash;
+  the v1.1.1 rewrite had kept the call). `attachVideo` is now fully
+  try/catch-isolated and returns false on any failure, so a bad file
+  or player error degrades to "no layer", never a crash.
 - KeywordRadar — (phase 2) keyword alerts across chats
 - ConfigVault — (phase 2) collects vless/sub/soar links from chats
+  (audit fix: scheme match is now case-insensitive)
+- AutoSaver — audit fix: module description no longer promises
+  gallery saves (files land in the app media cache only); the saver
+  log record now includes the document file name so a save is
+  findable (v1.0 logged a bare dialog|id|date).
 
 ## Plugin system
 - Registry: `amin.plugins.PluginRegistry` — modules self-register with a

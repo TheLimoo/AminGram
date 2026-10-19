@@ -6,7 +6,7 @@ public class AutoSaverModule implements ModModule {
     @Override public String id() { return "auto_saver"; }
     @Override public String title() { return "Auto-Saver"; }
     @Override public String description() {
-        return "Automatically saves disappearing photos and videos to your gallery before they expire.";
+        return "Downloads disappearing (self-destruct) photos and videos into the app media cache before they expire, and lists them in the Auto-Saver log. Files stay in the app cache, not the system gallery.";
     }
     @Override public boolean enabledByDefault() { return false; }
 }

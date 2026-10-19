@@ -81,44 +81,59 @@ public class VideoBackgroundHelper {
             if (!helper.attachGif(context, parent, path)) {
                 return null;
             }
-        } else {
-            helper.attachVideo(context, parent, path);
+        } else if (!helper.attachVideo(context, parent, path)) {
+            return null;
         }
         return helper;
     }
 
-    private void attachVideo(Context context, ViewGroup parent, String path) {
-        textureView = new TextureView(context);
-        textureView.setOpaque(false);
-        textureView.setVisibility(View.INVISIBLE);
-        parent.addView(textureView, Math.min(1, parent.getChildCount()),
-                new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        player = new VideoPlayer(false, true);
-        player.setDelegate(new VideoPlayer.VideoPlayerDelegate() {
-            @Override
-            public void onStateChanged(boolean playWhenReady, int playbackState) {
-            }
-
-            @Override
-            public void onError(VideoPlayer p, Exception e) {
-                FileLog.e("AminGram videobg: player error, removing layer", e);
-                release();
-            }
-
-            @Override
-            public void onVideoSizeChanged(int width, int height, int unappliedRotationDegrees, float pixelWidthHeightRatio) {
-            }
-
-            @Override
-            public void onRenderedFirstFrame() {
-                if (!released && textureView != null) {
-                    textureView.setVisibility(View.VISIBLE);
+    private boolean attachVideo(Context context, ViewGroup parent, String path) {
+        // Fully exception-isolated: this runs inside ChatActivity.createView,
+        // so any failure here must degrade to "no video layer", never a crash.
+        try {
+            textureView = new TextureView(context);
+            textureView.setOpaque(false);
+            textureView.setVisibility(View.INVISIBLE);
+            parent.addView(textureView, Math.min(1, parent.getChildCount()),
+                    new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            player = new VideoPlayer(false, true);
+            player.setDelegate(new VideoPlayer.VideoPlayerDelegate() {
+                @Override
+                public void onStateChanged(boolean playWhenReady, int playbackState) {
                 }
-            }
-        });
-        player.setTextureView(textureView);
-        player.preparePlayerLoop(Uri.fromFile(new File(path)), "file", null, null);
-        player.play();
+
+                @Override
+                public void onError(VideoPlayer p, Exception e) {
+                    FileLog.e("AminGram videobg: player error, removing layer", e);
+                    release();
+                }
+
+                @Override
+                public void onVideoSizeChanged(int width, int height, int unappliedRotationDegrees, float pixelWidthHeightRatio) {
+                }
+
+                @Override
+                public void onRenderedFirstFrame() {
+                    if (!released && textureView != null) {
+                        textureView.setVisibility(View.VISIBLE);
+                    }
+                }
+            });
+            player.setLooping(true);
+            player.setTextureView(textureView);
+            // NOT preparePlayerLoop(uri, "file", null, null): upstream's loop
+            // API unconditionally builds a second (audio) media source and
+            // mediaSourceFromUri switches on the null type -> NPE inside
+            // ChatActivity.createView (the v1.0 crash). preparePlayer +
+            // setLooping gives the same muted loop with one source.
+            player.preparePlayer(Uri.fromFile(new File(path)), "file");
+            player.play();
+            return true;
+        } catch (Throwable t) {
+            FileLog.e("AminGram videobg: attach failed, no layer", t);
+            release();
+            return false;
+        }
     }
 
     private boolean attachGif(Context context, ViewGroup parent, String path) {

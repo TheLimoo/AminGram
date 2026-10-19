@@ -1,5 +1,5 @@
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
-index f91925b..37091ad 100644
+index ef6e87e..7013feb 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
 @@ -18420,6 +18420,7 @@ public class MessagesController extends BaseController implements NotificationCe
