@@ -29,6 +29,13 @@ jobs:
           git apply ../patches/0005-google-services-amingram.patch
           git apply ../patches/0006-message-pipeline-hook.patch
 
+      - name: Install AminGram signing keystore
+        env:
+          AMINGRAM_KEYSTORE_B64: ${{ secrets.AMINGRAM_KEYSTORE_B64 }}
+        run: |
+          echo "$AMINGRAM_KEYSTORE_B64" | base64 -d > upstream/TMessagesProj/config/release.keystore
+          test -s upstream/TMessagesProj/config/release.keystore
+
       - name: Inject API credentials from secrets
         env:
           API_ID: ${{ secrets.API_ID }}
@@ -76,10 +83,14 @@ jobs:
           key: ndk-27.2.12479018
 
       - name: Build release APK (afat)
+        env:
+          AMINGRAM_KEYSTORE_PASSWORD: ${{ secrets.AMINGRAM_KEYSTORE_PASSWORD }}
+          AMINGRAM_KEY_ALIAS: ${{ secrets.AMINGRAM_KEY_ALIAS }}
+          AMINGRAM_KEY_PASSWORD: ${{ secrets.AMINGRAM_KEY_PASSWORD }}
         run: |
           cd upstream
           chmod +x gradlew
-          ./gradlew :TMessagesProj_App:assembleAfatRelease --stacktrace
+          ./gradlew :TMessagesProj_App:assembleAfatRelease --stacktrace -PRELEASE_STORE_PASSWORD="$AMINGRAM_KEYSTORE_PASSWORD" -PRELEASE_KEY_ALIAS="$AMINGRAM_KEY_ALIAS" -PRELEASE_KEY_PASSWORD="$AMINGRAM_KEY_PASSWORD"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

@@ -1,5 +1,17 @@
 # AminGram — Mod Ledger
 
+## Signing (v1.1)
+- Releases are signed with AminGram's OWN keystore (alias `amingram`,
+  RSA 2048, generated 2026-10-19) — no longer upstream's in-tree key.
+  CI decodes it from the `AMINGRAM_KEYSTORE_B64` repo secret over
+  `upstream/TMessagesProj/config/release.keystore` and overrides
+  RELEASE_STORE_PASSWORD / RELEASE_KEY_ALIAS / RELEASE_KEY_PASSWORD
+  from repo secrets via gradle -P args. Backup keystore + credentials
+  note live in `~/workspace/amingram/keystore/` (chmod 600, values
+  never recorded here). v1.0 APKs were signed with upstream's key, so
+  v1.1 installs as a NEW app signature (uninstall v1.0 first, or
+  Android refuses the upgrade — expected one-time cost of the swap).
+
 Base: official Telegram for Android (DrKLO/Telegram), tracked at release tags.
 Rule: ALL custom code lives under `org.telegram.messenger.amin.**`.
 Upstream files may only be touched with minimal hook calls into that package.
