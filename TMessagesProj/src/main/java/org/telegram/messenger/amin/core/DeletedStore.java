@@ -58,6 +58,40 @@ public final class DeletedStore {
         VaultStore.putAll(context, PREFS, SNAP_KEY, items);
     }
 
+    /** Batch snapshot (v1.3): one prefs read + one write for a whole
+     *  list. Used by the messagesDidLoad observer so messages loaded
+     *  from history when a chat is opened are snapshotted too — this is
+     *  what gives Edit History its "before" text for messages that did
+     *  not arrive live, and Anti-Delete coverage for scrolled history. */
+    public static void snapshotAll(Context context, List<MessageObject> objects) {
+        if (context == null || objects == null || objects.isEmpty()) {
+            return;
+        }
+        List<String> items = VaultStore.getAll(context, PREFS, SNAP_KEY);
+        boolean changed = false;
+        for (MessageObject obj : objects) {
+            if (obj == null || obj.messageOwner == null) {
+                continue;
+            }
+            String record = toRecord(obj);
+            String prefix = obj.getDialogId() + "|" + obj.getId() + "|";
+            for (int i = items.size() - 1; i >= 0; i--) {
+                if (items.get(i).startsWith(prefix)) {
+                    items.remove(i);
+                }
+            }
+            items.add(record);
+            changed = true;
+        }
+        if (!changed) {
+            return;
+        }
+        while (items.size() > SNAP_CAP) {
+            items.remove(0);
+        }
+        VaultStore.putAll(context, PREFS, SNAP_KEY, items);
+    }
+
     /** Moves snapshots of the deleted messages into the deleted list.
      *  Called from the MessagesController delete hook (FQ) before the
      *  upstream application block is skipped by the v1 guard. */

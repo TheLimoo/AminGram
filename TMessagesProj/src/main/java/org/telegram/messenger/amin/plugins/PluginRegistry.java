@@ -6,12 +6,14 @@ import android.content.SharedPreferences;
 import org.telegram.messenger.amin.modules.AntiDeleteModule;
 import org.telegram.messenger.amin.modules.AutoSaverModule;
 import org.telegram.messenger.amin.modules.EditHistoryModule;
+import org.telegram.messenger.amin.modules.GhostStoriesModule;
 import org.telegram.messenger.amin.modules.HideStoriesModule;
-import org.telegram.messenger.amin.modules.ConfigVaultModule;
 import org.telegram.messenger.amin.modules.FreeTranslateModule;
 import org.telegram.messenger.amin.modules.GhostModeModule;
+import org.telegram.messenger.amin.modules.HiddenChatsModule;
 import org.telegram.messenger.amin.modules.KeywordRadarModule;
 import org.telegram.messenger.amin.modules.LocalPremiumModule;
+import org.telegram.messenger.amin.modules.SendWhenOnlineModule;
 import org.telegram.messenger.amin.modules.VideoBackgroundModule;
 
 import java.util.ArrayList;
@@ -38,14 +40,16 @@ public final class PluginRegistry {
         registered = true;
         MODULES.add(new LocalPremiumModule());
         MODULES.add(new GhostModeModule());
+        MODULES.add(new GhostStoriesModule());
         MODULES.add(new AntiDeleteModule());
         MODULES.add(new FreeTranslateModule());
         MODULES.add(new VideoBackgroundModule());
         MODULES.add(new KeywordRadarModule());
-        MODULES.add(new ConfigVaultModule());
         MODULES.add(new AutoSaverModule());
         MODULES.add(new EditHistoryModule());
         MODULES.add(new HideStoriesModule());
+        MODULES.add(new HiddenChatsModule());
+        MODULES.add(new SendWhenOnlineModule());
     }
 
     public static List<ModModule> modules() {
