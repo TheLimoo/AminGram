@@ -189,3 +189,191 @@ combined tree for a single patch — stage the split as above.
   files must use the fully-qualified `org.telegram.messenger.amin.…`
   name — a bare `amin.AminHooks.…` does not resolve from
   `org.telegram.messenger` and fails javac ("package amin does not exist").
+
+## v1.3 batch (2026-10-19, on top of 851a9a6)
+
+Driven by on-device verdicts on the TheLimoo build: Anti-Delete +
+Local Premium confirmed working; Video Background rendered nothing;
+Keyword Radar + Edit History caught nothing; Auto-Saver saved but its
+photos were unviewable (raw log lines); Config Vault ordered DELETED.
+
+New patches (all hook lines use fully-qualified
+`org.telegram.messenger.amin.…` names; both CI files apply the full
+list in filename order):
+- 0006 REGENERATED — the two MessagesController hook lines now pass
+  `currentAccount`: `AminHooks.onRawUpdates(updates, currentAccount)`,
+  `AminHooks.onNewMessages(pushMessages, currentAccount)`.
+- 0009 profile-user-id (ProfileActivity): new `aminIdRow` — assigned
+  in `updateRowsIds()` for self (own id, in Settings → My profile),
+  for other users, and for groups/channels (chat id). View type
+  VIEW_TYPE_TEXT_DETAIL; binds `String.valueOf(userId|chatId)` with
+  label "ID"/"Chat ID"; tap copies via `AndroidUtilities.addToClipboard`
+  + `createCopyBulletin(TextCopied)` (the file's own pattern).
+- 0010 js-runtime-gradle (TMessagesProj/build.gradle): adds
+  `implementation 'org.mozilla:rhino:1.7.15'` (verified on Maven
+  Central; root + module build.gradle both declare mavenCentral();
+  release is unminified so Rhino reflection works).
+- 0011 hidden-chats-dialogs-filter (DialogsActivity.getDialogsArray):
+  wraps the three upstream-list returns (DEFAULT, FORWARD, type 7/8
+  unfiltered) with `AminHooks.filterHiddenDialogs(…)` — returns the
+  list untouched unless Hidden Chats is on AND locked AND the hidden
+  set is non-empty; otherwise a filtered copy (upstream lists are
+  never mutated). NOTE: global SEARCH uses a different upstream path
+  and is NOT filtered (documented bound).
+- 0012 ghost-stories (StoriesController.markStoryAsRead 3-arg): after
+  the `justUploaded` reset, `if (AminHooks.ghostStoriesEnabled())
+  return false;` — placed at the single choke point BEFORE both the
+  local `dialogIdToMaxReadIdStore` write and the
+  `TL_stories_readStories` RPC send, so neither happens.
+- 0013 outgoing-command-hook (SendMessagesHelper.sendMessage): first
+  line `AminHooks.onOutgoingMessage(sendMessageParams)` — the only
+  universal text-send point in 13.0.2; fires JS plugin onCommand for
+  the user's own outgoing "/" commands.
+- 0014 attach-menu-plugins (ChatAttachAlert.ButtonsAdapter): four
+  touch points — (1) fields aminPluginStartRow/aminPluginEndRow/
+  aminMenuPlugins; (2) resets in notifyDataSetChanged(); (3) in the
+  main (ChatActivity) branch, after the attachMenuBots block, rows
+  are assigned from `AminHooks.attachMenuPlugins()` (pure prefs read:
+  enabled plugins with the `menu` capability and an onMenuAction
+  hook); (4) bind branch gives them view-type BUTTON with tag/id
+  -1000-index (no collision with upstream ids 1..12 / LAYOUT_TYPE_*)
+  and a click branch right after the click tag is read dispatches
+  `AminHooks.onPluginMenuAction(id, dialogId)` and dismisses.
+
+Module changes (overlay):
+- ConfigVault DELETED completely: ConfigVaultModule +
+  core/ConfigExtractor + registry entry + pipeline call + hub viewer.
+  (Keyword extraction it shared code with was never shared in the
+  current tree — Radar has its own matcher in MessagePipeline.)
+- VideoBackground REWORK (overlay-only; patch 0004 unchanged): root
+  cause of "renders nothing" — the layer was inserted during
+  createView, but ChatActivity only adds chatListView to contentView
+  at ~l.7027 (after the 0004 hook at ~l.4657), and visibility was
+  gated solely on the texture first-frame callback. Now:
+  attachIfEnabled() only validates (module on, file exists AND
+  length > 0) and stores parent+path; the layer is inserted at
+  resume() time at the index of the first RecyclerView child of
+  contentView (directly beneath the message list, above the
+  wallpaper), and revealed on media3 STATE_READY **or**
+  onRenderedFirstFrame; center-crop via TextureView Matrix on
+  onVideoSizeChanged; GIF path deferred identically. Evidence:
+  ChatActivity.createView builds contentView (FrameLayout) first,
+  wallpaper views next, chatListView added later (l.7027);
+  VideoPlayer.ensurePlayerCreated() applies a stored textureView,
+  so set-before-prepare order was never the problem.
+- KeywordRadar FIX: root cause — it only ever saw live pushMessages
+  arrivals. Now ALSO scan-on-chat-open: AminHooks registers a
+  NotificationCenter observer for messagesDidLoad (the lightest
+  verified choke point — posted by MessagesController at
+  l.12209/12213 with the loaded ArrayList<MessageObject> at
+  args[2]) and scans the loaded history generously (~everything
+  loaded, deduped via VaultStore.addUnique). Live scan unchanged;
+  matching stays case-insensitive contains. Hub: hit count in the
+  module STATUS line + "Radar hits" viewer + last-hit snippet.
+- EditHistory FIX: root cause — snapshot-coverage gap: snapshots
+  only existed for live arrivals, so edits of history-loaded
+  messages found no "before" text. The same messagesDidLoad
+  observer now snapshots loaded messages when anti_delete OR
+  edit_history is on (DeletedStore.snapshotAll, one prefs
+  read/write per batch). Capture itself was already correct:
+  onRawUpdates runs at the top of processUpdateArray, before
+  TL_updateEditMessage/TL_updateEditChannelMessage are applied.
+- AutoSaver v3: (a) structured store (core/AutoSaverStore, JSON
+  entries dialog|id|date|kind|name|path|attach; legacy pipe-log
+  entries are read-merged, files resolved by recorded path or by
+  attach-name scan of FileLoader dirs CACHE/IMAGE/VIDEO/DOCUMENT);
+  (b) capture now covers view-once media in normal chats too —
+  MessageObject.isSecretMedia() already returns true for
+  TL_message media with ttl_seconds != 0 (photo or document), in
+  addition to secret chats; documents are saved via
+  FileLoader.loadFile(document, …) with the file recorded from
+  FileLoader.getPathToMessage, photos via the same photo-size
+  selection getPathToMessage uses. (c) Real gallery: hub → Saved
+  media → AminSavedMediaActivity (3-column grid, thumbnails,
+  chat title + date captions) → tap → AminPhotoViewActivity
+  (full-screen image / VideoView, save-to-gallery via MediaStore,
+  share via FileProvider, remove entry; honest "file gone" state
+  when Telegram's cache no longer holds the file).
+- Ghost for Stories — new module ghost_stories (patch 0012 above).
+  Opening stories still counts views server-side only via the read
+  RPC we now never send; story CONTENT still downloads normally.
+- Hidden Chats — new module hidden_chats + core/HiddenChatsStore
+  (prefs amingram_hidden; ids as JSON strings; PIN stored ONLY as
+  SHA-256 hex with a static salt; unlocked state is memory-only,
+  resets on process restart). Hide/unhide is hub-driven (dialog
+  picker AminDialogPickerActivity) — chosen deliberately over
+  DialogsActivity long-press surgery; list filtering is patch 0011.
+- Send When Online — new module send_when_online +
+  core/SendWhenOnlineStore (prefs amingram_swo). Pending entries
+  are watched inside AminHooks.onRawUpdates: a
+  TL_updateUserStatus whose status is TL_userStatusOnline for a
+  queued peer triggers SendMessagesHelper.sendMessage(
+  SendMessageParams.of(text, peer)) and marks the entry sent.
+  Presence-driven ONLY — no polling, no timers. Honest bound:
+  fires whenever Telegram's sync processes the presence update
+  (including background sync); if Android has force-stopped the
+  app, it fires at next launch. Hub: composer (user picker +
+  text), pending list, tap-to-cancel/remove.
+- AminGram Backup — core/BackupManager + hub rows (Tools):
+  export/import ONE JSON file via SAF (create/open document)
+  covering plugin on/off states, radar keywords + hits, video-bg
+  path (the video FILE is not embedded — path only), hidden ids +
+  PIN hash, Send-When-Online entries, anti-delete snapshots /
+  deleted / edit stores, auto-saver entries, and JS plugins
+  (manifest meta + full code + per-plugin storage; reinstalled
+  through the normal validator).
+- Hub redesign: sections Privacy / Media / Tools / Your Plugins in
+  registry order (ModModule.section()); every module row shows its
+  description plus a live STATUS line (ModModule.status():
+  "Active", "Needs a video file", "Needs keywords", "N hits · last:
+  …", "N saved", "Locked · N hidden", "N waiting"…). Module actions
+  sit directly under their module. Upstream cells only
+  (HeaderCell/TextCheckCell/TextCell/TextInfoPrivacyCell).
+
+## JS plugin runtime (v1.3, org.telegram.messenger.amin.plugins.js)
+- Engine: Mozilla Rhino 1.7.15 (patch 0010). Interpreted mode
+  (optimizationLevel -1), ES6 language version.
+- Sandbox: initStandardObjects scope with Packages/java/javax/
+  JavaAdapter/importClass/getClass deleted; a ClassShutter allows
+  ONLY AminBridge, AminBridge$Storage and java.lang scalars — no
+  other Java class is reachable from JS.
+- Contract = docs/PLUGIN-MASTER-PROMPT.md (shipped in repo docs/;
+  the runtime matches it exactly): manifest header
+  (==AminGramPlugin== with @id/@name/@version/@author/@description/
+  @capabilities — unknown capability = invalid install), hooks
+  onLoad/onMessage/onCommand/onMenuAction, optional SETTINGS schema
+  (bool/text), bridge `amin` = log/toast/storage(per-plugin prefs)/
+  send/reply/httpGet (blocking, 15 s timeouts, 1 MB cap).
+- Install path (file picker OR paste in hub): manifest parse →
+  Rhino compileString syntax check → probe evaluation in a
+  throwaway scope (extracts SETTINGS + which hooks exist; onLoad is
+  NOT called at install) → code stored in app-private
+  filesDir/jsplugins/<id>.js + meta in prefs. Same path for the
+  four bundled one-tap installs (assets amingram_plugins/: shout,
+  vip-alert, media-dl, temp-mail — the latter two per Amin's specs;
+  both use only documented bridge calls, no adjustments needed).
+- Dispatch: runtimes are created lazily on Utilities.globalQueue
+  (the single dispatch thread — plugin code never runs on the UI
+  thread); onLoad runs once per runtime creation. Incoming messages
+  → dispatchMessage (observe; return true stops later plugins);
+  own "/" commands → patch 0013 (this device) and the update
+  pipeline (other devices); attach-menu buttons → patch 0014.
+  Errors are caught per hook, written to the plugin's log (hub →
+  plugin page → View log), and never crash the app or other
+  plugins; a plugin whose code fails to evaluate is skipped for
+  the session and the failure logged. NO auto-throttle /
+  auto-disable (per Amin's power recalibration — features stay
+  full-strength; isolation only).
+- Plugin page (AminJsPluginActivity): About info, enable switch,
+  settings generated from SETTINGS (values live in the same store
+  amin.storage reads), log viewer, delete.
+
+## Power design (v1.3, recalibrated by Amin 2026-10-19)
+Design goal: **no noticeable extra drain vs official Telegram** —
+features full-strength and unrestricted in feel. Baseline sanity
+only, matching what the official app itself does: no wakelocks, no
+polling loops, no periodic timers of our own; everything rides
+Telegram's existing update flow and queues (NotificationCenter
+posts, processUpdateArray, globalQueue). Video background plays
+while its chat is open and pauses on leaving, like any media in
+the app. Radar scan-on-open covers the loaded history generously.
