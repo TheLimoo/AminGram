@@ -36,7 +36,9 @@ import java.util.Locale;
  *   amin.storage.set(key, value)
  *   amin.send(chatId, text)              send a message AS THE USER
  *   amin.reply(msg, text)                send into the msg's chat
- *   amin.httpGet(url)                    response text, or null (blocking)
+ *   amin.httpGet(url[, headers])        response text, or null (blocking);
+ *                                        headers is an optional JS object
+ *                                        of header name → value pairs
  *   amin.httpPost(url, body, headers)    response text (the HTTP error body
  *                                        on an error status), or null (blocking)
  *
@@ -533,6 +535,19 @@ public class AminBridge {
     /** Blocking GET on the plugin dispatch thread. Returns the body
      *  text (capped at 1 MB), or null on any failure. */
     public String httpGet(Object urlObject) {
+        return httpGet(urlObject, null);
+    }
+
+    /** httpGet with caller headers (v2.0): the second argument is a
+     *  JS object of header name → value pairs, applied after the
+     *  defaults so callers can override them — e.g.
+     *  amin.httpGet(url, {Authorization: "Bearer " + token}) for
+     *  APIs like mail.tm whose inbox requires a bearer token.
+     *  Semantics are otherwise EXACTLY the 1-arg contract: same
+     *  timeouts, same 1 MB cap, null on any failure including HTTP
+     *  error statuses. Additive only — the 1-arg form is unchanged
+     *  and every existing plugin keeps working. */
+    public String httpGet(Object urlObject, Object headersObject) {
         if (urlObject == null) {
             return null;
         }
@@ -547,6 +562,28 @@ public class AminBridge {
             connection.setRequestProperty("User-Agent",
                     "Mozilla/5.0 (Linux; Android 13) AminGram");
             connection.setRequestProperty("Accept", "*/*");
+            if (headersObject instanceof Scriptable) {
+                Scriptable headers = (Scriptable) headersObject;
+                for (Object id : headers.getIds()) {
+                    if (id == null) {
+                        continue;
+                    }
+                    Object value;
+                    String name;
+                    if (id instanceof Number) {
+                        value = headers.get(((Number) id).intValue(), headers);
+                        name = String.valueOf(((Number) id).intValue());
+                    } else {
+                        name = String.valueOf(id);
+                        value = headers.get(name, headers);
+                    }
+                    if (value == null || value == Scriptable.NOT_FOUND
+                            || value instanceof org.mozilla.javascript.Undefined) {
+                        continue;
+                    }
+                    connection.setRequestProperty(name, String.valueOf(value));
+                }
+            }
             int code = connection.getResponseCode();
             if (code < 200 || code >= 400) {
                 return null;

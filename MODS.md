@@ -1036,3 +1036,23 @@ deleted); everything else is overlay code under
   export/import ride the helper delegates (import adopts +
   applies the path; a missing file changes nothing instead of
   storing a dangling path).
+
+- **Post-batch fix — temp-mail v2 + httpGet headers (2026-10-21)**:
+  1secmail is dead (its hosts serve an unrelated domain's
+  certificate; every call fails TLS verification), so the bundled
+  **temp-mail is rewritten on mail.tm** (verified end-to-end:
+  GET /domains, POST /accounts, POST /token, GET /messages):
+  `/tm new` creates a REAL account (random login at the active
+  domain + generated password, both kept in plugin storage) and
+  fetches a bearer token; `/tm inbox` and `/tm read <id>` use
+  authenticated GETs; on a null (the bridge's error-status
+  signal) it re-authenticates ONCE and retries ONCE. v1's
+  `extractOtp` / `extractLinks` helpers and the post-in-chat
+  presentation are kept verbatim. Supporting bridge change
+  (additive): **`amin.httpGet(url, headers)`** — an optional
+  second argument, a {name: value} object applied after the
+  defaults (the mail.tm inbox needs `Authorization: Bearer`);
+  same timeouts/caps and the same null-on-any-failure semantics;
+  the 1-arg form is untouched and `AminBridge`'s whole-class R8
+  name-keep covers the overload. Documented in
+  PLUGIN-MASTER-PROMPT v2.

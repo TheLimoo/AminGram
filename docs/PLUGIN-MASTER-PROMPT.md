@@ -74,6 +74,9 @@ amin.send(chatId, text)             // send a message AS THE USER to a chat
 amin.reply(msg, text)               // send a message into the same chat the msg came from
 amin.httpGet(url)                   // returns response text, or null on ANY failure
                                     // (including an HTTP error status) — blocking: call sparingly
+amin.httpGet(url, headers)          // v2.0 overload: headers is a {name: value} object
+                                    // (e.g. {Authorization: "Bearer " + token}) applied
+                                    // after the defaults; same caps/timeouts/null rules
 amin.httpPost(url, body, headers)   // POST: body is a string, headers a {name: value} object;
                                     // returns the response text on 2xx; on a non-2xx status
                                     // returns the ERROR BODY instead (read the server's
@@ -82,8 +85,12 @@ amin.httpPost(url, body, headers)   // POST: body is a string, headers a {name: 
 amin.sendFile(url, opts)            // `file` capability ONLY — see next section
 ```
 
-`amin.httpGet` is unchanged from v1: null on failure, never an error body.
-Only `amin.httpPost` surfaces error bodies (v1.3.7+, canonical in v2.0).
+`amin.httpGet` semantics are unchanged from v1: null on failure, never
+an error body. v2.0 adds ONLY the optional second argument above —
+a headers object for bearer-auth APIs (the bundled temp-mail v2 uses
+it against mail.tm: on a null from an authenticated GET, re-auth
+once and retry once). Only `amin.httpPost` surfaces error bodies
+(v1.3.7+, canonical in v2.0).
 Always run a non-empty `httpPost` result through `extractError` before
 treating it as a successful answer:
 
