@@ -19,7 +19,7 @@ jobs:
       - name: Fetch upstream Telegram source (pinned)
         run: |
           git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/DrKLO/Telegram.git upstream
-          cd upstream && git log --oneline -1
+          cd upstream && git fetch --depth 1 origin f32ffeec763f0bdbf4bec25b52d654f77bff733d && git checkout FETCH_HEAD && git log --oneline -1
 
       - name: Apply AminGram overlay
         run: |
