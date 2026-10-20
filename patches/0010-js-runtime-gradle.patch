@@ -14,7 +14,7 @@ diff --git a/TMessagesProj/proguard-rules.pro b/TMessagesProj/proguard-rules.pro
 index 049c7b7..f3b4b2b 100644
 --- a/TMessagesProj/proguard-rules.pro
 +++ b/TMessagesProj/proguard-rules.pro
-@@ -57,4 +57,12 @@
+@@ -57,4 +57,15 @@
  
  # Use -keep to explicitly keep any other classes shrinking would remove
  #-dontoptimize
@@ -26,6 +26,9 @@ index 049c7b7..f3b4b2b 100644
 +-keep class org.mozilla.** { *; }
 +-dontwarn javax.swing.**
 +-dontwarn java.awt.**
-+# AminGram: Rhino reaches the JS bridge (the "amin" object) purely by reflection under its Java names - log/toast/send/reply/httpGet, the storage field and Storage.get/set. Nothing in Java calls them by name, so without these keeps R8 renames them and every plugin call fails on device (v1.3.4).
++# AminGram: Rhino reaches the JS bridge (the "amin" object) purely by reflection under its Java names - log/toast/send/reply/httpGet/httpPost, the storage field and Storage.get/set. Nothing in Java calls them by name, so without these keeps R8 renames them and every plugin call fails on device (v1.3.4).
 +-keep class org.telegram.messenger.amin.plugins.js.AminBridge { *; }
 +-keep class org.telegram.messenger.amin.plugins.js.AminBridge$Storage { *; }
++# AminGram: same for the google surface (v1.3.5): WithGoogle's google field and GoogleAccess.isSignedIn/getAccessToken/signIn are reached from JS by name, only in plugins declaring the google capability.
++-keep class org.telegram.messenger.amin.plugins.js.AminBridge$WithGoogle { *; }
++-keep class org.telegram.messenger.amin.plugins.js.AminBridge$GoogleAccess { *; }

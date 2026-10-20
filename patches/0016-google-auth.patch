@@ -1,0 +1,32 @@
+diff --git a/TMessagesProj/build.gradle b/TMessagesProj/build.gradle
+index 25f6831..7fa74b9 100644
+--- a/TMessagesProj/build.gradle
++++ b/TMessagesProj/build.gradle
+@@ -67,7 +67,7 @@ dependencies {
+     implementation 'com.google.firebase:firebase-datatransport:18.1.0'
+     implementation 'com.google.firebase:firebase-appindexing:20.0.0'
+     implementation 'com.google.android.gms:play-services-maps:18.1.0'
+-    implementation 'com.google.android.gms:play-services-auth:20.4.0'
++    implementation 'com.google.android.gms:play-services-auth:21.6.0'
+     implementation 'com.google.android.gms:play-services-vision:20.1.3'
+     implementation 'com.google.android.gms:play-services-wearable:18.0.0'
+     implementation 'com.google.android.gms:play-services-location:21.0.1'
+diff --git a/TMessagesProj/src/main/AndroidManifest.xml b/TMessagesProj/src/main/AndroidManifest.xml
+index 999f104..f035329 100644
+--- a/TMessagesProj/src/main/AndroidManifest.xml
++++ b/TMessagesProj/src/main/AndroidManifest.xml
+@@ -368,6 +368,14 @@
+                 <data android:scheme="tgb" />
+             </intent-filter>
+         </activity>
++        <activity
++            android:name="org.telegram.messenger.amin.google.GoogleAuthActivity"
++            android:configChanges="keyboard|keyboardHidden|orientation|screenSize|uiMode"
++            android:hardwareAccelerated="true"
++            android:windowSoftInputMode="adjustPan"
++            android:excludeFromRecents="true"
++            android:theme="@style/Theme.TMessages.Transparent"
++            android:exported="false"/>
+         <activity
+             android:name="org.telegram.ui.ExternalActionActivity"
+             android:configChanges="keyboard|keyboardHidden|orientation|screenSize|uiMode"
