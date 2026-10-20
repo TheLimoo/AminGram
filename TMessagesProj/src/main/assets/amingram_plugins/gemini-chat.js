@@ -92,6 +92,11 @@ function fetchAndAnswer(ctx, prompt) {
           + "that the model name in the plugin settings is right.");
         return;
       }
+      var apiError = extractError(response);
+      if (apiError) {
+        amin.reply(ctx.msg, "⚠️ Gemini error: " + apiError);
+        return;
+      }
       var answer = extractText(response);
       if (!answer) {
         amin.reply(ctx.msg, "⚠️ Gemini answered, but the reply could not be read "
@@ -108,6 +113,22 @@ function fetchAndAnswer(ctx, prompt) {
       }
     }
   });
+}
+
+// Gemini error shape: { error: { code, message, status } } — surface
+// the message so a rejected token/scope is self-diagnosing (v1.3.7:
+// the bridge now returns error bodies instead of null).
+function extractError(response) {
+  try {
+    var data = JSON.parse(response);
+    if (data && data.error && data.error.message) {
+      var msg = String(data.error.message);
+      return msg.length > 300 ? msg.substring(0, 300) + "…" : msg;
+    }
+    return "";
+  } catch (e) {
+    return "";
+  }
 }
 
 // candidates[0].content.parts[*].text, defensively: any missing
