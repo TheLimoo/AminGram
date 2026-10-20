@@ -656,3 +656,110 @@ no build).
   actually executing in plugins, bundled pre-install on first
   launch + delete-sticks, pill rendering, card tap isolation,
   stories row recovery, the hidden-chats page flows.
+
+## v1.3.5 (2026-10-20, on top of f87af55) — Google account auth for plugins
+
+Amin's ask: plugins should call Gemini with HIS OWN Google
+account's free quota — native OAuth, no API key typed anywhere.
+
+- **Dependency (patch 0016-google-auth, NEW)**: play-services-auth
+  20.4.0 → **21.6.0**. Evidence for the bump: the 20.4.0 AAR
+  contains `Identity` but NO AuthorizationClient (checked by
+  downloading the real AARs from Google Maven and listing /
+  javap-ing them); 21.6.0 has the full Authorization API —
+  `Identity.getAuthorizationClient(Context)`,
+  `AuthorizationClient.authorize/getAuthorizationResultFromIntent/
+  revokeAccess/clearToken`, `AuthorizationRequest.builder()
+  .setRequestedScopes(List<Scope>).setAccount(Account)`,
+  `AuthorizationResult.hasResolution/getPendingIntent/
+  getAccessToken/toGoogleSignInAccount`. 21.6.0 is the newest
+  21.x; its transitive play-services-base 18.5.0 carries
+  GoogleSignInAccount. Gradle resolves the shared GMS modules to
+  the newest requested versions, as the existing mixed GMS pins
+  already rely on. NOT compile-verified locally (no full build
+  on this VM) — first CI run is the proof.
+- **Manifest (same patch 0016)**: one `<activity>` block in
+  TMessagesProj/src/main/AndroidManifest.xml (after ShareActivity):
+  `org.telegram.messenger.amin.google.GoogleAuthActivity`,
+  exported=false, transparent theme, excludeFromRecents.
+- **Native manager (amin.google.GoogleAuthManager)**: scopes
+  `https://www.googleapis.com/auth/generative-language` + `email`.
+  Token cache {token, expiry, email} as ONE blob encrypted with
+  an AndroidKeyStore AES-256/GCM key (alias amingram_google_auth)
+  in prefs "amingram_google" — hand-rolled because
+  EncryptedSharedPreferences is deprecated. Tokens cached for a
+  conservative 50 min; getValidToken serves the cache while
+  >60 s remain, else silently re-authorizes; a result with
+  hasResolution (or no grant) fails with a readable error —
+  interactive consent is never attempted silently. Disconnect:
+  local cache cleared + best-effort clearToken/revokeAccess.
+  One interactive flow at a time (static pending-callback
+  registry in the manager).
+- **GoogleAuthActivity (amin.google)**: transparent trampoline
+  Activity. authorize() → direct token, or hasResolution →
+  startIntentSenderForResult(PendingIntent) →
+  getAuthorizationResultFromIntent → token. Saves via the
+  manager, delivers to the pending callback, finishes; destroy
+  without a result completes the callback as cancelled. Serves
+  the settings page and plugin sign-in alike.
+- **Settings UI**: hub Tools card gains a "Google Account" row
+  (value: connected email / "Connected" / "Not connected") →
+  ui/AminGoogleActivity (extera language like the Hidden Chats
+  page): status card, Connect / Disconnect (confirm dialog),
+  and the honest footer (capability-gated tokens, on-device
+  storage, Play Services required, periodic re-consent for
+  unverified apps is Google's behavior — roughly weekly in
+  testing mode).
+- **Bridge (AminBridge)**: new nested `GoogleAccess`
+  (isSignedIn / getAccessToken(fn) / signIn(fn)) carried ONLY
+  by the new `AminBridge.WithGoogle` variant, which
+  JsPluginManager.newScope builds when the plugin's manifest
+  declares the NEW `google` capability (JsManifest's known set
+  extended; install probe + runtimes both pass capabilities).
+  For other plugins amin.google is genuinely undefined — the
+  gate is which bridge class gets instantiated, not a runtime
+  check. Callbacks are async: JsPluginManager.
+  invokePluginCallback posts to the plugin thread, enters a
+  fresh Rhino context inside the Throwable guard, and calls the
+  function in its captured parent scope; deleted plugins'
+  pending callbacks are dropped. ClassShutter whitelist +=
+  WithGoogle + GoogleAccess; patch 0010's proguard block +=
+  the two matching `-keep` lines (hunk header +57,12 → +57,15)
+  — same R8 lesson as v1.3.4.
+- **amin.httpPost(url, body, headersObj)** added to the bridge
+  (httpGet's style: 15 s timeouts, 1 MB cap, body or null;
+  JSON Content-Type default; headers from a JS object) — the
+  Gemini call needs POST + an Authorization header.
+- **Bundled plugin #7 — gemini-chat** (capabilities commands,
+  send, http, google, settings, menu): /ai <prompt>; SETTINGS
+  model (text, def "gemini-2.5-flash") + systemPrompt (text,
+  def ""). Not signed in → amin.google.signIn and the pending
+  prompt continues in its callback; token → httpPost to
+  generativelanguage.googleapis.com/v1beta/models/<model>:
+  generateContent with the Bearer header; defensive
+  candidates[0].content.parts[*].text parse; one clean error
+  reply per failure mode; menu action posts a hint. Registered
+  in BundledPlugins → pre-installs like the others.
+- Honest bounds: Play Services required (no GMS = no sign-in);
+  online access only (this API issues no refresh token to the
+  app — silent re-authorize IS the refresh); ~1 h token life;
+  unverified-app re-consent is Google's policy; process death
+  during the consent screen loses that callback (the grant
+  survives; the next silent fetch succeeds).
+- Verified locally: JDK17 JavacTask parse clean (42 amin files);
+  FULL patch series 0001–0016 applies on pristine f32ffee and
+  reproduces the clone byte-for-byte for every patch-touched
+  file; amin trees byte-identical repo == overlay == clone;
+  JsManifest (compiled standalone) accepts all 7 bundled
+  manifests incl. the new `google` capability and still rejects
+  unknown ones; gemini-chat validated in a real Rhino 1.7.15
+  harness with a stubbed bridge (google + httpPost): 20/20
+  checks — signed-in happy path (URL, Bearer header, body),
+  sign-in-then-continue, sign-in declined, API error, token
+  failure, usage, settings (model + system prompt), safety-block
+  shape, menu hint, foreign-command ignore.
+- NOT verified (needs the build + device): the real consent
+  flow on a phone (account picker, resolution intent, email
+  actually present in AuthorizationResult), Gradle's GMS
+  version resolution with the bump, R8 keeps on the packaged
+  build, and Gemini answering with a real account token.

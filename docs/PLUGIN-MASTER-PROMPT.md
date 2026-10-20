@@ -29,8 +29,9 @@ The file starts with a manifest comment block. Every field is required:
 - `@id`: lowercase letters, digits and `-` only. Unique. Never changes between versions.
 - `@capabilities`: comma list of what the plugin uses, from:
   `observe` (watch messages), `commands` (react to /commands), `send` (post messages),
-  `settings` (has its own settings), `http` (uses amin.httpGet),
-  `menu` (appears as a button in the chat attach menu — see onMenuAction).
+  `settings` (has its own settings), `http` (uses amin.httpGet / amin.httpPost),
+  `menu` (appears as a button in the chat attach menu — see onMenuAction),
+  `google` (uses amin.google — the user's connected Google account).
 
 ## Runtime
 
@@ -49,6 +50,40 @@ amin.storage.set(key, value)
 amin.send(chatId, text)             // send a message AS THE USER to a chat
 amin.reply(msg, text)               // send a message into the same chat the msg came from
 amin.httpGet(url)                   // returns response text, or null on failure (blocking: call sparingly)
+amin.httpPost(url, body, headers)   // POST: body is a string, headers a {name: value} object;
+                                    // returns response text, or null on failure (blocking)
+```
+
+## Google account (`google` capability only)
+
+If the manifest does NOT declare the `google` capability, `amin.google`
+does not exist at all (`typeof amin.google === "undefined"`). With the
+capability, the plugin can use the Google account the user connected in
+**Plugins → Google Account** — an OAuth access token, never an API key:
+
+```js
+amin.google.isSignedIn()            // true while an account is connected
+amin.google.getAccessToken(fn)      // ASYNC: fn(token) — token is a string, or null
+amin.google.signIn(fn)              // ASYNC: fn(true/false) — opens the native
+                                    // Google account picker / consent screen
+```
+
+- Both async calls take a **callback** — they never return the value
+  directly, and the callback fires later (on the plugin's own thread),
+  possibly after the user finishes a consent screen. Structure code as
+  continuations: everything that needs the token goes INSIDE the
+  getAccessToken callback.
+- Typical pattern: if `!amin.google.isSignedIn()`, call
+  `amin.google.signIn(function (ok) { … })` and continue inside it when
+  `ok` is true; otherwise tell the user once, cleanly.
+- The token authorizes Google APIs for the scopes the app requests
+  (Generative Language / Gemini + email). Send it as
+  `Authorization: "Bearer " + token` with `amin.httpPost`.
+- Tokens live about an hour; `getAccessToken` silently refreshes them.
+  Never store a token in `amin.storage` — always fetch a fresh one.
+- Google may occasionally demand an interactive re-consent
+  (unverified app): then `getAccessToken` returns null and `signIn`
+  is the way back.
 ```
 
 ## Hooks — define the ones you need
