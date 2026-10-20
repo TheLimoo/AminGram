@@ -585,3 +585,74 @@ no build).
   upgrading users get the design immediately, stock theme kept as
   the restore snapshot); Rhino-on-Android behavior of the two new
   plugins beyond the desktop-Rhino contract checks.
+
+## v1.3.4 (2026-10-20, on top of 4c97e7a) — Release 7 field fixes
+
+- Patch 0010 (edited): R8 keeps for the JS bridge. Rhino reaches
+  AminBridge reflectively by JS name (log/toast/send/reply/
+  httpGet, the storage field, Storage.get/set) and R8 had
+  renamed all of it (plugins printed the bridge as fe.b and
+  every call failed). Patch 0010's proguard additions now end
+  with `-keep class org.telegram.messenger.amin.plugins.js.AminBridge { *; }`
+  and the `AminBridge$Storage` line. Rule going forward: ANY
+  class JS (or other reflective code) reaches by name needs a
+  name-preserving keep — the ClassShutter whitelist in
+  JsPluginManager is the checklist (it contains exactly these
+  two of ours; the java.lang entries are never renamed). Hunk
+  header updated +57,9 → +57,12; patch re-verified byte-exact.
+
+- Bundled plugins are PRE-INSTALLED (no Install buttons):
+  BundledPlugins.ensureInstalled runs once per process from
+  JsPluginManager.loadCache and installs every never-delivered
+  bundled plugin through the normal path. Delivery set:
+  "bundled_seen" (JSONArray of ids) in the amingram_jsplugins
+  prefs — written only for ids that actually end up installed.
+  A user-deleted bundled plugin is never auto-restored; the hub
+  shows it as "Built-in · deleted — tap to reinstall". Installed
+  bundled plugins render as normal rich cards and get no hub
+  rows at all.
+
+- Hub fixes: (a) the engine pill's height is pinned at exactly
+  56dp (EnginePillView.onMeasure + the adapter's LayoutParams)
+  — v1.3.3's wrap-content pill measured to the full slot
+  height on device and rendered as a giant empty accent block.
+  (b) PluginCardView's header and actions containers are
+  clickable: RecyclerListView suppresses its item click only
+  for a clickable DIRECT child of the item view, and the
+  card's buttons are nested two levels deep — without this,
+  action taps fired both the button and the card's page-open.
+
+- Hidden Chats has a dedicated page (ui/
+  AminHiddenChatsActivity, extera hub language): set-PIN card
+  when no PIN exists, an Unlock row when locked, and when
+  unlocked the hidden-chats card (name + kind + Unhide chip
+  per row), "Hide a chat…" (AminDialogPickerActivity), and a
+  PIN card (Change PIN with current-PIN check, Lock now). The
+  hub's hidden_chats actions collapse to ONE row, "Manage
+  hidden chats" (value: Set a PIN / Locked / N hidden).
+  HiddenChatsStore semantics unchanged.
+
+- Stories row: patch 0008's gates verified passthrough when
+  Hide Stories is off (and dialogStoriesCellVisible is not
+  gated at all); no other patch touches stories. As a
+  self-heal, AminHooks.applyDesignOnStartup schedules a
+  one-shot +4s NotificationCenter.storiesUpdated post when
+  Hide Stories is off (upstream posts the same from
+  LaunchActivity; DialogsActivity's handler is a pure
+  recompute). Root cause of the Release 7 disappearance not
+  proven from code — see DEVLOG item 5 for the full audit and
+  the honest uncertainty.
+
+- Viewer BiDi: DeletedStore.formatEditRecord /
+  formatDeletedRecord and MessagePipeline.formatRadarHit
+  prefix lines with U+200E and wrap titles in U+2066…U+2069
+  LTR isolates, so RTL titles no longer flip the line order.
+
+- Verified: JDK17 JavacTask parse clean (39 amin files,
+  UTF-8); patch series 0001–0015 on pristine f32ffee
+  reproduces the clone byte-for-byte (17 files); amin trees
+  identical repo == overlay == clone.
+- NOT verified (needs the v1.3.4 build + device): bridge calls
+  actually executing in plugins, bundled pre-install on first
+  launch + delete-sticks, pill rendering, card tap isolation,
+  stories row recovery, the hidden-chats page flows.
