@@ -197,7 +197,9 @@ public final class MessagePipeline {
             }
             String when = new java.text.SimpleDateFormat("HH:mm \u00b7 dd MMM",
                     java.util.Locale.US).format(new java.util.Date(dateSec * 1000L));
-            return title + " \u00b7 " + when + " \u2014 \u201c" + parts[2] + "\u201d: " + parts[4];
+            // v1.3.4 BiDi: LRM + LTR-isolated title (see
+            // DeletedStore.formatEditRecord for the rationale).
+            return "\u200E\u2066" + title + "\u2069" + " \u00b7 " + when + " \u2014 \u201c" + parts[2] + "\u201d: " + parts[4];
         } catch (Throwable t) {
             return record;
         }

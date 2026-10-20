@@ -4,6 +4,7 @@ import android.content.Context;
 
 import androidx.collection.LongSparseArray;
 
+import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ApplicationLoader;
 import org.telegram.messenger.MessageObject;
 import org.telegram.messenger.MessagesController;
@@ -90,6 +91,48 @@ public final class AminHooks {
             if (context != null) {
                 DesignThemes.applyEnabledDesigns(context);
             }
+        } catch (Throwable ignored) {
+        }
+        scheduleStoriesVisibilityRefresh();
+    }
+
+    /** v1.3.4 stories-row self-heal. Field report on Release 7:
+     *  the stories row never appeared in the chat list although
+     *  Hide Stories was OFF and contacts had live stories (visible
+     *  on their profiles). Audit result (see DEVLOG): patch 0008's
+     *  two gates reduce to the upstream assignment when the module
+     *  is off — and the cell's actual visibility
+     *  (dialogStoriesCellVisible) is not gated by us at all; patch
+     *  0012 touches only StoriesController.markStoryAsRead; no
+     *  other patch touches stories loading or DialogStoriesCell.
+     *  So the row's state is upstream-computed, and the one new
+     *  v1.3.3 variable in the startup path is THIS hook applying
+     *  a theme during LaunchActivity.onCreate (plus Release 7
+     *  being a fresh install under the new signing key, where the
+     *  first visibility computation can run before the stories
+     *  list lands and the natural storiesUpdated recompute can be
+     *  missed). Remediation: once, a few seconds after startup —
+     *  when the theme application and the initial sync have
+     *  settled — post the same storiesUpdated notification
+     *  upstream itself posts (LaunchActivity does exactly this),
+     *  but only when Hide Stories is off. DialogsActivity's
+     *  handler is a pure recompute (updateStoriesVisibility +
+     *  updateVisibleRows), so the nudge is idempotent: if stories
+     *  exist by then, the row appears; if none exist, nothing
+     *  changes. Honest status: the gates are provably innocent;
+     *  the precise upstream state that went stale on device was
+     *  not reproducible from code alone. */
+    private static void scheduleStoriesVisibilityRefresh() {
+        try {
+            AndroidUtilities.runOnUIThread(() -> {
+                try {
+                    if (!hideStories()) {
+                        NotificationCenter.getInstance(UserConfig.selectedAccount)
+                                .postNotificationName(NotificationCenter.storiesUpdated);
+                    }
+                } catch (Throwable ignored) {
+                }
+            }, 4000);
         } catch (Throwable ignored) {
         }
     }

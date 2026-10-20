@@ -216,7 +216,12 @@ public final class DeletedStore {
                 change = "\"" + change.substring(0, arrow) + "\" → \""
                         + change.substring(arrow + 4) + "\"";
             }
-            return title + " · " + when + " — " + change;
+            // v1.3.4 BiDi: an RTL (e.g. Persian) title otherwise
+            // flips the whole line's visual order. LRM prefix +
+            // the title wrapped in LTR isolates keeps the layout
+            // "Title · time — text" in every language mix. Same
+            // treatment in formatDeletedRecord / formatRadarHit.
+            return "\u200E\u2066" + title + "\u2069" + " · " + when + " — " + change;
         } catch (Throwable t) {
             return record;
         }
@@ -258,7 +263,9 @@ public final class DeletedStore {
             if (body == null || body.isEmpty()) {
                 body = "[" + parts[3] + "]";
             }
-            return title + " \u00b7 " + when + " \u2014 " + body;
+            // v1.3.4 BiDi: LRM + LTR-isolated title (see
+            // formatEditRecord for the rationale).
+            return "\u200E\u2066" + title + "\u2069" + " \u00b7 " + when + " \u2014 " + body;
         } catch (Throwable t) {
             return record;
         }
