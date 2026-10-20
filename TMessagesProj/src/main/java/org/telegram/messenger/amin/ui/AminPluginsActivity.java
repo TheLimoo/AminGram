@@ -36,6 +36,7 @@ import org.telegram.messenger.amin.core.HiddenChatsStore;
 import org.telegram.messenger.amin.core.MessagePipeline;
 import org.telegram.messenger.amin.core.SendWhenOnlineStore;
 import org.telegram.messenger.amin.core.VaultStore;
+import org.telegram.messenger.amin.google.GoogleAuthManager;
 import org.telegram.messenger.amin.plugins.ModModule;
 import org.telegram.messenger.amin.plugins.PluginRegistry;
 import org.telegram.messenger.amin.plugins.js.BundledPlugins;
@@ -214,6 +215,19 @@ public class AminPluginsActivity extends BaseFragment {
         addSection(context, "Privacy", ModModule.SECTION_PRIVACY);
         addSection(context, "Media", ModModule.SECTION_MEDIA);
         addSection(context, "Tools", ModModule.SECTION_TOOLS);
+        // v1.3.5: Google Account closes the Tools card (an action
+        // row added here still joins the Tools group card in
+        // assignSegments — the group only closes at the next
+        // section header).
+        String googleValue = "Not connected";
+        try {
+            if (GoogleAuthManager.isSignedIn(context)) {
+                String email = GoogleAuthManager.connectedEmail(context);
+                googleValue = email != null ? email : "Connected";
+            }
+        } catch (Throwable ignored) {
+        }
+        action("google_account", "Google Account", googleValue);
         addPluginsSection(context);
         Row footer = new Row();
         footer.kind = KIND_FOOTER;
@@ -621,6 +635,9 @@ public class AminPluginsActivity extends BaseFragment {
                 break;
             case "manage_hidden_chats":
                 presentFragment(new AminHiddenChatsActivity());
+                break;
+            case "google_account":
+                presentFragment(new AminGoogleActivity());
                 break;
             case "swo_new":
                 presentFragment(new AminDialogPickerActivity("Send when online — pick a person", true,
