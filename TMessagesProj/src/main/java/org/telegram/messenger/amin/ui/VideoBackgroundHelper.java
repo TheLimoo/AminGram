@@ -1,7 +1,6 @@
 package org.telegram.messenger.amin.ui;
 
 import android.content.Context;
-import android.content.SharedPreferences;
 import android.graphics.BitmapFactory;
 import android.graphics.ImageDecoder;
 import android.graphics.Matrix;
@@ -18,6 +17,7 @@ import androidx.recyclerview.widget.RecyclerView;
 
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.amin.AminHooks;
+import org.telegram.messenger.amin.core.WallpaperLibraryStore;
 import org.telegram.ui.Components.VideoPlayer;
 
 import java.io.File;
@@ -25,9 +25,12 @@ import java.io.File;
 /**
  * AminGram video/GIF chat background: an animated layer directly above
  * the static wallpaper and directly below the message list inside a
- * chat's content view. The file path lives in our own prefs
- * ("amingram_videobg"/"path"), set from the Plugins hub. Lifecycle is
- * driven by ChatActivity hooks (patch 0004, unchanged since v1.1).
+ * chat's content view. The file is the ACTIVE item of the live
+ * wallpaper library (core/WallpaperLibraryStore, v2.0); the get/set
+ * path accessors below are compatibility delegates to that store —
+ * the store keeps the legacy "amingram_videobg"/"path" pref synced
+ * to the active item. Lifecycle is driven by ChatActivity hooks
+ * (patch 0004, unchanged since v1.1).
  *
  * v1.3 rework (the "renders nothing" fix). The v1.1/v1.2 helper
  * inserted the TextureView during ChatActivity.createView — at that
@@ -56,9 +59,6 @@ import java.io.File;
  */
 public class VideoBackgroundHelper {
 
-    private static final String PREFS = "amingram_videobg";
-    private static final String KEY_PATH = "path";
-
     private ViewGroup parent;
     private VideoPlayer player;
     private TextureView textureView;
@@ -68,18 +68,38 @@ public class VideoBackgroundHelper {
     private boolean prepared;
     private boolean released;
 
+    /** Compatibility delegate: the active library item's path (the
+     *  store self-heals a dangling active id to null). Playback below
+     *  keeps reading through here, so applying a different library
+     *  item swaps the file a chat picks up on resume via the
+     *  shouldRelease() path-equality check. */
     public static String getVideoPath(Context context) {
-        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_PATH, null);
+        if (context == null) {
+            return null;
+        }
+        try {
+            return WallpaperLibraryStore.getActivePath(context);
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
+    /** Compatibility delegate: null deactivates (library items are
+     *  kept); a path is adopted into the library and applied (an
+     *  already-indexed file is applied in place, anything else is
+     *  copied in first; a missing/unreadable file changes nothing). */
     public static void setVideoPath(Context context, String path) {
-        SharedPreferences.Editor edit = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit();
-        if (path == null) {
-            edit.remove(KEY_PATH);
-        } else {
-            edit.putString(KEY_PATH, path);
+        if (context == null) {
+            return;
         }
-        edit.apply();
+        try {
+            if (path == null) {
+                WallpaperLibraryStore.clearActive(context);
+            } else {
+                WallpaperLibraryStore.adoptPath(context, path, "Current");
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     private static boolean isGif(String path) {

@@ -15,14 +15,24 @@ import java.util.regex.Pattern;
  *   // @author      Amin
  *   // @description ...
  *   // @capabilities commands, send
+ *   // @icon         music            (optional, v2.0)
+ *   // @menuLabel    Play a song      (optional, v2.0)
  *   // ==/AminGramPlugin==
  *
  * All six fields are required. @id must be lowercase letters, digits
  * and '-'. @capabilities entries must come from the known set
- * (observe, commands, send, settings, http, menu, google) — an
+ * (observe, commands, send, settings, http, menu, google, file) — an
  * unknown word makes the plugin invalid, per the master prompt.
  * `google` (v1.3.5) is the amin.google surface: the plugin's
  * bridge carries it only when this capability is declared.
+ * `file` (v2.0) gates the bridge's file surface, like `google`.
+ *
+ * Optional fields (v2.0): @icon is an attach-menu icon SPEC —
+ * either a set name (download, mail, sparkles, dice, text, link,
+ * music, star, bolt, camera, globe, gear) or "emoji:<glyph>" —
+ * and @menuLabel overrides the plugin name as the attach-menu
+ * button label. Both default to "" (unset) and are per-user
+ * overridable via the menu configuration (AminMenuConfig).
  */
 public final class JsManifest {
 
@@ -31,11 +41,15 @@ public final class JsManifest {
     public String version;
     public String author;
     public String description;
+    /** Optional manifest @icon ("" when unset). */
+    public String icon = "";
+    /** Optional manifest @menuLabel ("" when unset). */
+    public String menuLabel = "";
     public final List<String> capabilities = new ArrayList<>();
 
     private static final Pattern ID_PATTERN = Pattern.compile("^[a-z0-9][a-z0-9-]*$");
     private static final String[] KNOWN_CAPABILITIES = {
-            "observe", "commands", "send", "settings", "http", "menu", "google"
+            "observe", "commands", "send", "settings", "http", "menu", "google", "file"
     };
 
     private JsManifest() {
@@ -89,6 +103,12 @@ public final class JsManifest {
                     break;
                 case "description":
                     manifest.description = value;
+                    break;
+                case "icon":
+                    manifest.icon = value;
+                    break;
+                case "menuLabel":
+                    manifest.menuLabel = value;
                     break;
                 case "capabilities":
                     for (String cap : value.split(",")) {

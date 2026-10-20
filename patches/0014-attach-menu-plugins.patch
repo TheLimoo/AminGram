@@ -1,5 +1,5 @@
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java
-index 8a33d8a..bcb08ae 100644
+index 8a33d8a..8248771 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java
 @@ -2779,6 +2779,18 @@ public class ChatAttachAlert extends BottomSheet implements NotificationCenter.N
@@ -32,19 +32,59 @@ index 8a33d8a..bcb08ae 100644
          private int documentButton;
          private int moneyButton;
          private int musicButton;
-@@ -6679,6 +6695,11 @@ public class ChatAttachAlert extends BottomSheet implements NotificationCenter.N
+@@ -6679,6 +6695,51 @@ public class ChatAttachAlert extends BottomSheet implements NotificationCenter.N
                          attachButton.setTextAndIcon(LAYOUT_TYPE_RICH, getString(R.string.AttachArticle), GlassTabView.TabAnimation.ARTICLE);
                          attachButton.setTag(LAYOUT_TYPE_RICH);
                          needPremium = !MessagesController.getInstance(currentAccount).storyEntitiesAllowed();
 +                    } else if (position >= aminPluginStartRow && position < aminPluginEndRow && aminMenuPlugins != null) {
 +                        String[] aminPlugin = aminMenuPlugins.get(position - aminPluginStartRow);
 +                        int aminTag = -1000 - (position - aminPluginStartRow);
-+                        attachButton.setTextAndIcon(aminTag, aminPlugin[1], GlassTabView.TabAnimation.ARTICLE);
++                        // AminGram v2.0: aminPlugin = {id, label, iconSpec}.
++                        // iconSpec is a set name mapped to a TabAnimation
++                        // below, or "emoji:<glyph>" — GlassTabView has no
++                        // glyph hook, so an emoji is prepended to the
++                        // label and the default ARTICLE icon is kept.
++                        String aminLabel = aminPlugin[1];
++                        GlassTabView.TabAnimation aminAnim = GlassTabView.TabAnimation.ARTICLE;
++                        if (aminPlugin.length > 2 && aminPlugin[2] != null) {
++                            String aminSpec = aminPlugin[2].trim();
++                            if (aminSpec.startsWith("emoji:")) {
++                                String aminGlyph = aminSpec.substring(6).trim();
++                                if (!aminGlyph.isEmpty()) {
++                                    aminLabel = aminGlyph + " " + aminLabel;
++                                }
++                            } else {
++                                String aminName = aminSpec.toLowerCase(java.util.Locale.US);
++                                if (aminName.equals("download")) {
++                                    aminAnim = GlassTabView.TabAnimation.FILES;
++                                } else if (aminName.equals("mail")) {
++                                    aminAnim = GlassTabView.TabAnimation.REPLIES;
++                                } else if (aminName.equals("sparkles") || aminName.equals("star")) {
++                                    aminAnim = GlassTabView.TabAnimation.GIFT;
++                                } else if (aminName.equals("dice")) {
++                                    aminAnim = GlassTabView.TabAnimation.SYMBOLS;
++                                } else if (aminName.equals("link")) {
++                                    aminAnim = GlassTabView.TabAnimation.LINK;
++                                } else if (aminName.equals("music")) {
++                                    aminAnim = GlassTabView.TabAnimation.MUSIC;
++                                } else if (aminName.equals("bolt")) {
++                                    aminAnim = GlassTabView.TabAnimation.BOOSTS;
++                                } else if (aminName.equals("camera")) {
++                                    aminAnim = GlassTabView.TabAnimation.GALLERY;
++                                } else if (aminName.equals("globe")) {
++                                    aminAnim = GlassTabView.TabAnimation.LOCATION;
++                                } else if (aminName.equals("gear")) {
++                                    aminAnim = GlassTabView.TabAnimation.SETTINGS;
++                                }
++                                // "text" and unknown names keep ARTICLE.
++                            }
++                        }
++                        attachButton.setTextAndIcon(aminTag, aminLabel, aminAnim);
 +                        attachButton.setTag(aminTag);
                      }
                      attachButton.glassTabView.setCounter(err ? "!" : null, err, false);
                      attachButton.glassTabView.setPremiumBadge(needPremium && !UserConfig.getInstance(currentAccount).isPremium());
-@@ -6738,6 +6759,8 @@ public class ChatAttachAlert extends BottomSheet implements NotificationCenter.N
+@@ -6738,6 +6799,8 @@ public class ChatAttachAlert extends BottomSheet implements NotificationCenter.N
              emojiButton = -1;
              attachBotsStartRow = -1;
              attachBotsEndRow = -1;
@@ -53,7 +93,7 @@ index 8a33d8a..bcb08ae 100644
              moneyButton = -1;
  
              if (isPollAttach) {
-@@ -6829,6 +6852,12 @@ public class ChatAttachAlert extends BottomSheet implements NotificationCenter.N
+@@ -6829,6 +6892,12 @@ public class ChatAttachAlert extends BottomSheet implements NotificationCenter.N
                          attachBotsEndRow = buttonsCount;
                      }
                  }

@@ -190,24 +190,7 @@ public final class DeletedStore {
             }
             long dialogId = Long.parseLong(parts[0]);
             long dateSec = Long.parseLong(parts[2]);
-            String title = null;
-            org.telegram.messenger.MessagesController mc =
-                    org.telegram.messenger.MessagesController.getInstance(account);
-            if (dialogId > 0) {
-                org.telegram.tgnet.TLRPC.User user = mc.getUser(dialogId);
-                if (user != null) {
-                    title = ((user.first_name != null ? user.first_name : "") + " "
-                            + (user.last_name != null ? user.last_name : "")).trim();
-                }
-            } else if (dialogId < 0) {
-                org.telegram.tgnet.TLRPC.Chat chat = mc.getChat(-dialogId);
-                if (chat != null) {
-                    title = chat.title;
-                }
-            }
-            if (title == null || title.isEmpty()) {
-                title = "Chat " + dialogId;
-            }
+            String title = resolveTitle(account, dialogId);
             String when = new java.text.SimpleDateFormat("HH:mm · dd MMM",
                     java.util.Locale.US).format(new java.util.Date(dateSec * 1000L));
             String change = parts[3];
@@ -239,6 +222,215 @@ public final class DeletedStore {
             }
             long dialogId = Long.parseLong(parts[0]);
             long dateSec = Long.parseLong(parts[2]);
+            String title = resolveTitle(account, dialogId);
+            String when = new java.text.SimpleDateFormat("HH:mm \u00b7 dd MMM",
+                    java.util.Locale.US).format(new java.util.Date(dateSec * 1000L));
+            String body = parts[4];
+            if (body == null || body.isEmpty()) {
+                body = "[" + parts[3] + "]";
+            }
+            // v1.3.4 BiDi: LRM + LTR-isolated title (see
+            // formatEditRecord for the rationale).
+            return "\u200E\u2066" + title + "\u2069" + " \u00b7 " + when + " \u2014 " + body;
+        } catch (Throwable t) {
+            return record;
+        }
+    }
+
+    // ---- Parsed history API (v2.0): the rich Deleted / Edit History
+    // viewers work with structured entries instead of re-splitting the
+    // raw pipe records in the UI. The storage format is UNCHANGED —
+    // these are read/parse/delete helpers over the same VaultStore
+    // lists the formatters above render.
+
+    /** One parsed Deleted or Edit record. For deleted records
+     *  {@link #text} / {@link #kind} are set; for edits
+     *  {@link #oldText} / {@link #newText} are set (split on the
+     *  first " -> " of the stored payload, exactly like
+     *  formatEditRecord). {@link #dateSec} is the MESSAGE's own
+     *  timestamp in both cases: the archival format stores no
+     *  separate delete/edit moment. Malformed records still parse
+     *  to an entry whose body is the raw record (dialogId 0), so
+     *  the UI never silently drops a row. */
+    public static final class HistoryEntry {
+        public final String raw;
+        public final String storeKey;
+        public final long dialogId;
+        public final int msgId;
+        public final long dateSec;
+        public final String kind;
+        public final String text;
+        public final String oldText;
+        public final String newText;
+        public final boolean edit;
+
+        private HistoryEntry(String raw, String storeKey, long dialogId, int msgId,
+                             long dateSec, String kind, String text,
+                             String oldText, String newText, boolean edit) {
+            this.raw = raw;
+            this.storeKey = storeKey;
+            this.dialogId = dialogId;
+            this.msgId = msgId;
+            this.dateSec = dateSec;
+            this.kind = kind;
+            this.text = text;
+            this.oldText = oldText;
+            this.newText = newText;
+            this.edit = edit;
+        }
+
+        /** Primary body: the deleted text, or the AFTER text for edits. */
+        public String bodyText() {
+            if (edit) {
+                return newText != null ? newText : "";
+            }
+            return text != null ? text : "";
+        }
+
+        /** One-string snippet for cards and filter matching: the
+         *  deleted body, or "old → new" for edits. */
+        public String snippetText() {
+            if (!edit) {
+                return bodyText();
+            }
+            if (oldText == null || oldText.isEmpty()) {
+                return bodyText();
+            }
+            return oldText + " → " + bodyText();
+        }
+
+        /** Text handed to the clipboard by the detail screen's
+         *  Copy action: the full body, or labelled Before/After
+         *  for edits. Never carries BiDi control characters. */
+        public String copyText() {
+            if (!edit) {
+                return bodyText();
+            }
+            return "Before: " + (oldText != null ? oldText : "")
+                    + "\nAfter: " + bodyText();
+        }
+    }
+
+    public static HistoryEntry parseDeletedRecord(String record) {
+        if (record == null) {
+            record = "";
+        }
+        long dialogId = 0;
+        int msgId = 0;
+        long dateSec = 0;
+        String kind = "text";
+        String text = record;
+        String[] parts = record.split("\\|", 5);
+        if (parts.length == 5) {
+            kind = parts[3];
+            text = parts[4];
+            try {
+                dialogId = Long.parseLong(parts[0]);
+                msgId = Integer.parseInt(parts[1]);
+                dateSec = Long.parseLong(parts[2]);
+            } catch (Throwable ignored) {
+            }
+        }
+        if (kind == null || kind.isEmpty()) {
+            kind = "text";
+        }
+        if (text == null) {
+            text = "";
+        }
+        return new HistoryEntry(record, DELETED_KEY, dialogId, msgId, dateSec,
+                kind, text, null, null, false);
+    }
+
+    public static HistoryEntry parseEditRecord(String record) {
+        if (record == null) {
+            record = "";
+        }
+        long dialogId = 0;
+        int msgId = 0;
+        long dateSec = 0;
+        String oldText = "";
+        String newText = record;
+        String[] parts = record.split("\\|", 4);
+        if (parts.length == 4) {
+            String change = parts[3];
+            int arrow = change.indexOf(" -> ");
+            if (arrow >= 0) {
+                oldText = change.substring(0, arrow);
+                newText = change.substring(arrow + 4);
+            } else {
+                newText = change;
+            }
+            try {
+                dialogId = Long.parseLong(parts[0]);
+                msgId = Integer.parseInt(parts[1]);
+                dateSec = Long.parseLong(parts[2]);
+            } catch (Throwable ignored) {
+            }
+        }
+        if (newText == null) {
+            newText = "";
+        }
+        return new HistoryEntry(record, EDIT_KEY, dialogId, msgId, dateSec,
+                "edit", null, oldText, newText, true);
+    }
+
+    /** All stored entries for {@code key} (DELETED_KEY or EDIT_KEY)
+     *  in storage order (oldest first — the UI reverses). Any other
+     *  key yields an empty list; snapshots are not history entries. */
+    public static List<HistoryEntry> getHistoryEntries(Context context, String key) {
+        List<HistoryEntry> out = new ArrayList<>();
+        if (context == null
+                || (!DELETED_KEY.equals(key) && !EDIT_KEY.equals(key))) {
+            return out;
+        }
+        for (String raw : VaultStore.getAll(context, PREFS, key)) {
+            out.add(EDIT_KEY.equals(key)
+                    ? parseEditRecord(raw) : parseDeletedRecord(raw));
+        }
+        return out;
+    }
+
+    /** Removes ONE stored record (exact raw-string match) from the
+     *  DELETED or EDIT list. Returns true when a row was removed.
+     *  The snapshot list is never touched. */
+    public static boolean removeRecord(Context context, String key, String rawRecord) {
+        if (context == null || rawRecord == null
+                || (!DELETED_KEY.equals(key) && !EDIT_KEY.equals(key))) {
+            return false;
+        }
+        List<String> items = VaultStore.getAll(context, PREFS, key);
+        if (!items.remove(rawRecord)) {
+            return false;
+        }
+        VaultStore.putAll(context, PREFS, key, items);
+        return true;
+    }
+
+    public static boolean removeEntry(Context context, HistoryEntry entry) {
+        return entry != null && removeRecord(context, entry.storeKey, entry.raw);
+    }
+
+    /** Display title for a dialog: the user's name for private
+     *  dialogs, the chat title for groups/channels, "Chat <id>"
+     *  when the peer is unknown to this account. This is the exact
+     *  resolution formatEditRecord / formatDeletedRecord have
+     *  always used (extracted in v2.0, output unchanged). */
+    public static String chatTitle(int account, long dialogId) {
+        return resolveTitle(account, dialogId);
+    }
+
+    /** Best-effort sender name for a record. The archival format
+     *  stores no per-message from_id, so the sender can only be
+     *  resolved at dialog level: for a private dialog the other
+     *  user IS the sender side; for a group/channel the record is
+     *  attributed to the chat itself. Same value as chatTitle —
+     *  kept as a separate API so the UI's intent stays explicit. */
+    public static String senderName(int account, long dialogId) {
+        return resolveTitle(account, dialogId);
+    }
+
+    private static String resolveTitle(int account, long dialogId) {
+        try {
             String title = null;
             org.telegram.messenger.MessagesController mc =
                     org.telegram.messenger.MessagesController.getInstance(account);
@@ -257,17 +449,9 @@ public final class DeletedStore {
             if (title == null || title.isEmpty()) {
                 title = "Chat " + dialogId;
             }
-            String when = new java.text.SimpleDateFormat("HH:mm \u00b7 dd MMM",
-                    java.util.Locale.US).format(new java.util.Date(dateSec * 1000L));
-            String body = parts[4];
-            if (body == null || body.isEmpty()) {
-                body = "[" + parts[3] + "]";
-            }
-            // v1.3.4 BiDi: LRM + LTR-isolated title (see
-            // formatEditRecord for the rationale).
-            return "\u200E\u2066" + title + "\u2069" + " \u00b7 " + when + " \u2014 " + body;
+            return title;
         } catch (Throwable t) {
-            return record;
+            return "Chat " + dialogId;
         }
     }
 

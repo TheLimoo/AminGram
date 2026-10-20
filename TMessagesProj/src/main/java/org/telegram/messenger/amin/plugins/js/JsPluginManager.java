@@ -64,11 +64,17 @@ import java.util.Set;
  * message; reinstalling or toggling clears that.
  *
  * Storage layout:
- * - prefs "amingram_jsplugins": "order" (JSONArray of ids),
+ * - prefs "amingram_jsplugins": "order" (JSONArray of ids — the
+ *   plugin order; movePlugin/movePluginTo/reorder rewrite it),
  *   "meta_<id>" (JsPlugin JSON), logs under "log_<id>" (VaultStore),
- *   "bundled_seen" (BundledPlugins' pre-install delivery set).
+ *   "bundled_seen" (BundledPlugins' pre-install delivery set),
+ *   "bundled_user_deleted" (BundledPlugins' explicit v2.0 deletion
+ *   set), "menu_config_v1" (AminMenuConfig's attach-menu config).
  * - code: app-private files dir, jsplugins/<id>.js.
- * - per-plugin storage: prefs "amingram_jsstore_<id>".
+ * - per-plugin storage: prefs "amingram_jsstore_<id>" — this one
+ *   file holds BOTH amin.storage values and the hub-written
+ *   SETTINGS values (storageSetRaw). delete() removes the whole
+ *   file, so no setting or storage value survives a delete.
  */
 public final class JsPluginManager {
 
@@ -97,6 +103,8 @@ public final class JsPluginManager {
                     || fullClassName.equals(AminBridge.Storage.class.getName())
                     || fullClassName.equals(AminBridge.WithGoogle.class.getName())
                     || fullClassName.equals(AminBridge.GoogleAccess.class.getName())
+                    || fullClassName.equals(AminBridge.WithFile.class.getName())
+                    || fullClassName.equals(AminBridge.WithGoogleFile.class.getName())
                     || fullClassName.equals("java.lang.Object")
                     || fullClassName.equals("java.lang.String")
                     || fullClassName.equals("java.lang.Boolean")
@@ -187,19 +195,247 @@ public final class JsPluginManager {
         return false;
     }
 
-    /** Enabled plugins that belong in the chat attach menu:
-     *  {id, name} pairs in install order. Pure prefs read. */
+    // ------------------------------------------------------------------
+    // Attach menu (patch 0014) + menu configuration (v2.0)
+    // ------------------------------------------------------------------
+
+    /**
+     * One row of the attach-menu configuration, as consumed by the
+     * hub's menu-customization UI. {@link #icon} and {@link #label}
+     * are OVERRIDES: null/"" means "use the plugin's manifest
+     * default" (@icon / @menuLabel, else the plugin name / the
+     * default icon). Use {@link #resolvedLabel()} /
+     * {@link #resolvedIcon()} for the effective values.
+     *
+     * Icon values are specs everywhere in the plugin system
+     * (manifest @icon, this override, and menuPlugins row[2]):
+     * either a set name — download, mail, sparkles, dice, text,
+     * link, music, star, bolt, camera, globe, gear — or
+     * "emoji:&lt;glyph&gt;". Patch 0014 maps set names to
+     * GlassTabView.TabAnimation values and prepends emoji glyphs
+     * to the label.
+     */
+    public static final class MenuEntry {
+        public JsPlugin plugin;
+        public boolean included = true;
+        public String icon;
+        public String label;
+
+        public MenuEntry() {
+        }
+
+        public MenuEntry(JsPlugin plugin, boolean included, String icon, String label) {
+            this.plugin = plugin;
+            this.included = included;
+            this.icon = icon;
+            this.label = label;
+        }
+
+        /** Effective label: override, else @menuLabel, else name. */
+        public String resolvedLabel() {
+            if (label != null && !label.isEmpty()) {
+                return label;
+            }
+            return plugin != null ? plugin.defaultMenuLabel() : "";
+        }
+
+        /** Effective icon spec: override, else manifest @icon,
+         *  else "" (patch 0014 renders its default, ARTICLE). */
+        public String resolvedIcon() {
+            if (icon != null && !icon.isEmpty()) {
+                return icon;
+            }
+            return plugin != null ? plugin.defaultMenuIcon() : "";
+        }
+
+        /** {id, resolvedLabel, resolvedIcon} — the patch-0014 row. */
+        public String[] toArray() {
+            return new String[]{
+                    plugin != null ? plugin.id : "", resolvedLabel(), resolvedIcon()};
+        }
+    }
+
+    private static boolean isMenuCapable(JsPlugin plugin) {
+        return plugin.hasMenu && plugin.hasCapability("menu");
+    }
+
+    /** Enabled plugins that belong in the chat attach menu, as
+     *  {id, label, iconSpec} rows (indices 0/1 are what patch 0014
+     *  has always consumed; index 2 is the v2.0 icon spec). Honors
+     *  the AminMenuConfig configuration (order, inclusion, icon /
+     *  label overrides); with no config stored, falls back to all
+     *  enabled menu plugins in plugin order with manifest
+     *  defaults. Menu plugins installed after the config was saved
+     *  are appended with defaults instead of being hidden.
+     *  Pure prefs read. */
     public static List<String[]> menuPlugins(Context context) {
         List<String[]> out = new ArrayList<>();
-        if (!isEngineEnabled(context)) {
+        for (MenuEntry entry : resolvedMenuEntries(context)) {
+            out.add(entry.toArray());
+        }
+        return out;
+    }
+
+    /** Typed twin of {@link #menuPlugins}: the resolved, included
+     *  entries actually shown in the attach menu. */
+    public static List<MenuEntry> menuPluginEntries(Context context) {
+        return resolvedMenuEntries(context);
+    }
+
+    private static List<MenuEntry> resolvedMenuEntries(Context context) {
+        List<MenuEntry> out = new ArrayList<>();
+        if (context == null || !isEngineEnabled(context)) {
             return out;
         }
+        List<AminMenuConfig.MenuEntry> config = AminMenuConfig.load(context);
+        if (config.isEmpty()) {
+            for (JsPlugin plugin : plugins(context)) {
+                if (plugin.enabled && isMenuCapable(plugin)) {
+                    out.add(new MenuEntry(plugin, true,
+                            plugin.defaultMenuIcon(), plugin.defaultMenuLabel()));
+                }
+            }
+            return out;
+        }
+        Set<String> mentioned = new HashSet<>();
+        for (AminMenuConfig.MenuEntry stored : config) {
+            mentioned.add(stored.pluginId);
+            if (!stored.included) {
+                continue;
+            }
+            JsPlugin plugin = get(context, stored.pluginId);
+            if (plugin == null || !plugin.enabled || !isMenuCapable(plugin)) {
+                continue;
+            }
+            MenuEntry entry = new MenuEntry(plugin, true, stored.icon, stored.label);
+            out.add(new MenuEntry(plugin, true,
+                    entry.resolvedIcon(), entry.resolvedLabel()));
+        }
         for (JsPlugin plugin : plugins(context)) {
-            if (plugin.enabled && plugin.hasMenu && plugin.hasCapability("menu")) {
-                out.add(new String[]{plugin.id, plugin.name});
+            if (!mentioned.contains(plugin.id)
+                    && plugin.enabled && isMenuCapable(plugin)) {
+                out.add(new MenuEntry(plugin, true,
+                        plugin.defaultMenuIcon(), plugin.defaultMenuLabel()));
             }
         }
         return out;
+    }
+
+    /** The effective menu configuration for editing (hub UI): one
+     *  MenuEntry per installed menu-capable plugin (enabled or
+     *  not), in configured order first, then plugin order for
+     *  plugins the config doesn't mention. icon/label are the
+     *  stored OVERRIDES ("" = manifest default), included defaults
+     *  to true. Mutate via setMenuIncluded / setMenuIcon /
+     *  setMenuLabel / moveMenuPlugin, which materialize and persist
+     *  this whole list. */
+    public static List<MenuEntry> menuConfigEntries(Context context) {
+        List<MenuEntry> out = new ArrayList<>();
+        if (context == null) {
+            return out;
+        }
+        List<AminMenuConfig.MenuEntry> config = AminMenuConfig.load(context);
+        Set<String> mentioned = new HashSet<>();
+        for (AminMenuConfig.MenuEntry stored : config) {
+            JsPlugin plugin = get(context, stored.pluginId);
+            if (plugin == null || !isMenuCapable(plugin)) {
+                continue;
+            }
+            mentioned.add(stored.pluginId);
+            out.add(new MenuEntry(plugin, stored.included, stored.icon, stored.label));
+        }
+        for (JsPlugin plugin : plugins(context)) {
+            if (!mentioned.contains(plugin.id) && isMenuCapable(plugin)) {
+                out.add(new MenuEntry(plugin, true, "", ""));
+            }
+        }
+        return out;
+    }
+
+    private static void saveMenuEntries(Context context, List<MenuEntry> entries) {
+        List<AminMenuConfig.MenuEntry> stored = new ArrayList<>();
+        for (MenuEntry entry : entries) {
+            if (entry.plugin == null) {
+                continue;
+            }
+            stored.add(new AminMenuConfig.MenuEntry(entry.plugin.id,
+                    entry.label == null ? "" : entry.label,
+                    entry.icon == null ? "" : entry.icon,
+                    entry.included));
+        }
+        AminMenuConfig.save(context, stored);
+    }
+
+    /** Includes/excludes one plugin in the attach menu. Materializes
+     *  the effective config first, so excluding one plugin from the
+     *  fallback state doesn't disturb the others. No-op for
+     *  unknown / non-menu plugins. */
+    public static void setMenuIncluded(Context context, String pluginId, boolean included) {
+        List<MenuEntry> entries = menuConfigEntries(context);
+        for (MenuEntry entry : entries) {
+            if (entry.plugin.id.equals(pluginId)) {
+                entry.included = included;
+                saveMenuEntries(context, entries);
+                return;
+            }
+        }
+    }
+
+    /** Sets a plugin's menu icon override (a set name or
+     *  "emoji:&lt;glyph&gt;"); null/"" clears it back to the
+     *  manifest @icon / default. */
+    public static void setMenuIcon(Context context, String pluginId, String iconSpecOrNull) {
+        List<MenuEntry> entries = menuConfigEntries(context);
+        for (MenuEntry entry : entries) {
+            if (entry.plugin.id.equals(pluginId)) {
+                entry.icon = iconSpecOrNull == null ? "" : iconSpecOrNull;
+                saveMenuEntries(context, entries);
+                return;
+            }
+        }
+    }
+
+    /** Sets a plugin's menu label override; null/"" clears it back
+     *  to the manifest @menuLabel / plugin name. */
+    public static void setMenuLabel(Context context, String pluginId, String labelOrNull) {
+        List<MenuEntry> entries = menuConfigEntries(context);
+        for (MenuEntry entry : entries) {
+            if (entry.plugin.id.equals(pluginId)) {
+                entry.label = labelOrNull == null ? "" : labelOrNull;
+                saveMenuEntries(context, entries);
+                return;
+            }
+        }
+    }
+
+    /** Moves a plugin within the menu configuration by delta
+     *  positions (negative = up). Returns true when it moved. */
+    public static boolean moveMenuPlugin(Context context, String pluginId, int delta) {
+        List<MenuEntry> entries = menuConfigEntries(context);
+        int from = -1;
+        for (int i = 0; i < entries.size(); i++) {
+            if (entries.get(i).plugin.id.equals(pluginId)) {
+                from = i;
+                break;
+            }
+        }
+        if (from < 0 || delta == 0) {
+            return false;
+        }
+        int to = Math.max(0, Math.min(entries.size() - 1, from + delta));
+        if (to == from) {
+            return false;
+        }
+        MenuEntry entry = entries.remove(from);
+        entries.add(to, entry);
+        saveMenuEntries(context, entries);
+        return true;
+    }
+
+    /** Clears the whole menu configuration, restoring the
+     *  all-enabled fallback. */
+    public static void resetMenuConfig(Context context) {
+        AminMenuConfig.clear(context);
     }
 
     private static void loadCache(Context context) {
@@ -255,6 +491,107 @@ public final class JsPluginManager {
                 .apply();
     }
 
+    /** Rewrites the persisted plugin order from the in-memory cache.
+     *  Caller must hold the JsPluginManager.class lock (or be in a
+     *  synchronized method) and have mutated {@code cache} already. */
+    private static void persistOrder(Context context) {
+        JSONArray order = new JSONArray();
+        for (JsPlugin p : cache) {
+            order.put(p.id);
+        }
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().putString(KEY_ORDER, order.toString()).apply();
+    }
+
+    // ------------------------------------------------------------------
+    // Ordering (v2.0): the cache order IS the persisted "order" list.
+    // Dispatch, the hub list and the attach-menu fallback all follow
+    // it, so these moves are the single ordering control.
+    // ------------------------------------------------------------------
+
+    /** Moves a plugin by delta positions in the plugin order
+     *  (negative = up). Persists immediately. Returns true when the
+     *  position actually changed. (The hub's Move up/down menu
+     *  calls this with -1/+1.) */
+    public static synchronized boolean movePlugin(Context context, String pluginId, int delta) {
+        if (context == null || pluginId == null || delta == 0) {
+            return false;
+        }
+        loadCache(context);
+        int from = -1;
+        for (int i = 0; i < cache.size(); i++) {
+            if (cache.get(i).id.equals(pluginId)) {
+                from = i;
+                break;
+            }
+        }
+        if (from < 0) {
+            return false;
+        }
+        int to = Math.max(0, Math.min(cache.size() - 1, from + delta));
+        if (to == from) {
+            return false;
+        }
+        JsPlugin plugin = cache.remove(from);
+        cache.add(to, plugin);
+        persistOrder(context);
+        return true;
+    }
+
+    /** Moves a plugin to an absolute index (clamped). Persists
+     *  immediately. Returns true when the position changed. */
+    public static synchronized boolean movePluginTo(Context context, String pluginId, int newIndex) {
+        if (context == null || pluginId == null) {
+            return false;
+        }
+        loadCache(context);
+        int from = -1;
+        for (int i = 0; i < cache.size(); i++) {
+            if (cache.get(i).id.equals(pluginId)) {
+                from = i;
+                break;
+            }
+        }
+        if (from < 0) {
+            return false;
+        }
+        int to = Math.max(0, Math.min(cache.size() - 1, newIndex));
+        if (to == from) {
+            return false;
+        }
+        JsPlugin plugin = cache.remove(from);
+        cache.add(to, plugin);
+        persistOrder(context);
+        return true;
+    }
+
+    /** Applies a full ordering: ids in orderedIds come first in
+     *  that sequence; unknown ids are ignored and installed plugins
+     *  missing from the list keep their relative order at the end.
+     *  Persists immediately. */
+    public static synchronized void reorder(Context context, List<String> orderedIds) {
+        if (context == null || orderedIds == null) {
+            return;
+        }
+        loadCache(context);
+        List<JsPlugin> next = new ArrayList<>();
+        for (String id : orderedIds) {
+            for (JsPlugin plugin : cache) {
+                if (plugin.id.equals(id) && !next.contains(plugin)) {
+                    next.add(plugin);
+                }
+            }
+        }
+        for (JsPlugin plugin : cache) {
+            if (!next.contains(plugin)) {
+                next.add(plugin);
+            }
+        }
+        cache.clear();
+        cache.addAll(next);
+        persistOrder(context);
+    }
+
     // ------------------------------------------------------------------
     // Install / enable / delete
     // ------------------------------------------------------------------
@@ -304,6 +641,8 @@ public final class JsPluginManager {
             plugin.version = manifest.version;
             plugin.author = manifest.author;
             plugin.description = manifest.description;
+            plugin.icon = manifest.icon;
+            plugin.menuLabel = manifest.menuLabel;
             plugin.capabilities.addAll(manifest.capabilities);
             plugin.enabled = existing == null || existing.enabled;
             plugin.installedAt = existing != null ? existing.installedAt
@@ -342,6 +681,10 @@ public final class JsPluginManager {
                 cache.add(plugin);
             }
             persistMeta(context, plugin);
+            // A successful install of a bundled id (any path) clears
+            // its user-deleted marker and marks it delivered, so a
+            // reinstalled bundled plugin stays reinstalled.
+            BundledPlugins.onInstalled(context, plugin.id);
             appendLog(plugin.id, "[info] installed v" + plugin.version + " by " + plugin.author);
             broken.remove(plugin.id);
             dropRuntime(plugin.id);
@@ -366,32 +709,95 @@ public final class JsPluginManager {
     }
 
     public static void delete(Context context, JsPlugin plugin) {
+        if (plugin != null) {
+            delete(context, plugin.id);
+        }
+    }
+
+    /**
+     * TRUE delete (v2.0): removes every trace of the plugin, so no
+     * ghost data can resurface on a later reinstall of the same id:
+     * - the in-memory cache entry and its slot in the persisted
+     *   plugin order;
+     * - meta_<id> and the log (log_<id>, removed directly and via
+     *   VaultStore, its writer);
+     * - the code file jsplugins/<id>.js;
+     * - the ENTIRE per-plugin storage prefs file
+     *   ("amingram_jsstore_<id>") — that file holds both
+     *   amin.storage values AND the hub-written SETTINGS values
+     *   (storageSetRaw writes there), so deleting the file removes
+     *   storage and settings wherever they are stored;
+     * - the plugin's attach-menu configuration entry
+     *   (AminMenuConfig), so a reinstall doesn't inherit stale
+     *   inclusion/order/icon/label state;
+     * - the live runtime and the session "broken" mark.
+     * For a bundled id it also records the explicit user deletion
+     * (BundledPlugins.markUserDeleted) — that marker is the ONE
+     * deliberate survivor: it stops auto-install from resurrecting
+     * the plugin, and the library keeps offering it for a manual
+     * reinstall (which clears the marker).
+     * Works by id even when the plugin is not in the cache, so
+     * orphaned meta/storage ghosts can be purged too.
+     */
+    public static void delete(Context context, String pluginId) {
+        if (context == null || pluginId == null || pluginId.isEmpty()) {
+            return;
+        }
         synchronized (JsPluginManager.class) {
             loadCache(context);
             for (int i = cache.size() - 1; i >= 0; i--) {
-                if (cache.get(i).id.equals(plugin.id)) {
+                if (cache.get(i).id.equals(pluginId)) {
                     cache.remove(i);
                 }
             }
+            persistOrder(context);
         }
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        JSONArray order = new JSONArray();
-        for (JsPlugin p : plugins(context)) {
-            order.put(p.id);
-        }
         prefs.edit()
-                .putString(KEY_ORDER, order.toString())
-                .remove(KEY_META_PREFIX + plugin.id)
-                .remove(KEY_LOG_PREFIX + plugin.id)
+                .remove(KEY_META_PREFIX + pluginId)
+                .remove(KEY_LOG_PREFIX + pluginId)
                 .apply();
-        File file = codeFile(context, plugin.id);
+        VaultStore.clear(context, PREFS, KEY_LOG_PREFIX + pluginId);
+        File file = codeFile(context, pluginId);
         if (file.exists()) {
             file.delete();
         }
-        context.getSharedPreferences(storagePrefsName(plugin.id), Context.MODE_PRIVATE)
-                .edit().clear().apply();
-        dropRuntime(plugin.id);
-        broken.remove(plugin.id);
+        deleteStoragePrefs(context, pluginId);
+        AminMenuConfig.remove(context, pluginId);
+        BundledPlugins.markUserDeleted(context, pluginId);
+        dropRuntime(pluginId);
+        broken.remove(pluginId);
+    }
+
+    /** Removes a per-plugin storage prefs file completely — values,
+     *  in-process cache and the XML file itself. minSdk is 23 and
+     *  deleteSharedPreferences is API 24, so: clear() first (works
+     *  everywhere and empties any live cached instance), then the
+     *  platform delete where available, then a direct file delete
+     *  as belt-and-braces. */
+    private static void deleteStoragePrefs(Context context, String pluginId) {
+        String name = storagePrefsName(pluginId);
+        try {
+            context.getSharedPreferences(name, Context.MODE_PRIVATE)
+                    .edit().clear().apply();
+        } catch (Throwable ignored) {
+        }
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 24) {
+                context.deleteSharedPreferences(name);
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            String dataDir = context.getApplicationInfo().dataDir;
+            if (dataDir != null) {
+                File xml = new File(new File(dataDir, "shared_prefs"), name + ".xml");
+                if (xml.exists()) {
+                    xml.delete();
+                }
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     private static File codeFile(Context context, String pluginId) {
@@ -488,12 +894,24 @@ public final class JsPluginManager {
         for (String name : banned) {
             ScriptableObject.deleteProperty(scope, name);
         }
-        // The `google` capability is structural: only plugins whose
-        // manifest declares it get the WithGoogle bridge variant —
-        // on the plain bridge, amin.google does not exist at all.
-        AminBridge bridge = capabilities != null && capabilities.contains("google")
-                ? new AminBridge.WithGoogle(pluginId)
-                : new AminBridge(pluginId);
+        // Capability gating is structural: only plugins whose
+        // manifest declares `google` get amin.google, and only
+        // plugins declaring `file` get amin.sendFile. The bridge
+        // variant is selected by the declared capability pair —
+        // on a variant without the wrapper, the method/property
+        // does not exist at all.
+        boolean hasGoogle = capabilities != null && capabilities.contains("google");
+        boolean hasFile = capabilities != null && capabilities.contains("file");
+        AminBridge bridge;
+        if (hasGoogle && hasFile) {
+            bridge = new AminBridge.WithGoogleFile(pluginId);
+        } else if (hasGoogle) {
+            bridge = new AminBridge.WithGoogle(pluginId);
+        } else if (hasFile) {
+            bridge = new AminBridge.WithFile(pluginId);
+        } else {
+            bridge = new AminBridge(pluginId);
+        }
         scope.put("amin", scope, org.mozilla.javascript.Context.javaToJS(bridge, scope));
         return scope;
     }

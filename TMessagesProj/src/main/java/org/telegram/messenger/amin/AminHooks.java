@@ -4,7 +4,6 @@ import android.content.Context;
 
 import androidx.collection.LongSparseArray;
 
-import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ApplicationLoader;
 import org.telegram.messenger.MessageObject;
 import org.telegram.messenger.MessagesController;
@@ -13,7 +12,6 @@ import org.telegram.messenger.SendMessagesHelper;
 import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.Utilities;
 import org.telegram.messenger.amin.core.DeletedStore;
-import org.telegram.messenger.amin.core.DesignThemes;
 import org.telegram.messenger.amin.core.HiddenChatsStore;
 import org.telegram.messenger.amin.core.MessagePipeline;
 import org.telegram.messenger.amin.core.SendWhenOnlineStore;
@@ -75,66 +73,6 @@ public final class AminHooks {
 
     public static boolean hideStories() {
         return moduleEnabled("hide_stories");
-    }
-
-    /** Design themes at app startup (patch 0015, LaunchActivity.
-     *  onCreate right after ApplicationLoader.postInitApplication):
-     *  the enabled design module (amin_design / ios_theme) owns the
-     *  day theme — see amin.core.DesignThemes. Designs persist
-     *  natively once applied, so this only reconciles drift (theme
-     *  changed in Appearance while a design stayed on, or a restore
-     *  that could not complete). Throwable-isolated like everything
-     *  here: it must never break app startup. */
-    public static void applyDesignOnStartup() {
-        try {
-            Context context = ApplicationLoader.applicationContext;
-            if (context != null) {
-                DesignThemes.applyEnabledDesigns(context);
-            }
-        } catch (Throwable ignored) {
-        }
-        scheduleStoriesVisibilityRefresh();
-    }
-
-    /** v1.3.4 stories-row self-heal. Field report on Release 7:
-     *  the stories row never appeared in the chat list although
-     *  Hide Stories was OFF and contacts had live stories (visible
-     *  on their profiles). Audit result (see DEVLOG): patch 0008's
-     *  two gates reduce to the upstream assignment when the module
-     *  is off — and the cell's actual visibility
-     *  (dialogStoriesCellVisible) is not gated by us at all; patch
-     *  0012 touches only StoriesController.markStoryAsRead; no
-     *  other patch touches stories loading or DialogStoriesCell.
-     *  So the row's state is upstream-computed, and the one new
-     *  v1.3.3 variable in the startup path is THIS hook applying
-     *  a theme during LaunchActivity.onCreate (plus Release 7
-     *  being a fresh install under the new signing key, where the
-     *  first visibility computation can run before the stories
-     *  list lands and the natural storiesUpdated recompute can be
-     *  missed). Remediation: once, a few seconds after startup —
-     *  when the theme application and the initial sync have
-     *  settled — post the same storiesUpdated notification
-     *  upstream itself posts (LaunchActivity does exactly this),
-     *  but only when Hide Stories is off. DialogsActivity's
-     *  handler is a pure recompute (updateStoriesVisibility +
-     *  updateVisibleRows), so the nudge is idempotent: if stories
-     *  exist by then, the row appears; if none exist, nothing
-     *  changes. Honest status: the gates are provably innocent;
-     *  the precise upstream state that went stale on device was
-     *  not reproducible from code alone. */
-    private static void scheduleStoriesVisibilityRefresh() {
-        try {
-            AndroidUtilities.runOnUIThread(() -> {
-                try {
-                    if (!hideStories()) {
-                        NotificationCenter.getInstance(UserConfig.selectedAccount)
-                                .postNotificationName(NotificationCenter.storiesUpdated);
-                    }
-                } catch (Throwable ignored) {
-                }
-            }, 4000);
-        } catch (Throwable ignored) {
-        }
     }
 
     // ------------------------------------------------------------------
@@ -288,8 +226,10 @@ public final class AminHooks {
     // JS plugin attach-menu buttons (patch 0014, ChatAttachAlert).
     // ------------------------------------------------------------------
 
-    /** Enabled menu plugins as {id, name} pairs, in install order.
-     *  Pure prefs read — safe on the UI thread while the menu builds. */
+    /** Enabled menu plugins as {id, label, iconSpec} rows (v2.0:
+     *  iconSpec is a set name or "emoji:<glyph>"; patch 0014 maps
+     *  it), in menu-config order. Pure prefs read — safe on the UI
+     *  thread while the menu builds. */
     public static List<String[]> attachMenuPlugins() {
         try {
             Context context = ApplicationLoader.applicationContext;

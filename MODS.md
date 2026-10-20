@@ -825,3 +825,214 @@ GOOGLE-CLOUD-SETUP.md step 3 now names cloud-platform.
   gemini-chat (OAuth). The key-based plugins (gemini-key,
   gemini-fix) are standalone diagnostics kept in
   ~/workspace/amingram/plugins/ — they are NOT bundled.
+
+## v2.0 — the Grand Update (2026-10-21)
+
+One coordinated batch across the history viewers, the hub, plugin
+deletion, the attach menu and the JS bridge. No new upstream files
+touched beyond the patch changes noted below (0014 extended, 0015
+deleted); everything else is overlay code under
+`org.telegram.messenger.amin.**`.
+
+- **Deleted / Edit history — rich card viewers** (`ui/
+  AminStoreListActivity` history mode + NEW `ui/
+  AminHistoryDetailActivity`): the two DeletedStore lists (Deleted
+  messages, Edit history) now render as rounded cards — initial
+  chip, chat title, sender, kind, message time and the text
+  (edits show BEFORE → AFTER) — under a count header with a
+  **filter** field matching message text, chat title or sender.
+  Tapping a card opens the detail screen: full text, a Details
+  card (chat, sender, chat type, record type, kind, message id,
+  message time) and an Actions card — Copy text (raw, no BiDi
+  controls), Open chat, and **Delete this record** (confirm dialog;
+  removes just that one record via `DeletedStore.removeRecord` and
+  returns to the refreshed list). Other store lists (Radar hits,
+  Auto-Saver log) keep the previous plain list presentation.
+
+- **Hub v2** (`ui/AminPluginsActivity`): module sections are
+  **collapsible** (state persisted per section) with
+  **count-labelled headers**, and a **Search plugins** action
+  filters the plugin cards. The JS **engine is now a standard
+  module-style switch row** — the v1.3.3 custom accent pill
+  (EnginePillView) is REMOVED; the backing pref is unchanged
+  (`engine_enabled` in amingram_jsplugins, default true, same
+  gates: hasEnabledPlugins, menuPlugins, every dispatch entry,
+  warmUp). Each plugin card gains an **overflow menu — Settings,
+  Log, Move up, Move down, Delete** — alongside its existing
+  settings/log/delete actions; Move up/down persist through the
+  normal plugin-order store.
+
+- **TRUE DELETE for JS plugins** (`JsPluginManager.delete`):
+  deleting a plugin now removes **every** trace — the cache entry
+  and its slot in the persisted plugin order, the meta record
+  (`meta_<id>`), the code file (`filesDir/jsplugins/<id>.js`), the
+  ENTIRE per-plugin storage prefs file (`amingram_jsstore_<id>`,
+  which holds both `amin.storage` values and the hub-written
+  SETTINGS values), the log (`log_<id>`, removed directly and via
+  VaultStore), the plugin's attach-menu config entry
+  (AminMenuConfig), the live runtime and the session "broken"
+  mark. **No tombstone**: nothing about the plugin survives to
+  resurface on a reinstall of the same id (a reinstall starts
+  genuinely clean). Delete works by id even for plugins no longer
+  in the cache, so orphaned ghosts are purged too. For a bundled
+  id, the ONE deliberate survivor is `BundledPlugins`' explicit
+  user-deleted marker (`bundled_user_deleted`) — it exists only
+  to stop auto-install from resurrecting the plugin; any
+  successful install of the id clears it.
+
+- **Bundled delivery rule v2** (`BundledPlugins.ensureInstalled`):
+  a bundled id is auto-installed ONLY when it is genuinely new —
+  (a) not installed, (b) not in the `bundled_seen` delivery set
+  and (c) not in the user-deleted set. Seen-but-absent ids from
+  the pre-v2 tombstone scheme are migrated once into the explicit
+  user-deleted set (`seen ∧ ¬installed → user-deleted`; seen ∧
+  installed stays installed; unseen stays deliverable), so a
+  bundled plugin deleted under ANY version stays deleted. The
+  hub's **Built-in library** page (NEW `ui/
+  AminBundledLibraryActivity`) lists every bundled plugin that is
+  not currently installed — new, deleted or never delivered — and
+  reinstalls on tap through the normal install path (which clears
+  the user-deleted marker). Deleted bundled plugins leave **no
+  hub tombstone row** anymore.
+
+- **Bundled inventory = 10**: `shout`, `vip-alert`, `media-dl`,
+  `temp-mail`, `aesthetic-text`, `quick-translate`, `gemini-chat`,
+  `link-cleaner` (NEW), `qr-maker` (NEW), `price-check` (NEW) —
+  assets under `TMessagesProj/src/main/assets/amingram_plugins/`,
+  canonical copies in `~/workspace/amingram/plugins/`.
+
+- **Menu plugins page** (NEW `ui/AminMenuPluginsActivity`, hub →
+  Menu plugins; config in NEW `plugins/js/AminMenuConfig`, prefs
+  key `menu_config_v1`): per menu-capable plugin — **include /
+  exclude** from the chat attach menu, **order**, **icon**
+  override and **label** override. Overrides only: an empty
+  label/icon means "use the manifest default", so manifest
+  updates still flow through for entries never customized. With
+  NO stored config the fallback is unchanged (every enabled menu
+  plugin, in plugin order, manifest defaults); once a config
+  exists it is authoritative for order/inclusion, except plugins
+  installed later are appended with defaults rather than hidden.
+  Deleting a plugin drops its menu entry. Manifest additions
+  (v2.0, `JsManifest`): optional **`@icon`** — an icon SPEC, either
+  a set name (`download`, `mail`, `sparkles`, `dice`, `text`,
+  `link`, `music`, `star`, `bolt`, `camera`, `globe`, `gear`) or
+  `emoji:<glyph>` — and optional **`@menuLabel`** (attach-menu
+  label; default = plugin name).
+
+- **Bridge: `file` capability + `amin.sendFile`** (v2.0,
+  `AminBridge.WithFile` / `WithGoogleFile`): a NEW known
+  capability `file` (JsManifest's set is now observe, commands,
+  send, settings, http, menu, google, file). Only file-capable
+  plugins get a bridge variant exposing `sendFile` — for every
+  other plugin `amin.sendFile` does not exist at all, the same
+  structural gate as `google` (the implementation is protected on
+  the base bridge; only the file variants publish a public
+  wrapper; the ClassShutter whitelist and patch 0010's R8 keeps
+  cover the new variant classes). Contract:
+  `amin.sendFile(url, opts)` is **SYNCHRONOUS** and returns a
+  boolean. `opts = { type: "video"|"photo"|"audio"|"file",
+  caption, chatId? }` — chatId defaults to the chat of the hook
+  currently being dispatched. The URL is downloaded on the plugin
+  thread (**15 s connect / 60 s read**, redirects followed,
+  **200 MB hard cap** — declared-size and streamed overruns both
+  fail) into the app cache, then handed to Telegram's own
+  SendMessagesHelper prepare pipeline as proper media with the
+  caption. **Any** failure (bad URL, HTTP error, over the cap, no
+  target chat, hand-off failure) returns `false` — never an
+  exception across the bridge. `true` means downloaded + handed
+  to the send pipeline (Telegram uploads asynchronously).
+  **media-dl v2** (bundled, version 2.0, capabilities += `file`,
+  `@icon download`, `@menuLabel Download media`) resolves
+  TikTok / X / Reddit / Instagram media and now sends the real
+  media with `sendFile` first, falling back to posting the direct
+  links when sending is unavailable or fails; `qr-maker` uses the
+  same send-then-link-fallback pattern for QR images.
+
+- **httpPost error bodies — canonical in v2.0**: the v1.3.7 bridge
+  change (non-2xx returns the error body via the error stream,
+  same 1 MB cap; bodyless errors and transport failures still
+  return null; 2xx unchanged) is now the documented contract,
+  and **`extractError(response)` is the canonical helper** —
+  plugins parse the JSON error shape (`error.message`, truncated
+  to 300 chars) before treating a non-empty httpPost result as an
+  answer; bundled gemini-chat carries the reference
+  implementation, copied verbatim into the master prompt.
+  **`httpGet` is deliberately unchanged** — null on ANY failure
+  including HTTP error statuses; older plugins depend on it.
+
+- **Google capability — recap (unchanged in v2.0)**: the `google`
+  capability still gates `amin.google` structurally (only
+  google-capable plugins get the WithGoogle bridge variant —
+  `amin.google` is undefined for everyone else); `isSignedIn()` is
+  synchronous, `getAccessToken(fn)` / `signIn(fn)` are async
+  callbacks on the plugin thread; scopes remain cloud-platform +
+  email (v1.3.6), tokens are fetched fresh (~1 h life, silent
+  re-authorize), never stored by plugins. `file` and `google`
+  compose: a plugin declaring both gets the combined
+  WithGoogleFile bridge.
+
+- **Plugin contract confirmations (v2.0)**: SETTINGS schemas are
+  **`bool` / `text` only** (no number/select/slider types — numeric
+  input is text, parsed by the plugin); plugins use **no polling
+  and no timers** — purely hook/event-driven on the dedicated
+  plugin thread; dispatch keeps **per-hook isolation** (every hook
+  invocation is Throwable-guarded, errors go to that plugin's log,
+  and a failing plugin never affects the app or other plugins).
+
+- **Design modules REMOVED; patch 0015 DELETED**: the v1.3.3
+  design system is gone — modules `amin_design` and `ios_theme`,
+  `amin.core.DesignThemes`, their PluginRegistry entries, hub
+  rows and design prefs are all removed, and **patch 0015
+  (design-startup-hook, LaunchActivity) is deleted from the
+  series** (the hook's other tenant — the one-shot stories
+  self-heal post added in v1.3.4 — goes with it; nothing calls
+  a design/startup apply anymore). The app now uses **upstream
+  Telegram themes** as-is. The patch series is now 0001–0004, 0006–0014, 0016
+  with TWO intentional gaps: **0005** (google-services clients —
+  generated by a CI step since v1.1) and **0015**.
+
+- **Patch 0014 EXTENDED (attach-menu-plugins v2)**: the patch's
+  row wire format grows from `{id, name}` to
+  **`{id, label, iconSpec}`** (index 2 added; the reader tolerates
+  the old length-2 arrays). In ChatAttachAlert's bind branch the
+  iconSpec resolves: `emoji:<glyph>` prepends the glyph to the
+  label and keeps the default ARTICLE animation (GlassTabView has
+  no glyph hook); a set name maps to a TabAnimation — download →
+  FILES, mail → REPLIES, sparkles/star → GIFT, dice → SYMBOLS,
+  text → ARTICLE (default), link → LINK, music → MUSIC, bolt →
+  BOOSTS, camera → GALLERY, globe → LOCATION, gear → SETTINGS;
+  unknown names keep ARTICLE. Rows still come from
+  `AminHooks.attachMenuPlugins()` (now menu-config aware:
+  inclusion, order and resolved label/icon per the Menu plugins
+  page), tags remain `-1000-index`, and the click branch is
+  unchanged (dispatch `onPluginMenuAction(id, dialogId)`,
+  dismiss). All other patches are unchanged in v2.0; patch 0010's
+  proguard/ClassShutter surface grew only by the new bridge
+  variant classes named above.
+
+- **Live wallpaper library (v2.0 WS8)** (`core/
+  WallpaperLibraryStore` + NEW `ui/
+  AminWallpaperLibraryActivity`): the Video Chat Background
+  module's single file becomes a COLLECTION. Durable copies live
+  in `filesDir/amingram/wallpapers/<id>.<ext>`; the index (prefs
+  `amingram_wallpaper_library`: items [{id, displayName,
+  fileName, addedAt}] + `active_id`) is the source of truth, and
+  `VideoBackgroundHelper.get/setVideoPath` delegate to it (the
+  legacy `amingram_videobg`/`path` pref is kept synced to the
+  active item; the playback path itself is unchanged — an Apply
+  swaps the file a chat picks up on resume). **Migration**: an
+  existing `videobg.<ext>` is COPIED (never moved or deleted)
+  in as item #1 "Current" + active on first run; a failed copy
+  changes nothing and retries on the next launch. Hub rows:
+  **Live wallpapers** (→ the library page) plus **Clear / None**
+  (deactivate, keep items); the module status line shows
+  `Active · <name>`. The library page is a 2-column grid with
+  cached thumbnails (MediaMetadataRetriever frame / GIF first
+  frame), name + duration/size, and an ACTIVE badge; tap =
+  apply + enable the module; per-item Delete (deleting the
+  active item deactivates cleanly); long-press renames;
+  **＋ Add from phone** is the old picker, adding a durable item
+  AND applying it (the old pick-sets-it behaviour). Backup
+  export/import ride the helper delegates (import adopts +
+  applies the path; a missing file changes nothing instead of
+  storing a dangling path).

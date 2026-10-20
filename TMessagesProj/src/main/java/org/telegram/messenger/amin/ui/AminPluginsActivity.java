@@ -11,7 +11,6 @@ import android.text.SpannableString;
 import android.text.Spanned;
 import android.text.TextUtils;
 import android.text.style.ForegroundColorSpan;
-import android.webkit.MimeTypeMap;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -31,11 +30,11 @@ import org.telegram.messenger.R;
 import org.telegram.messenger.amin.core.AutoSaverStore;
 import org.telegram.messenger.amin.core.BackupManager;
 import org.telegram.messenger.amin.core.DeletedStore;
-import org.telegram.messenger.amin.core.DesignThemes;
 import org.telegram.messenger.amin.core.HiddenChatsStore;
 import org.telegram.messenger.amin.core.MessagePipeline;
 import org.telegram.messenger.amin.core.SendWhenOnlineStore;
 import org.telegram.messenger.amin.core.VaultStore;
+import org.telegram.messenger.amin.core.WallpaperLibraryStore;
 import org.telegram.messenger.amin.google.GoogleAuthManager;
 import org.telegram.messenger.amin.plugins.ModModule;
 import org.telegram.messenger.amin.plugins.PluginRegistry;
@@ -55,7 +54,6 @@ import org.telegram.ui.Components.Switch;
 
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
@@ -84,25 +82,15 @@ import java.util.Locale;
  * truncated subtitle line, a colored status dot line, and the
  * module's actions as hairline-separated rows inside the card.
  *
- * v1.3.3 presentation (exteraGram design language, Amin's pick):
- * ONE rounded group card per module SECTION (all of Privacy / Media
- * / Tools in a single card, extera "General page" style) with
- * accent-colored medium section labels and inset hairlines; a hub
- * header block (shield + name + version); a full-width accent
- * "Enable Plugins Engine" pill driving JsPluginManager's real
- * engine_enabled kill-switch; and each JS plugin as a RICH CARD
- * (icon + working switch, big name, Version · @author line,
- * capability chips, settings/log/delete action row) replacing the
- * old toggle+info row pair — the card's buttons run the exact
- * operations the plugin page runs, and tapping the card still
- * opens that page. The two design modules (amin_design /
- * ios_theme) toggle through amin.core.DesignThemes with mutual
- * exclusion and snapshot restore. Row ids, action ids, data and
- * flows are otherwise exactly the v1.3 ones.
+ * v2.0 presentation: one rounded group card per module SECTION
+ * with collapsible, count-labelled headers; the JS engine is a
+ * standard module-style switch row (the former custom pill widget
+ * is gone); each JS plugin is a rich card with settings/log/
+ * overflow/delete actions; deleted bundled plugins leave no hub
+ * tombstone and can be restored from the Built-in library page.
  */
 public class AminPluginsActivity extends BaseFragment {
 
-    private static final int REQUEST_VIDEO_BG = 3917;
     private static final int REQUEST_PLUGIN_FILE = 3918;
     private static final int REQUEST_BACKUP_EXPORT = 3919;
     private static final int REQUEST_BACKUP_IMPORT = 3920;
@@ -150,14 +138,18 @@ public class AminPluginsActivity extends BaseFragment {
         int statusTone = TONE_NONE;
         boolean accent;
         boolean multiline;
+        String sectionId;
+        int sectionCount;
         /** Info rows that align at the plain 16dp text inset instead
          *  of the module text column (bundled taglines, the note). */
         boolean flat;
     }
 
+    private static final String HUB_PREFS = "amingram_hub";
     private RecyclerListView listView;
     private HubAdapter adapter;
     private final List<Row> rows = new ArrayList<>();
+    private String pluginQuery = "";
     private final Runnable swoListener = () -> AndroidUtilities.runOnUIThread(this::rebuild);
 
     @Override
@@ -219,15 +211,17 @@ public class AminPluginsActivity extends BaseFragment {
         // row added here still joins the Tools group card in
         // assignSegments — the group only closes at the next
         // section header).
-        String googleValue = "Not connected";
-        try {
-            if (GoogleAuthManager.isSignedIn(context)) {
-                String email = GoogleAuthManager.connectedEmail(context);
-                googleValue = email != null ? email : "Connected";
+        if (!isSectionCollapsed(context, "modules_" + ModModule.SECTION_TOOLS)) {
+            String googleValue = "Not connected";
+            try {
+                if (GoogleAuthManager.isSignedIn(context)) {
+                    String email = GoogleAuthManager.connectedEmail(context);
+                    googleValue = email != null ? email : "Connected";
+                }
+            } catch (Throwable ignored) {
             }
-        } catch (Throwable ignored) {
+            action("google_account", "Google Account", googleValue);
         }
-        action("google_account", "Google Account", googleValue);
         addPluginsSection(context);
         Row footer = new Row();
         footer.kind = KIND_FOOTER;
@@ -239,6 +233,43 @@ public class AminPluginsActivity extends BaseFragment {
         if (adapter != null) {
             adapter.notifyDataSetChanged();
         }
+    }
+
+    private boolean isSectionCollapsed(Context context, String sectionId) {
+        return context.getSharedPreferences(HUB_PREFS, Context.MODE_PRIVATE)
+                .getBoolean("collapsed_" + sectionId, false);
+    }
+
+    private void setSectionCollapsed(Context context, String sectionId, boolean collapsed) {
+        context.getSharedPreferences(HUB_PREFS, Context.MODE_PRIVATE)
+                .edit().putBoolean("collapsed_" + sectionId, collapsed).apply();
+    }
+
+    private Row sectionHeader(Context context, String title, String sectionId, int count) {
+        Row header = new Row();
+        header.kind = KIND_HEADER;
+        header.title = title;
+        header.sectionId = sectionId;
+        header.sectionCount = count;
+        header.value = isSectionCollapsed(context, sectionId) ? "▸" : "▾";
+        rows.add(header);
+        return header;
+    }
+
+    private boolean pluginMatches(JsPlugin plugin) {
+        if (pluginQuery == null || pluginQuery.trim().isEmpty()) {
+            return true;
+        }
+        String q = pluginQuery.trim().toLowerCase(Locale.US);
+        StringBuilder hay = new StringBuilder();
+        if (plugin.name != null) hay.append(plugin.name).append(' ');
+        if (plugin.id != null) hay.append(plugin.id).append(' ');
+        if (plugin.author != null) hay.append(plugin.author).append(' ');
+        if (plugin.description != null) hay.append(plugin.description).append(' ');
+        if (plugin.capabilities != null) {
+            for (String cap : plugin.capabilities) hay.append(cap).append(' ');
+        }
+        return hay.toString().toLowerCase(Locale.US).contains(q);
     }
 
     /** Groups rows into card segments (v1.3.3): ONE group card per
@@ -308,10 +339,15 @@ public class AminPluginsActivity extends BaseFragment {
     }
 
     private void addSection(Context context, String title, int section) {
-        Row header = new Row();
-        header.kind = KIND_HEADER;
-        header.title = title;
-        rows.add(header);
+        String sectionId = "modules_" + section;
+        int count = 0;
+        for (ModModule module : PluginRegistry.modules()) {
+            if (module.section() == section) count++;
+        }
+        sectionHeader(context, title, sectionId, count);
+        if (isSectionCollapsed(context, sectionId)) {
+            return;
+        }
         for (ModModule module : PluginRegistry.modules()) {
             if (module.section() != section) {
                 continue;
@@ -386,11 +422,14 @@ public class AminPluginsActivity extends BaseFragment {
                 break;
             }
             case "video_background": {
-                String path = VideoBackgroundHelper.getVideoPath(context);
-                action("pick_video", "Video background file",
-                        path == null ? "Not set" : new File(path).getName());
-                if (path != null) {
-                    action("clear_video", "Clear video background", null);
+                // v2.0: the module's files live in the live
+                // wallpaper library (its own page); the hub only
+                // links there and offers deactivate-without-deleting.
+                int count = WallpaperLibraryStore.count(context);
+                action("live_wallpapers", "Live wallpapers",
+                        count == 0 ? "Empty" : count + " wallpapers");
+                if (WallpaperLibraryStore.getActive(context) != null) {
+                    action("clear_wallpaper", "Clear / None", "Keep library");
                 }
                 break;
             }
@@ -435,63 +474,58 @@ public class AminPluginsActivity extends BaseFragment {
     }
 
     private void addPluginsSection(Context context) {
-        Row header = new Row();
-        header.kind = KIND_HEADER;
-        header.title = "Your Plugins";
-        rows.add(header);
-        // v1.3.3: the engine kill-switch pill sits at the top.
+        List<JsPlugin> allPlugins = JsPluginManager.plugins(context);
+        List<JsPlugin> visiblePlugins = new ArrayList<>();
+        for (JsPlugin plugin : allPlugins) {
+            if (pluginMatches(plugin)) visiblePlugins.add(plugin);
+        }
+        sectionHeader(context, "Your Plugins", "your_plugins", allPlugins.size());
+        if (isSectionCollapsed(context, "your_plugins")) {
+            return;
+        }
+        // v2.0: the engine is a standard module-style row/card, not
+        // a custom pill. KIND_ENGINE is rendered by CardHeaderView.
         Row engine = new Row();
         engine.kind = KIND_ENGINE;
         rows.add(engine);
-        // v1.3.3: each installed plugin is ONE rich card (switch,
-        // name, version/author, description, capability chips and
-        // an action row), replacing the toggle + info row pair.
-        for (JsPlugin plugin : JsPluginManager.plugins(context)) {
+        Row search = action("search_plugins", "Search plugins",
+                pluginQuery == null || pluginQuery.isEmpty() ? "All plugins" : "“" + pluginQuery + "”");
+        search.accent = false;
+        for (JsPlugin plugin : visiblePlugins) {
             Row card = new Row();
             card.kind = KIND_PLUGIN_CARD;
             card.plugin = plugin;
             rows.add(card);
         }
-        // v1.3.4: bundled plugins are pre-installed (see
-        // BundledPlugins.ensureInstalled) and live above as normal
-        // rich cards — no Install rows for them. A bundled row
-        // remains only for a bundled plugin that is NOT installed:
-        // either it was delivered once and the user deleted it
-        // ("Built-in · deleted — tap to reinstall"; auto-install
-        // never resurrects it) or delivery has not happened yet
-        // (plain "Install" fallback).
-        for (BundledPlugins.Bundled bundled : BundledPlugins.all()) {
-            if (BundledPlugins.isInstalled(context, bundled)) {
-                continue;
-            }
-            Row row = new Row();
-            row.kind = KIND_ACTION;
-            row.action = "bundled";
-            row.bundled = bundled;
-            row.title = bundled.name;
-            row.value = BundledPlugins.wasSeen(context, bundled.id)
-                    ? "Built-in · deleted — tap to reinstall" : "Install";
-            rows.add(row);
-            Row info = new Row();
-            info.kind = KIND_INFO;
-            info.flat = true;
-            info.title = bundled.tagline;
-            rows.add(info);
-        }
-        Row addFile = action("add_plugin_file", "Add plugin from file…", ".js");
-        addFile.accent = true;
-        Row addPaste = action("add_plugin_paste", "Paste plugin code…", null);
-        addPaste.accent = true;
-        if (JsPluginManager.plugins(context).isEmpty()) {
+        if (visiblePlugins.isEmpty()) {
             Row info = new Row();
             info.kind = KIND_INFO;
             info.multiline = true;
             info.flat = true;
             info.action = "note";
-            info.title = "No plugins installed yet. Plugins are single JavaScript files — "
-                    + "the full guide is PLUGIN-MASTER-PROMPT.md in the AminGram repo (docs/).";
+            info.title = allPlugins.isEmpty()
+                    ? "No plugins installed yet. Use Add Plugin below or open the Built-in library."
+                    : "No plugins match this search.";
             rows.add(info);
         }
+
+        int libraryCount = 0;
+        for (BundledPlugins.Bundled bundled : BundledPlugins.all()) {
+            if (!BundledPlugins.isInstalled(context, bundled)) libraryCount++;
+        }
+        sectionHeader(context, "Add Plugin", "add_plugin", libraryCount + 2);
+        if (isSectionCollapsed(context, "add_plugin")) {
+            return;
+        }
+        Row library = action("built_in_library", "Built-in library",
+                libraryCount == 0 ? "All installed" : libraryCount + " available");
+        library.accent = true;
+        Row menu = action("menu_plugins", "Menu plugins", "Customize attach menu");
+        menu.accent = true;
+        Row addFile = action("add_plugin_file", "Add plugin from file…", ".js");
+        addFile.accent = true;
+        Row addPaste = action("add_plugin_paste", "Paste plugin code…", null);
+        addPaste.accent = true;
     }
 
     // ------------------------------------------------------------------
@@ -505,15 +539,17 @@ public class AminPluginsActivity extends BaseFragment {
         }
         Row row = rows.get(position);
         switch (row.kind) {
-            case KIND_MODULE: {
-                if ("amin_design".equals(row.module.id())
-                        || "ios_theme".equals(row.module.id())) {
-                    toggleDesignModule(context, row.module);
-                } else {
-                    boolean now = !PluginRegistry.isEnabled(context, row.module);
-                    PluginRegistry.setEnabled(context, row.module, now);
+            case KIND_HEADER:
+                if (row.sectionId != null) {
+                    setSectionCollapsed(context, row.sectionId,
+                            !isSectionCollapsed(context, row.sectionId));
                     rebuild();
                 }
+                break;
+            case KIND_MODULE: {
+                boolean now = !PluginRegistry.isEnabled(context, row.module);
+                PluginRegistry.setEnabled(context, row.module, now);
+                rebuild();
                 break;
             }
             case KIND_ENGINE:
@@ -530,34 +566,6 @@ public class AminPluginsActivity extends BaseFragment {
             default:
                 break;
         }
-    }
-
-    /** The two design modules apply / restore REAL themes via
-     *  DesignThemes, and are mutually exclusive: turning one on
-     *  switches the other off (keeping the user's original theme
-     *  snapshot); turning the active one off restores the snapshot. */
-    private void toggleDesignModule(Context context, ModModule module) {
-        boolean aminDesign = "amin_design".equals(module.id());
-        String thisDesign = aminDesign ? DesignThemes.DESIGN_AMIN : DesignThemes.DESIGN_IOS;
-        String otherDesign = aminDesign ? DesignThemes.DESIGN_IOS : DesignThemes.DESIGN_AMIN;
-        String otherModuleId = aminDesign ? "ios_theme" : "amin_design";
-        if (!PluginRegistry.isEnabled(context, module)) {
-            PluginRegistry.setEnabled(context, module, true);
-            for (ModModule other : PluginRegistry.modules()) {
-                if (otherModuleId.equals(other.id())) {
-                    PluginRegistry.setEnabled(context, other, false);
-                }
-            }
-            DesignThemes.applyDesign(context, thisDesign);
-        } else {
-            PluginRegistry.setEnabled(context, module, false);
-            if (PluginRegistry.isEnabledById(context, otherModuleId)) {
-                DesignThemes.applyDesign(context, otherDesign);
-            } else {
-                DesignThemes.restorePrevious(context);
-            }
-        }
-        rebuild();
     }
 
     /** Rich-card buttons run the exact operations the plugin page
@@ -584,6 +592,11 @@ public class AminPluginsActivity extends BaseFragment {
         }
 
         @Override
+        public void onPluginMore(JsPlugin plugin) {
+            showPluginOverflow(plugin);
+        }
+
+        @Override
         public void onDeletePlugin(JsPlugin plugin) {
             Context context = getContext();
             if (context == null || getParentActivity() == null) {
@@ -602,6 +615,43 @@ public class AminPluginsActivity extends BaseFragment {
         }
     };
 
+    private void showPluginOverflow(JsPlugin plugin) {
+        Context context = getContext();
+        if (context == null || getParentActivity() == null) return;
+        CharSequence[] items = new CharSequence[]{"Settings", "Log", "Move up", "Move down", "Delete"};
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle(plugin.name);
+        builder.setItems(items, (dialog, which) -> {
+            switch (which) {
+                case 0: presentFragment(new AminJsPluginActivity(plugin.id)); break;
+                case 1: pluginCardCallbacks.onPluginLog(plugin); break;
+                case 2: JsPluginManager.movePlugin(context, plugin.id, -1); rebuild(); break;
+                case 3: JsPluginManager.movePlugin(context, plugin.id, 1); rebuild(); break;
+                case 4: pluginCardCallbacks.onDeletePlugin(plugin); break;
+            }
+        });
+        builder.setNegativeButton("Cancel", null);
+        showDialog(builder.create());
+    }
+
+    private void searchPlugins(Context context) {
+        EditTextBoldCursor field = textField(context, "Name, author, description, capability…", false);
+        field.setText(pluginQuery == null ? "" : pluginQuery);
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle("Search plugins");
+        builder.setView(fieldContainer(context, field));
+        builder.setPositiveButton("Search", (dialog, which) -> {
+            pluginQuery = field.getText() == null ? "" : field.getText().toString().trim();
+            rebuild();
+        });
+        builder.setNeutralButton("Clear", (dialog, which) -> {
+            pluginQuery = "";
+            rebuild();
+        });
+        builder.setNegativeButton("Cancel", null);
+        showDialog(builder.create());
+    }
+
     private void onAction(Context context, Row row) {
         switch (row.action) {
             case "view_deleted":
@@ -619,12 +669,12 @@ public class AminPluginsActivity extends BaseFragment {
             case "view_saved":
                 presentFragment(new AminSavedMediaActivity());
                 break;
-            case "pick_video":
-                pickVideo();
+            case "live_wallpapers":
+                presentFragment(new AminWallpaperLibraryActivity());
                 break;
-            case "clear_video":
-                VideoBackgroundHelper.setVideoPath(context, null);
-                bulletin(R.raw.ic_delete, "Video background cleared");
+            case "clear_wallpaper":
+                WallpaperLibraryStore.clearActive(context);
+                bulletin(R.raw.ic_delete, "Wallpaper cleared — library kept");
                 rebuild();
                 break;
             case "edit_keywords":
@@ -638,6 +688,15 @@ public class AminPluginsActivity extends BaseFragment {
                 break;
             case "google_account":
                 presentFragment(new AminGoogleActivity());
+                break;
+            case "search_plugins":
+                searchPlugins(context);
+                break;
+            case "built_in_library":
+                presentFragment(new AminBundledLibraryActivity());
+                break;
+            case "menu_plugins":
+                presentFragment(new AminMenuPluginsActivity());
                 break;
             case "swo_new":
                 presentFragment(new AminDialogPickerActivity("Send when online — pick a person", true,
@@ -816,19 +875,6 @@ public class AminPluginsActivity extends BaseFragment {
     // File pickers
     // ------------------------------------------------------------------
 
-    private void pickVideo() {
-        try {
-            Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
-            intent.setType("*/*");
-            intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"video/*", "image/gif"});
-            intent.addCategory(Intent.CATEGORY_OPENABLE);
-            startActivityForResult(intent, REQUEST_VIDEO_BG);
-        } catch (Exception e) {
-            FileLog.e(e);
-            bulletin(R.raw.error, "No file picker available");
-        }
-    }
-
     private void pickPluginFile() {
         try {
             Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
@@ -874,16 +920,7 @@ public class AminPluginsActivity extends BaseFragment {
         }
         Uri uri = data.getData();
         try {
-            if (requestCode == REQUEST_VIDEO_BG) {
-                String path = copyVideoToPrivateStorage(context, uri);
-                if (path != null && new File(path).length() > 0) {
-                    VideoBackgroundHelper.setVideoPath(context, path);
-                    bulletin(R.raw.contact_check, "Video background set — reopen a chat");
-                } else {
-                    bulletin(R.raw.error, "Could not read that file");
-                }
-                rebuild();
-            } else if (requestCode == REQUEST_PLUGIN_FILE) {
+            if (requestCode == REQUEST_PLUGIN_FILE) {
                 String path = AndroidUtilities.getPath(uri);
                 if (path == null || path.startsWith("content://")) {
                     path = MediaController.copyFileToCache(uri, "js");
@@ -923,94 +960,6 @@ public class AminPluginsActivity extends BaseFragment {
             FileLog.e(e);
             bulletin(R.raw.error, "Something went wrong");
         }
-    }
-
-    /**
-     * Copies a picked video/GIF into durable app-private storage
-     * (filesDir/amingram/videobg.&lt;ext&gt;) and returns its absolute
-     * path, or null on failure. v1.3.2 fix: the previous flow stored
-     * the picker's own path (AndroidUtilities.getPath) or a copy in
-     * Telegram's CACHE directory (MediaController.copyFileToCache) —
-     * cache files get purged, so after an app restart the stored path
-     * dangled, VideoBackgroundHelper validation failed and chats
-     * silently fell back to the static wallpaper. filesDir is never
-     * purged, so the pick now survives restarts. The copy goes
-     * through ContentResolver.openInputStream so content:// sources
-     * work without getPath; a previous pick with a different
-     * extension is removed so stale files don't accumulate.
-     */
-    private static String copyVideoToPrivateStorage(Context context, Uri uri) {
-        File out = null;
-        try {
-            String ext = videoExtension(context, uri);
-            File dir = new File(context.getFilesDir(), "amingram");
-            if (!dir.exists() && !dir.mkdirs()) {
-                return null;
-            }
-            out = new File(dir, "videobg." + ext);
-            InputStream in = context.getContentResolver().openInputStream(uri);
-            if (in == null) {
-                return null;
-            }
-            OutputStream os = new FileOutputStream(out);
-            byte[] buffer = new byte[8192];
-            int read;
-            long total = 0;
-            while ((read = in.read(buffer)) > 0) {
-                os.write(buffer, 0, read);
-                total += read;
-            }
-            os.close();
-            in.close();
-            if (total == 0) {
-                out.delete();
-                return null;
-            }
-            File[] files = dir.listFiles();
-            if (files != null) {
-                for (File f : files) {
-                    if (f.getName().startsWith("videobg.") && !f.equals(out)) {
-                        f.delete();
-                    }
-                }
-            }
-            return out.getAbsolutePath();
-        } catch (Exception e) {
-            FileLog.e(e);
-            if (out != null) {
-                out.delete();
-            }
-            return null;
-        }
-    }
-
-    /** Real extension of the picked file: from the resolved filesystem
-     *  path's suffix when there is one, else from the content type via
-     *  MimeTypeMap, else "mp4". (The old code hardcoded "mp4" for the
-     *  cache copy, so GIF picks never matched the helper's isGif() and
-     *  were fed to the video player.) */
-    private static String videoExtension(Context context, Uri uri) {
-        String path = AndroidUtilities.getPath(uri);
-        if (path != null) {
-            int dot = path.lastIndexOf('.');
-            if (dot > 0 && dot > path.lastIndexOf('/')) {
-                String ext = path.substring(dot + 1).toLowerCase(Locale.US);
-                if (ext.length() <= 5 && ext.matches("[a-z0-9]+")) {
-                    return ext;
-                }
-            }
-        }
-        try {
-            String type = context.getContentResolver().getType(uri);
-            if (type != null) {
-                String ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(type);
-                if (ext != null && !ext.isEmpty()) {
-                    return ext.toLowerCase(Locale.US);
-                }
-            }
-        } catch (Exception ignored) {
-        }
-        return "mp4";
     }
 
     private static String readTextFile(File file) {
@@ -1102,10 +1051,6 @@ public class AminPluginsActivity extends BaseFragment {
     /** Verified 13.0.2 R.drawable glyphs for the module icon chips. */
     private static int moduleIcon(String id) {
         switch (id) {
-            case "amin_design":
-                return R.drawable.msg_palette;
-            case "ios_theme":
-                return R.drawable.msg_colors;
             case "ghost_mode":
                 return R.drawable.msg_mask;
             case "ghost_stories":
@@ -1380,64 +1325,6 @@ public class AminPluginsActivity extends BaseFragment {
         }
     }
 
-    /** Full-width accent pill (v1.3.3): the JS engine master
-     *  switch, extera style — accent fill, white medium label, and
-     *  a display-only switch (the row click toggles, like every
-     *  other hub row). Backed by JsPluginManager's engine_enabled
-     *  pref: off means no JS plugin runs anywhere. */
-    private static class EnginePillView extends LinearLayout {
-        private final Switch switchView;
-
-        EnginePillView(Context context) {
-            super(context);
-            setOrientation(HORIZONTAL);
-            setGravity(Gravity.CENTER_VERTICAL);
-            setMinimumHeight(AndroidUtilities.dp(56));
-            setPadding(AndroidUtilities.dp(18), AndroidUtilities.dp(6),
-                    AndroidUtilities.dp(12), AndroidUtilities.dp(6));
-            TextView label = new TextView(context);
-            label.setText("Enable Plugins Engine");
-            label.setSingleLine(true);
-            label.setEllipsize(TextUtils.TruncateAt.END);
-            label.setTextSize(16);
-            label.setTypeface(AndroidUtilities.getTypeface("fonts/rmedium.ttf"));
-            label.setTextColor(0xFFFFFFFF);
-            addView(label, new LinearLayout.LayoutParams(
-                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-            switchView = new Switch(context);
-            switchView.setFocusable(false);
-            switchView.setClickable(false);
-            addView(switchView, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        }
-
-        void bind(boolean on) {
-            GradientDrawable bg = new GradientDrawable();
-            bg.setShape(GradientDrawable.RECTANGLE);
-            bg.setColor(accentColor());
-            bg.setCornerRadius(AndroidUtilities.dp(28));
-            setBackground(bg);
-            switchView.setChecked(on, false);
-        }
-
-        /** v1.3.4: the pill's height is pinned here, in the view
-         *  itself. v1.3.3 left it entirely to wrap-content
-         *  measurement of a horizontal LinearLayout inside
-         *  RecyclerListView (whose adapter also rewrites the
-         *  item's LayoutParams margins at bind time); on device
-         *  the item measured to the full offered slot height and
-         *  only the accent fill painted — a giant empty blue
-         *  block with the label and switch lost inside it
-         *  (Amin's field screenshot). An exact height spec (plus
-         *  an exact height in the adapter's LayoutParams) makes
-         *  that failure structurally impossible. */
-        @Override
-        protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-            super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(
-                    AndroidUtilities.dp(56), MeasureSpec.EXACTLY));
-        }
-    }
-
     /** extera-style rich plugin card (v1.3.3), one per installed JS
      *  plugin: icon chip + working enable switch, big name, a
      *  "Version X · @author" line (author in accent), description
@@ -1452,6 +1339,7 @@ public class AminPluginsActivity extends BaseFragment {
             void onTogglePlugin(JsPlugin plugin);
             void onOpenPlugin(JsPlugin plugin);
             void onPluginLog(JsPlugin plugin);
+            void onPluginMore(JsPlugin plugin);
             void onDeletePlugin(JsPlugin plugin);
         }
 
@@ -1464,6 +1352,7 @@ public class AminPluginsActivity extends BaseFragment {
         private final LinearLayout chipsRow;
         private final ImageView settingsBtn;
         private final ImageView logBtn;
+        private final TextView moreBtn;
         private final ImageView deleteBtn;
         private JsPlugin bound;
         private Callbacks callbacks;
@@ -1594,6 +1483,16 @@ public class AminPluginsActivity extends BaseFragment {
             actions.addView(logBtn);
             View actionSpacer = new View(context);
             actions.addView(actionSpacer, new LinearLayout.LayoutParams(0, 1, 1f));
+            moreBtn = new TextView(context);
+            moreBtn.setText("⋯");
+            moreBtn.setTextSize(24);
+            moreBtn.setGravity(Gravity.CENTER);
+            moreBtn.setLayoutParams(new LinearLayout.LayoutParams(
+                    AndroidUtilities.dp(42), AndroidUtilities.dp(42)));
+            moreBtn.setOnClickListener(v -> {
+                if (callbacks != null && bound != null) callbacks.onPluginMore(bound);
+            });
+            actions.addView(moreBtn);
             deleteBtn = actionButton(context, R.drawable.msg_delete);
             deleteBtn.setOnClickListener(v -> {
                 if (callbacks != null && bound != null) {
@@ -1685,6 +1584,7 @@ public class AminPluginsActivity extends BaseFragment {
             int gray = Theme.getColor(Theme.key_windowBackgroundWhiteGrayText);
             settingsBtn.setColorFilter(new PorterDuffColorFilter(gray, PorterDuff.Mode.SRC_IN));
             logBtn.setColorFilter(new PorterDuffColorFilter(gray, PorterDuff.Mode.SRC_IN));
+            moreBtn.setTextColor(gray);
             deleteBtn.setColorFilter(new PorterDuffColorFilter(
                     Theme.getColor(Theme.key_color_red), PorterDuff.Mode.SRC_IN));
 
@@ -1719,7 +1619,7 @@ public class AminPluginsActivity extends BaseFragment {
                 return false;
             }
             int kind = rows.get(position).kind;
-            return kind != KIND_HEADER && kind != KIND_INFO && kind != KIND_FOOTER
+            return kind != KIND_INFO && kind != KIND_FOOTER
                     && kind != KIND_HUB_HEADER;
         }
 
@@ -1735,7 +1635,7 @@ public class AminPluginsActivity extends BaseFragment {
                     view = new HubHeaderView(context);
                     break;
                 case KIND_ENGINE:
-                    view = new EnginePillView(context);
+                    view = new CardHeaderView(context);
                     break;
                 case KIND_MODULE:
                     view = new CardHeaderView(context);
@@ -1758,8 +1658,7 @@ public class AminPluginsActivity extends BaseFragment {
             }
             view.setLayoutParams(new RecyclerView.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
-                    viewType == KIND_ENGINE ? AndroidUtilities.dp(56)
-                            : ViewGroup.LayoutParams.WRAP_CONTENT));
+                    ViewGroup.LayoutParams.WRAP_CONTENT));
             return new RecyclerListView.Holder(view);
         }
 
@@ -1779,14 +1678,17 @@ public class AminPluginsActivity extends BaseFragment {
             holder.itemView.setLayoutParams(lp);
             switch (row.kind) {
                 case KIND_HEADER:
-                    ((SectionLabelView) holder.itemView).setLabel(row.title);
+                    ((SectionLabelView) holder.itemView).setLabel(
+                            row.title + (row.sectionId != null
+                                    ? "  ·  " + row.sectionCount + "  " + row.value : ""));
                     break;
                 case KIND_HUB_HEADER:
                     ((HubHeaderView) holder.itemView).bind();
                     break;
                 case KIND_ENGINE:
-                    ((EnginePillView) holder.itemView)
-                            .bind(JsPluginManager.isEngineEnabled(context));
+                    ((CardHeaderView) holder.itemView).bind("Plugins Engine",
+                            R.drawable.msg_settings,
+                            JsPluginManager.isEngineEnabled(context), row.seg);
                     break;
                 case KIND_FOOTER:
                     ((TextInfoPrivacyCell) holder.itemView).setText(row.title);

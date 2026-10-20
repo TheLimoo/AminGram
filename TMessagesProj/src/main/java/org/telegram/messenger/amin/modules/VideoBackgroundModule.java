@@ -2,11 +2,9 @@ package org.telegram.messenger.amin.modules;
 
 import android.content.Context;
 
+import org.telegram.messenger.amin.core.WallpaperLibraryStore;
 import org.telegram.messenger.amin.plugins.ModModule;
 import org.telegram.messenger.amin.plugins.PluginRegistry;
-import org.telegram.messenger.amin.ui.VideoBackgroundHelper;
-
-import java.io.File;
 
 public class VideoBackgroundModule implements ModModule {
     @Override public String id() { return "video_background"; }
@@ -20,10 +18,16 @@ public class VideoBackgroundModule implements ModModule {
         if (!PluginRegistry.isEnabled(context, this)) {
             return "";
         }
-        String path = VideoBackgroundHelper.getVideoPath(context);
-        if (path == null || !new File(path).exists()) {
-            return "Needs a video file";
+        try {
+            WallpaperLibraryStore.Entry active = WallpaperLibraryStore.getActive(context);
+            if (active != null) {
+                return "Active · " + active.displayName;
+            }
+            if (WallpaperLibraryStore.count(context) > 0) {
+                return "No wallpaper selected";
+            }
+        } catch (Throwable ignored) {
         }
-        return "Active · " + new File(path).getName();
+        return "Needs a video file";
     }
 }

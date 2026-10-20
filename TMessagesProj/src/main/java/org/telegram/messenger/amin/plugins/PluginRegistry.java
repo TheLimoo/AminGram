@@ -3,7 +3,6 @@ package org.telegram.messenger.amin.plugins;
 import android.content.Context;
 import android.content.SharedPreferences;
 
-import org.telegram.messenger.amin.modules.AminDesignModule;
 import org.telegram.messenger.amin.modules.AntiDeleteModule;
 import org.telegram.messenger.amin.modules.AutoSaverModule;
 import org.telegram.messenger.amin.modules.EditHistoryModule;
@@ -12,7 +11,6 @@ import org.telegram.messenger.amin.modules.HideStoriesModule;
 import org.telegram.messenger.amin.modules.FreeTranslateModule;
 import org.telegram.messenger.amin.modules.GhostModeModule;
 import org.telegram.messenger.amin.modules.HiddenChatsModule;
-import org.telegram.messenger.amin.modules.IosThemeModule;
 import org.telegram.messenger.amin.modules.KeywordRadarModule;
 import org.telegram.messenger.amin.modules.LocalPremiumModule;
 import org.telegram.messenger.amin.modules.SendWhenOnlineModule;
@@ -40,10 +38,6 @@ public final class PluginRegistry {
             return;
         }
         registered = true;
-        // The two design modules register first so they lead the
-        // Tools section in the hub (v1.3.3 placement decision).
-        MODULES.add(new AminDesignModule());
-        MODULES.add(new IosThemeModule());
         MODULES.add(new LocalPremiumModule());
         MODULES.add(new GhostModeModule());
         MODULES.add(new GhostStoriesModule());

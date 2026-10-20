@@ -29,6 +29,12 @@ public final class JsPlugin {
     public String version;
     public String author;
     public String description;
+    /** Manifest @icon ("" when unset): an icon spec — a set name
+     *  (download, mail, sparkles, dice, text, link, music, star,
+     *  bolt, camera, globe, gear) or "emoji:<glyph>". */
+    public String icon = "";
+    /** Manifest @menuLabel ("" when unset): attach-menu label override. */
+    public String menuLabel = "";
     public final List<String> capabilities = new ArrayList<>();
     public boolean enabled = true;
     public final List<SettingDef> settings = new ArrayList<>();
@@ -39,6 +45,17 @@ public final class JsPlugin {
 
     public boolean hasCapability(String capability) {
         return capabilities.contains(capability);
+    }
+
+    /** The attach-menu label before any per-user override:
+     *  @menuLabel when set, else the plugin name. */
+    public String defaultMenuLabel() {
+        return menuLabel != null && !menuLabel.isEmpty() ? menuLabel : name;
+    }
+
+    /** The attach-menu icon before any per-user override ("" = unset). */
+    public String defaultMenuIcon() {
+        return icon == null ? "" : icon;
     }
 
     public String capabilitiesText() {
@@ -60,6 +77,11 @@ public final class JsPlugin {
             o.put("version", version);
             o.put("author", author);
             o.put("description", description);
+            // v2.0 optional fields: always written ("" when unset);
+            // older readers ignore unknown keys, older files simply
+            // lack them and fromJson defaults them to "".
+            o.put("icon", icon == null ? "" : icon);
+            o.put("menuLabel", menuLabel == null ? "" : menuLabel);
             JSONArray caps = new JSONArray();
             for (String cap : capabilities) {
                 caps.put(cap);
@@ -98,6 +120,8 @@ public final class JsPlugin {
         plugin.version = o.optString("version", "");
         plugin.author = o.optString("author", "");
         plugin.description = o.optString("description", "");
+        plugin.icon = o.optString("icon", "");
+        plugin.menuLabel = o.optString("menuLabel", "");
         JSONArray caps = o.optJSONArray("capabilities");
         if (caps != null) {
             for (int i = 0; i < caps.length(); i++) {
