@@ -77,7 +77,10 @@ amin.google.signIn(fn)              // ASYNC: fn(true/false) — opens the nativ
   `amin.google.signIn(function (ok) { … })` and continue inside it when
   `ok` is true; otherwise tell the user once, cleanly.
 - The token authorizes Google APIs for the scopes the app requests
-  (Generative Language / Gemini + email). Send it as
+  (Google Cloud Platform + email — since v1.3.6 the app requests
+  cloud-platform, because Google's console refuses to register the
+  narrower generative-language scope; the Gemini API accepts
+  cloud-platform tokens). Send it as
   `Authorization: "Bearer " + token` with `amin.httpPost`.
 - Tokens live about an hour; `getAccessToken` silently refreshes them.
   Never store a token in `amin.storage` — always fetch a fresh one.

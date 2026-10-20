@@ -134,7 +134,10 @@ public class AminGoogleActivity extends BaseFragment {
         }
         Row footer = new Row();
         footer.kind = KIND_FOOTER;
-        footer.title = "Tokens are stored only on this device, encrypted with an Android "
+        footer.title = "Sign-in requests Google Cloud Platform access — a broad Google "
+                + "permission (Google will not register the narrower Gemini-only scope "
+                + "for this app), so google-capable plugins can call Gemini with your "
+                + "account. Tokens are stored only on this device, encrypted with an Android "
                 + "Keystore key, and are sent nowhere except to Google. amin.google exists "
                 + "only in plugins whose manifest declares the google capability. Sign-in "
                 + "needs Google Play Services, and because AminGram is not verified with "

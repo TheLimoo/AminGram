@@ -39,9 +39,12 @@ import javax.crypto.spec.GCMParameterSpec;
  * ({@code Identity.getAuthorizationClient} — verified against the
  * real AAR; the upstream-pinned 20.4.0 does not contain it, hence
  * patch 0016's version bump). Requested scopes:
- * {@code https://www.googleapis.com/auth/generative-language}
- * (Gemini) + {@code email} (so the UI can show WHICH account is
- * connected). Online access only — no server client id, no
+ * {@code https://www.googleapis.com/auth/cloud-platform}
+ * (Google Cloud Platform — broad, since v1.3.6: Google's console
+ * refuses to register the narrower generative-language scope for
+ * this app and the device flow dies with invalid_scope, while
+ * the Gemini API accepts cloud-platform tokens) + {@code email}
+ * (so the UI can show WHICH account is connected). Online access only — no server client id, no
  * refresh token exists in this API; tokens live about an hour.
  *
  * Token cache: a token fetched interactively (or silently) is
@@ -69,8 +72,8 @@ import javax.crypto.spec.GCMParameterSpec;
  */
 public final class GoogleAuthManager {
 
-    public static final String SCOPE_GENERATIVE_LANGUAGE =
-            "https://www.googleapis.com/auth/generative-language";
+    public static final String SCOPE_CLOUD_PLATFORM =
+            "https://www.googleapis.com/auth/cloud-platform";
     public static final String SCOPE_EMAIL = "email";
 
     private static final String PREFS = "amingram_google";
@@ -269,7 +272,7 @@ public final class GoogleAuthManager {
 
     static List<Scope> requestedScopes() {
         List<Scope> scopes = new ArrayList<>();
-        scopes.add(new Scope(SCOPE_GENERATIVE_LANGUAGE));
+        scopes.add(new Scope(SCOPE_CLOUD_PLATFORM));
         scopes.add(new Scope(SCOPE_EMAIL));
         return scopes;
     }

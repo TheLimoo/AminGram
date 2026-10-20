@@ -683,7 +683,8 @@ account's free quota — native OAuth, no API key typed anywhere.
   `org.telegram.messenger.amin.google.GoogleAuthActivity`,
   exported=false, transparent theme, excludeFromRecents.
 - **Native manager (amin.google.GoogleAuthManager)**: scopes
-  `https://www.googleapis.com/auth/generative-language` + `email`.
+  `https://www.googleapis.com/auth/generative-language` + `email`
+  (as built in v1.3.5; superseded in v1.3.6 — see the v1.3.6 section).
   Token cache {token, expiry, email} as ONE blob encrypted with
   an AndroidKeyStore AES-256/GCM key (alias amingram_google_auth)
   in prefs "amingram_google" — hand-rolled because
@@ -763,3 +764,23 @@ account's free quota — native OAuth, no API key typed anywhere.
   actually present in AuthorizationResult), Gradle's GMS
   version resolution with the bump, R8 keeps on the packaged
   build, and Gemini answering with a real account token.
+
+## v1.3.6 (2026-10-20, on top of 09b65eb) — cloud-platform scope
+
+The v1.3.5 Google sign-in could never complete: Google's console
+refuses to register `https://www.googleapis.com/auth/generative-language`
+for the project — rejected as an invalid scope in BOTH the Data Access
+picker and the manual-entry field — and the on-device flow therefore
+dies at consent with "Error 400: invalid_scope" (verified on device
+against the fully registered project). Fix: GoogleAuthManager now
+requests `https://www.googleapis.com/auth/cloud-platform` + `email`.
+cloud-platform IS registerable in the console, and
+generativelanguage.googleapis.com accepts cloud-platform-scoped
+tokens. Everything else (cache, TTL, resolution flow, bridge) is
+unchanged. The Google Account page footer now discloses the breadth
+honestly (Cloud Platform access is broad; it is what lets
+google-capable plugins call Gemini with the user's account).
+Bundled gemini-chat's default model moves gemini-2.5-flash →
+gemini-3-flash-preview (2.5-flash is retired for new users — 404
+verified against a real key; 3-flash-preview verified answering).
+GOOGLE-CLOUD-SETUP.md step 3 now names cloud-platform.

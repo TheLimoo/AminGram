@@ -8,7 +8,7 @@
 // ==/AminGramPlugin==
 
 var SETTINGS = [
-  { key: "model", type: "text", title: "Gemini model", def: "gemini-2.5-flash" },
+  { key: "model", type: "text", title: "Gemini model", def: "gemini-3-flash-preview" },
   { key: "systemPrompt", type: "text", title: "System prompt (prepended, optional)", def: "" }
 ];
 
@@ -72,9 +72,9 @@ function fetchAndAnswer(ctx, prompt) {
           + "in Plugins → Google Account, then try again.");
         return;
       }
-      var model = amin.storage.get("model", "gemini-2.5-flash");
+      var model = amin.storage.get("model", "gemini-3-flash-preview");
       if (!model) {
-        model = "gemini-2.5-flash";
+        model = "gemini-3-flash-preview";
       }
       var system = amin.storage.get("systemPrompt", "");
       var text = system ? (system + "\n\n" + prompt) : prompt;
