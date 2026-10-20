@@ -39,6 +39,9 @@ import java.util.Set;
  *               /fliptext, attach-menu hint).
  * - quick-translate: /tr translation via the keyless Google
  *               endpoint (default target Persian, /tr en …).
+ * - gemini-chat: /ai chat with Gemini, authorized by the user's
+ *               own connected Google account (the `google`
+ *               capability + amin.httpPost; no API key).
  */
 public final class BundledPlugins {
 
@@ -71,6 +74,8 @@ public final class BundledPlugins {
                 "Restyle text: /wide ｆｕｌｌｗｉｄｔｈ, /space s p a c e d, /fliptext upside down."));
         LIST.add(new Bundled("quick-translate", "Quick Translate", "amingram_plugins/quick-translate.js",
                 "/tr <text> translates (default: Persian; /tr en <text> for English)."));
+        LIST.add(new Bundled("gemini-chat", "Gemini Chat", "amingram_plugins/gemini-chat.js",
+                "/ai <question> asks Gemini — powered by your connected Google account, no API key."));
     }
 
     private BundledPlugins() {
