@@ -5,15 +5,24 @@ import android.content.SharedPreferences;
 import android.webkit.MimeTypeMap;
 import android.widget.Toast;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
 import org.mozilla.javascript.Function;
+import org.mozilla.javascript.NativeArray;
+import org.mozilla.javascript.NativeObject;
 import org.mozilla.javascript.Scriptable;
+import org.mozilla.javascript.ScriptableObject;
 import org.mozilla.javascript.Undefined;
 import org.telegram.messenger.AccountInstance;
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ApplicationLoader;
 import org.telegram.messenger.FileLoader;
+import org.telegram.messenger.MessageObject;
+import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.SendMessagesHelper;
 import org.telegram.messenger.amin.google.GoogleAuthManager;
+import org.telegram.tgnet.ConnectionsManager;
+import org.telegram.tgnet.TLRPC;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -23,7 +32,16 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * The `amin` object exposed to JS plugins — the ONLY bridge between a
@@ -78,16 +96,44 @@ import java.util.Locale;
  * class, so Rhino never exposes it; only the file variants
  * publish a public sendFile wrapper.
  *
- * The Rhino ClassShutter in JsPluginManager whitelists ONLY this
- * class family (bridge, Storage, WithGoogle, GoogleAccess,
- * WithFile, WithGoogleFile), so plugin code cannot reach any
- * other Java class. Instances are per-plugin; sends act on the
- * account whose update is currently being dispatched.
+ * v2.1 (Platform Phase A) adds, on the BASE bridge (every plugin):
+ *
+ *   amin.platform.apiVersion / amin.platform.has(name)
+ *                                        platform introspection
+ *   amin.debug/info/warn/error(text)     leveled plugin log lines
+ *   amin.getChatInfo(chatId)             lazy lookups, delegated to
+ *   amin.getUserInfo(userId)             JsPluginManager.lookup*
+ *   amin.getMessage(chatId, id)          statics (null when unknown)
+ *   amin.httpGetAsync(url, headers, fn)  async HTTP: fn({status, body})
+ *   amin.httpPostAsync(url, body, headers, fn)
+ *                                        status 0 = transport failure
+ *   amin.storage.getJSON/setJSON/remove/keys/ns
+ *                                        storage v2 (see Storage)
+ *
+ * and, ONLY on the four `act` variants (WithAct, WithGoogleAct,
+ * WithFileAct, WithGoogleFileAct — plugins whose manifest declares
+ * the `act` capability):
+ *
+ *   amin.editMessage(ref, text)          edit YOUR OWN message;
+ *                                        ref = a msg object or
+ *                                        {chatId, id}; true/false
+ *   amin.react(ref, emoji)               react to a message
+ *
+ * The ClassShutter in JsPluginManager whitelists ONLY this class
+ * family (bridge, Storage, PlatformInfo, WithGoogle, GoogleAccess,
+ * WithFile, WithGoogleFile, and the four act variants), so plugin
+ * code cannot reach any other Java class. Instances are per-plugin;
+ * sends act on the account whose update is currently being
+ * dispatched.
  */
 public class AminBridge {
 
     private final String pluginId;
     public final Storage storage;
+
+    /** Platform introspection surface (v2.1): amin.platform —
+     *  present on EVERY bridge variant, like storage. */
+    public final PlatformInfo platform = new PlatformInfo();
 
     /** Chat of the update/command/menu action currently being
      *  dispatched, when JsPluginManager provides one (it sets this
@@ -115,6 +161,26 @@ public class AminBridge {
 
     public void log(Object text) {
         JsPluginManager.appendLog(pluginId, text == null ? "null" : String.valueOf(text));
+    }
+
+    // Leveled log lines (v2.1). log() above stays exactly as it
+    // has always been (unprefixed); these add a level prefix the
+    // hub log viewer can filter on. info() is log()'s level.
+
+    public void debug(Object text) {
+        JsPluginManager.appendLog(pluginId, "[debug] " + (text == null ? "null" : String.valueOf(text)));
+    }
+
+    public void info(Object text) {
+        JsPluginManager.appendLog(pluginId, "[info] " + (text == null ? "null" : String.valueOf(text)));
+    }
+
+    public void warn(Object text) {
+        JsPluginManager.appendLog(pluginId, "[warn] " + (text == null ? "null" : String.valueOf(text)));
+    }
+
+    public void error(Object text) {
+        JsPluginManager.appendLog(pluginId, "[error] " + (text == null ? "null" : String.valueOf(text)));
     }
 
     public void toast(final Object text) {
@@ -161,6 +227,262 @@ public class AminBridge {
         }
         if (chatId != 0) {
             send(chatId, text);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Lazy lookups (v2.1, Platform Phase A1) — public on the BASE
+    // bridge, so every plugin can resolve ids on demand instead of
+    // the bridge pre-resolving everything. The real work lives in
+    // JsPluginManager's lookup statics (they own the message/chat
+    // caches and build the JS data objects); these wrappers only
+    // convert the JS arguments and pass this plugin's id. Each
+    // returns the manager's data object, or null when unknown.
+    // ------------------------------------------------------------------
+
+    /** amin.getChatInfo(chatId) -> {id, title, type, ...} | null */
+    public Object getChatInfo(Object chatId) {
+        if (chatId == null) {
+            return null;
+        }
+        return JsPluginManager.lookupChatInfo(pluginId, toLong(chatId));
+    }
+
+    /** amin.getUserInfo(userId) -> {id, name, username, ...} | null */
+    public Object getUserInfo(Object userId) {
+        if (userId == null) {
+            return null;
+        }
+        return JsPluginManager.lookupUserInfo(pluginId, toLong(userId));
+    }
+
+    /** amin.getMessage(chatId, id) -> msg object | null */
+    public Object getMessage(Object chatId, Object id) {
+        if (chatId == null || id == null) {
+            return null;
+        }
+        return JsPluginManager.lookupMessage(pluginId, toLong(chatId), toLong(id));
+    }
+
+    // ------------------------------------------------------------------
+    // amin.editMessage / amin.react — implementations (v2.1,
+    // Platform Phase A2). PROTECTED on purpose, exactly like
+    // doSendFile: Rhino exposes only public members, so the plain
+    // bridge (and the google/file variants) have no editMessage or
+    // react at all; the public wrappers live exclusively on the
+    // four act variants below (WithAct, WithGoogleAct, WithFileAct,
+    // WithGoogleFileAct), handed only to plugins whose manifest
+    // declares the `act` capability. Both return boolean and NEVER
+    // throw across the bridge; failures are logged, like doSendFile.
+    //
+    // ref is a msg object (the shape JsPluginManager.buildMsg
+    // produces) or any JS object with numeric {chatId, id} props,
+    // read defensively.
+    // ------------------------------------------------------------------
+
+    /** Extracts {chatId, id} from a msg-like ref; null when the
+     *  ref carries neither or a zero value. */
+    private static long[] resolveRef(Object ref) {
+        if (!(ref instanceof Scriptable)) {
+            return null;
+        }
+        Scriptable obj = (Scriptable) ref;
+        Object chatValue = obj.get("chatId", obj);
+        Object idValue = obj.get("id", obj);
+        if (chatValue == null || chatValue == Scriptable.NOT_FOUND
+                || chatValue instanceof Undefined
+                || idValue == null || idValue == Scriptable.NOT_FOUND
+                || idValue instanceof Undefined) {
+            return null;
+        }
+        long chatId = toLong(chatValue);
+        long id = toLong(idValue);
+        if (chatId == 0 || id == 0) {
+            return null;
+        }
+        return new long[]{chatId, id};
+    }
+
+    /** Resolves a live MessageObject for (chatId, id) the same way
+     *  AminGram's own DeletedStore.findLive does (amin/core/
+     *  DeletedStore.java in the 13.0.2 tree): scan the dialog's
+     *  loaded message list in MessagesController.dialogMessage,
+     *  then fall back to the global dialogMessagesByIds map,
+     *  verifying the dialog when one was requested. Null when the
+     *  message is not currently loaded. */
+    private static MessageObject resolveMessageObject(int account, long chatId, long id) {
+        try {
+            if (id <= 0 || id > Integer.MAX_VALUE) {
+                return null;
+            }
+            MessagesController controller = MessagesController.getInstance(account);
+            if (controller == null) {
+                return null;
+            }
+            if (chatId != 0) {
+                ArrayList<MessageObject> objs = controller.dialogMessage.get(chatId);
+                if (objs == null) {
+                    objs = controller.dialogMessage.get(-chatId);
+                }
+                if (objs != null) {
+                    for (MessageObject obj : objs) {
+                        if (obj != null && obj.getId() == (int) id) {
+                            return obj;
+                        }
+                    }
+                }
+            }
+            MessageObject byId = controller.dialogMessagesByIds.get((int) id);
+            if (byId != null && (chatId == 0 || byId.getDialogId() == chatId)) {
+                return byId;
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    /** Edits the text of one of the USER'S OWN messages. The
+     *  own-message check is native, not JS-side: the resolved
+     *  MessageObject must be outgoing AND pass MessageObject.
+     *  isOutOwner() (message.out / from_id == self, including the
+     *  Saved Messages and channel-post cases) — anything else is
+     *  refused with false + a log line.
+     *
+     *  Routing: SendMessagesHelper.editMessage(MessageObject,
+     *  String, boolean, BaseFragment, ArrayList, int, int)
+     *  (SendMessagesHelper.java:3567 in the 13.0.2 clone) is the
+     *  text-edit entry point, but it returns 0 immediately when
+     *  its BaseFragment is null or has no parent activity — a
+     *  plugin thread has neither — so this builds the exact
+     *  TL_messages_editMessage that method builds (peer via
+     *  MessagesController.getInputPeer(dialogId), flags |= 2048
+     *  for the message field, quick-reply shortcut preservation)
+     *  and sends it through ConnectionsManager.sendRequest with
+     *  the same processUpdates completion, mirroring the method's
+     *  own body (SendMessagesHelper.java:3580-3615). Returns true
+     *  once the request is dispatched. */
+    protected final boolean doEditMessage(Object ref, String text) {
+        try {
+            if (text == null) {
+                return false;
+            }
+            long[] target = resolveRef(ref);
+            if (target == null) {
+                JsPluginManager.appendLog(pluginId,
+                        "[error] amin.editMessage: ref has no usable {chatId, id}");
+                return false;
+            }
+            final int account = JsPluginManager.dispatchAccount();
+            MessageObject obj = resolveMessageObject(account, target[0], target[1]);
+            if (obj == null || obj.messageOwner == null) {
+                JsPluginManager.appendLog(pluginId,
+                        "[error] amin.editMessage: message not loaded (chatId=" + target[0] + ", id=" + target[1] + ")");
+                return false;
+            }
+            TLRPC.Message owner = obj.messageOwner;
+            if (!owner.out || !obj.isOutOwner()) {
+                JsPluginManager.appendLog(pluginId,
+                        "[error] amin.editMessage refused: message " + target[1] + " in chat " + target[0] + " is not your own");
+                return false;
+            }
+            if (obj.isEphemeral()) {
+                JsPluginManager.appendLog(pluginId,
+                        "[error] amin.editMessage refused: ephemeral messages cannot be edited");
+                return false;
+            }
+            final MessagesController controller = MessagesController.getInstance(account);
+            TLRPC.InputPeer peer = controller.getInputPeer(obj.getDialogId());
+            if (peer == null) {
+                JsPluginManager.appendLog(pluginId,
+                        "[error] amin.editMessage: no input peer for chat " + target[0]);
+                return false;
+            }
+            TLRPC.TL_messages_editMessage req = new TLRPC.TL_messages_editMessage();
+            req.id = obj.getId();
+            req.peer = peer;
+            req.message = text;
+            req.flags |= 2048;
+            req.no_webpage = false;
+            if ((owner.flags & 1073741824) != 0) {
+                req.quick_reply_shortcut_id = owner.quick_reply_shortcut_id;
+                req.flags |= 131072;
+            }
+            ConnectionsManager.getInstance(account).sendRequest(req, (response, error) -> {
+                if (error == null && response instanceof TLRPC.Updates) {
+                    controller.processUpdates((TLRPC.Updates) response, false);
+                } else if (error != null) {
+                    JsPluginManager.appendLog(pluginId,
+                            "[error] amin.editMessage failed: " + error.text);
+                }
+            });
+            return true;
+        } catch (Throwable t) {
+            JsPluginManager.appendLog(pluginId, "[error] amin.editMessage failed: " + t);
+            return false;
+        }
+    }
+
+    /** Sends an emoji reaction to a message (any author's — reacting
+     *  to others' messages is the normal case, so unlike
+     *  editMessage there is no own-message check).
+     *
+     *  Routing mirrors SendMessagesHelper.sendReaction (13.0.2
+     *  clone, SendMessagesHelper.java:3971-4027 — the method
+     *  ChatActivity.java:33041 calls): it too refuses to run
+     *  without a parent fragment, so this builds the same
+     *  TL_messages_sendReaction it builds — peer/msg_id (including
+     *  its thread-message saved-from special case), one
+     *  TL_reactionEmoji with flags |= 1 — and sends it via
+     *  ConnectionsManager.sendRequest, processing the Updates
+     *  response the same way. Returns true once dispatched. */
+    protected final boolean doReact(Object ref, String emoji) {
+        try {
+            if (emoji == null || emoji.isEmpty()) {
+                return false;
+            }
+            long[] target = resolveRef(ref);
+            if (target == null) {
+                JsPluginManager.appendLog(pluginId,
+                        "[error] amin.react: ref has no usable {chatId, id}");
+                return false;
+            }
+            final int account = JsPluginManager.dispatchAccount();
+            MessageObject obj = resolveMessageObject(account, target[0], target[1]);
+            if (obj == null || obj.messageOwner == null) {
+                JsPluginManager.appendLog(pluginId,
+                        "[error] amin.react: message not loaded (chatId=" + target[0] + ", id=" + target[1] + ")");
+                return false;
+            }
+            final MessagesController controller = MessagesController.getInstance(account);
+            TLRPC.TL_messages_sendReaction req = new TLRPC.TL_messages_sendReaction();
+            if (obj.messageOwner.isThreadMessage && obj.messageOwner.fwd_from != null) {
+                req.peer = controller.getInputPeer(obj.getFromChatId());
+                req.msg_id = obj.messageOwner.fwd_from.saved_from_msg_id;
+            } else {
+                req.peer = controller.getInputPeer(obj.getDialogId());
+                req.msg_id = obj.getId();
+            }
+            if (req.peer == null) {
+                JsPluginManager.appendLog(pluginId,
+                        "[error] amin.react: no input peer for chat " + target[0]);
+                return false;
+            }
+            TLRPC.TL_reactionEmoji reaction = new TLRPC.TL_reactionEmoji();
+            reaction.emoticon = emoji;
+            req.reaction.add(reaction);
+            req.flags |= 1;
+            ConnectionsManager.getInstance(account).sendRequest(req, (response, error) -> {
+                if (response != null && response instanceof TLRPC.Updates) {
+                    controller.processUpdates((TLRPC.Updates) response, false);
+                } else if (error != null) {
+                    JsPluginManager.appendLog(pluginId,
+                            "[error] amin.react failed: " + error.text);
+                }
+            });
+            return true;
+        } catch (Throwable t) {
+            JsPluginManager.appendLog(pluginId, "[error] amin.react failed: " + t);
+            return false;
         }
     }
 
@@ -532,6 +854,205 @@ public class AminBridge {
         }
     }
 
+    // ------------------------------------------------------------------
+    // HTTP — sync (v1.x/v2.0) + async (v2.1, Platform Phase A3).
+    // Both forms share the private static cores below, which return
+    // an HttpResult {status, body}: status is the HTTP status code,
+    // or 0 on transport failure (bad URL, connect/read failure —
+    // the failure is logged exactly as the sync forms always did).
+    // The sync wrappers preserve the historical semantics BYTE-
+    // COMPATIBLY on top of the cores:
+    //   GET  sync: body on 2xx/3xx, null on any other status and on
+    //        transport failure.
+    //   POST sync: body on 2xx, the ERROR body on an HTTP error
+    //        status, null on transport failure / bodyless error.
+    // The async forms deliver {status, body} to the callback via
+    // JsPluginManager.invokePluginCallbackWithArg, off the plugin
+    // dispatch thread, so a slow server can no longer stall every
+    // other plugin.
+    // ------------------------------------------------------------------
+
+    /** One HTTP exchange outcome, shared by the sync/async forms. */
+    private static final class HttpResult {
+        final int status;
+        final String body;
+
+        HttpResult(int status, String body) {
+            this.status = status;
+            this.body = body;
+        }
+    }
+
+    /** Lazily-created executor for the async HTTP forms (holder
+     *  idiom: the pool exists only once an async call is made).
+     *  Cached pool of daemon threads named "AminGramHttp" — daemon
+     *  so a stuck request can never keep the process alive. */
+    private static final class HttpExecutorHolder {
+        static final ExecutorService INSTANCE = Executors.newCachedThreadPool(runnable -> {
+            Thread thread = new Thread(runnable, "AminGramHttp");
+            thread.setDaemon(true);
+            return thread;
+        });
+    }
+
+    /** Applies caller headers to a connection. Accepts either a JS
+     *  object (Scriptable of name → value, the sync call form) or a
+     *  snapshotted Map<String,String> (the async form, snapshotted
+     *  on the calling thread so no Rhino object is touched from a
+     *  worker thread). Returns true when a Content-Type was set. */
+    private static boolean applyHeaders(HttpURLConnection connection, Object headersObject) {
+        boolean hasContentType = false;
+        if (headersObject instanceof Map) {
+            for (Map.Entry<?, ?> entry : ((Map<?, ?>) headersObject).entrySet()) {
+                if (entry.getKey() == null || entry.getValue() == null) {
+                    continue;
+                }
+                String name = String.valueOf(entry.getKey());
+                connection.setRequestProperty(name, String.valueOf(entry.getValue()));
+                if ("content-type".equalsIgnoreCase(name)) {
+                    hasContentType = true;
+                }
+            }
+            return hasContentType;
+        }
+        if (headersObject instanceof Scriptable) {
+            Scriptable headers = (Scriptable) headersObject;
+            for (Object id : headers.getIds()) {
+                if (id == null) {
+                    continue;
+                }
+                Object value;
+                String name;
+                if (id instanceof Number) {
+                    value = headers.get(((Number) id).intValue(), headers);
+                    name = String.valueOf(((Number) id).intValue());
+                } else {
+                    name = String.valueOf(id);
+                    value = headers.get(name, headers);
+                }
+                if (value == null || value == Scriptable.NOT_FOUND
+                        || value instanceof org.mozilla.javascript.Undefined) {
+                    continue;
+                }
+                connection.setRequestProperty(name, String.valueOf(value));
+                if ("content-type".equalsIgnoreCase(name)) {
+                    hasContentType = true;
+                }
+            }
+        }
+        return hasContentType;
+    }
+
+    /** Copies a JS headers object into a plain map, on the calling
+     *  (plugin) thread, for the async forms. Null when the argument
+     *  is not a JS object. */
+    private static Map<String, String> snapshotHeaders(Object headersObject) {
+        if (!(headersObject instanceof Scriptable)) {
+            return null;
+        }
+        Map<String, String> out = new LinkedHashMap<>();
+        Scriptable headers = (Scriptable) headersObject;
+        for (Object id : headers.getIds()) {
+            if (id == null) {
+                continue;
+            }
+            Object value;
+            String name;
+            if (id instanceof Number) {
+                value = headers.get(((Number) id).intValue(), headers);
+                name = String.valueOf(((Number) id).intValue());
+            } else {
+                name = String.valueOf(id);
+                value = headers.get(name, headers);
+            }
+            if (value == null || value == Scriptable.NOT_FOUND
+                    || value instanceof org.mozilla.javascript.Undefined) {
+                continue;
+            }
+            out.put(name, String.valueOf(value));
+        }
+        return out;
+    }
+
+    /** GET core: 15 s connect/read timeouts, body capped at 1 MB.
+     *  On 2xx/3xx the body; on any other status body is null (the
+     *  status still reports what the server said); on transport
+     *  failure status 0 / body null, logged as the sync form logs. */
+    private static HttpResult httpGetCore(String pluginId, String urlString, Object headersObject) {
+        HttpURLConnection connection = null;
+        try {
+            URL url = new URL(urlString);
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setRequestMethod("GET");
+            connection.setConnectTimeout(15000);
+            connection.setReadTimeout(15000);
+            connection.setInstanceFollowRedirects(true);
+            connection.setRequestProperty("User-Agent",
+                    "Mozilla/5.0 (Linux; Android 13) AminGram");
+            connection.setRequestProperty("Accept", "*/*");
+            applyHeaders(connection, headersObject);
+            int code = connection.getResponseCode();
+            if (code < 200 || code >= 400) {
+                return new HttpResult(code, null);
+            }
+            return new HttpResult(code, readCapped(connection.getInputStream()));
+        } catch (Throwable t) {
+            JsPluginManager.appendLog(pluginId, "[error] amin.httpGet failed: " + t);
+            return new HttpResult(0, null);
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
+    }
+
+    /** POST core: same timeouts/cap as GET. On 2xx the body; on an
+     *  HTTP error status the ERROR body (v1.3.7 semantics); on
+     *  transport failure status 0 / body null, logged as the sync
+     *  form logs. A JSON Content-Type is assumed unless the caller
+     *  set one. bodyString null sends an empty body. */
+    private static HttpResult httpPostCore(String pluginId, String urlString, String bodyString, Object headersObject) {
+        HttpURLConnection connection = null;
+        try {
+            URL url = new URL(urlString);
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setRequestMethod("POST");
+            connection.setConnectTimeout(15000);
+            connection.setReadTimeout(15000);
+            connection.setDoOutput(true);
+            connection.setInstanceFollowRedirects(true);
+            connection.setRequestProperty("User-Agent",
+                    "Mozilla/5.0 (Linux; Android 13) AminGram");
+            boolean hasContentType = applyHeaders(connection, headersObject);
+            if (!hasContentType) {
+                connection.setRequestProperty("Content-Type",
+                        "application/json; charset=utf-8");
+            }
+            byte[] body = bodyString == null ? new byte[0]
+                    : bodyString.getBytes(StandardCharsets.UTF_8);
+            connection.setFixedLengthStreamingMode(body.length);
+            OutputStream out = connection.getOutputStream();
+            out.write(body);
+            out.close();
+            int code = connection.getResponseCode();
+            if (code >= 200 && code < 300) {
+                return new HttpResult(code, readCapped(connection.getInputStream()));
+            }
+            InputStream err = connection.getErrorStream();
+            if (err == null) {
+                return new HttpResult(code, null);
+            }
+            return new HttpResult(code, readCapped(err));
+        } catch (Throwable t) {
+            JsPluginManager.appendLog(pluginId, "[error] amin.httpPost failed: " + t);
+            return new HttpResult(0, null);
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
+    }
+
     /** Blocking GET on the plugin dispatch thread. Returns the body
      *  text (capped at 1 MB), or null on any failure. */
     public String httpGet(Object urlObject) {
@@ -551,65 +1072,8 @@ public class AminBridge {
         if (urlObject == null) {
             return null;
         }
-        HttpURLConnection connection = null;
-        try {
-            URL url = new URL(String.valueOf(urlObject));
-            connection = (HttpURLConnection) url.openConnection();
-            connection.setRequestMethod("GET");
-            connection.setConnectTimeout(15000);
-            connection.setReadTimeout(15000);
-            connection.setInstanceFollowRedirects(true);
-            connection.setRequestProperty("User-Agent",
-                    "Mozilla/5.0 (Linux; Android 13) AminGram");
-            connection.setRequestProperty("Accept", "*/*");
-            if (headersObject instanceof Scriptable) {
-                Scriptable headers = (Scriptable) headersObject;
-                for (Object id : headers.getIds()) {
-                    if (id == null) {
-                        continue;
-                    }
-                    Object value;
-                    String name;
-                    if (id instanceof Number) {
-                        value = headers.get(((Number) id).intValue(), headers);
-                        name = String.valueOf(((Number) id).intValue());
-                    } else {
-                        name = String.valueOf(id);
-                        value = headers.get(name, headers);
-                    }
-                    if (value == null || value == Scriptable.NOT_FOUND
-                            || value instanceof org.mozilla.javascript.Undefined) {
-                        continue;
-                    }
-                    connection.setRequestProperty(name, String.valueOf(value));
-                }
-            }
-            int code = connection.getResponseCode();
-            if (code < 200 || code >= 400) {
-                return null;
-            }
-            InputStream in = connection.getInputStream();
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            byte[] buffer = new byte[8192];
-            int read;
-            int total = 0;
-            while ((read = in.read(buffer)) > 0) {
-                total += read;
-                if (total > 1024 * 1024) {
-                    break;
-                }
-                out.write(buffer, 0, read);
-            }
-            in.close();
-            return new String(out.toByteArray(), StandardCharsets.UTF_8);
-        } catch (Throwable t) {
-            JsPluginManager.appendLog(pluginId, "[error] amin.httpGet failed: " + t);
-            return null;
-        } finally {
-            if (connection != null) {
-                connection.disconnect();
-            }
-        }
+        HttpResult result = httpGetCore(pluginId, String.valueOf(urlObject), headersObject);
+        return result.status >= 200 && result.status < 400 ? result.body : null;
     }
 
     /** Blocking POST on the plugin dispatch thread, in httpGet's
@@ -625,75 +1089,71 @@ public class AminBridge {
         if (urlObject == null) {
             return null;
         }
-        HttpURLConnection connection = null;
+        HttpResult result = httpPostCore(pluginId, String.valueOf(urlObject),
+                bodyObject == null ? null : String.valueOf(bodyObject), headersObject);
+        return result.status == 0 ? null : result.body;
+    }
+
+    /** Async GET (v2.1): amin.httpGetAsync(url, headersOrNull, fn).
+     *  Returns immediately; fn later receives {status, body} on the
+     *  plugin thread — status is the HTTP status (error statuses
+     *  included, body null for them, as in the sync GET), or 0 with
+     *  body null on transport failure. The headers object is
+     *  snapshotted on this thread; the request itself runs on the
+     *  AminGramHttp pool. */
+    public void httpGetAsync(Object urlObject, Object headersObject, Object callback) {
+        if (!(callback instanceof Function)) {
+            JsPluginManager.appendLog(pluginId,
+                    "[error] amin.httpGetAsync needs a callback function");
+            return;
+        }
+        final Function fn = (Function) callback;
+        final String urlString = urlObject == null ? null : String.valueOf(urlObject);
+        final Map<String, String> headers = snapshotHeaders(headersObject);
+        HttpExecutorHolder.INSTANCE.execute(() -> {
+            HttpResult result = urlString == null
+                    ? new HttpResult(0, null)
+                    : httpGetCore(pluginId, urlString, headers);
+            deliverHttpResult(fn, result);
+        });
+    }
+
+    /** Async POST (v2.1): amin.httpPostAsync(url, body, headers, fn).
+     *  Same delivery contract as httpGetAsync; unlike the async
+     *  GET, an HTTP error status delivers the ERROR body, matching
+     *  the sync POST. */
+    public void httpPostAsync(Object urlObject, Object bodyObject, Object headersObject, Object callback) {
+        if (!(callback instanceof Function)) {
+            JsPluginManager.appendLog(pluginId,
+                    "[error] amin.httpPostAsync needs a callback function");
+            return;
+        }
+        final Function fn = (Function) callback;
+        final String urlString = urlObject == null ? null : String.valueOf(urlObject);
+        final String bodyString = bodyObject == null ? null : String.valueOf(bodyObject);
+        final Map<String, String> headers = snapshotHeaders(headersObject);
+        HttpExecutorHolder.INSTANCE.execute(() -> {
+            HttpResult result = urlString == null
+                    ? new HttpResult(0, null)
+                    : httpPostCore(pluginId, urlString, bodyString, headers);
+            deliverHttpResult(fn, result);
+        });
+    }
+
+    /** Hands an async HTTP outcome to the plugin callback as a
+     *  fresh {status: Number, body: String|null} object, built
+     *  inside the callback's own Rhino context/scope by the
+     *  manager's factory mechanism. */
+    private void deliverHttpResult(final Function fn, final HttpResult result) {
         try {
-            URL url = new URL(String.valueOf(urlObject));
-            connection = (HttpURLConnection) url.openConnection();
-            connection.setRequestMethod("POST");
-            connection.setConnectTimeout(15000);
-            connection.setReadTimeout(15000);
-            connection.setDoOutput(true);
-            connection.setInstanceFollowRedirects(true);
-            connection.setRequestProperty("User-Agent",
-                    "Mozilla/5.0 (Linux; Android 13) AminGram");
-            boolean hasContentType = false;
-            if (headersObject instanceof Scriptable) {
-                Scriptable headers = (Scriptable) headersObject;
-                for (Object id : headers.getIds()) {
-                    if (id == null) {
-                        continue;
-                    }
-                    Object value;
-                    String name;
-                    if (id instanceof Number) {
-                        value = headers.get(((Number) id).intValue(), headers);
-                        name = String.valueOf(((Number) id).intValue());
-                    } else {
-                        name = String.valueOf(id);
-                        value = headers.get(name, headers);
-                    }
-                    if (value == null || value == Scriptable.NOT_FOUND
-                            || value instanceof org.mozilla.javascript.Undefined) {
-                        continue;
-                    }
-                    connection.setRequestProperty(name, String.valueOf(value));
-                    if ("content-type".equalsIgnoreCase(name)) {
-                        hasContentType = true;
-                    }
-                }
-            }
-            if (!hasContentType) {
-                connection.setRequestProperty("Content-Type",
-                        "application/json; charset=utf-8");
-            }
-            byte[] body = bodyObject == null ? new byte[0]
-                    : String.valueOf(bodyObject).getBytes(StandardCharsets.UTF_8);
-            connection.setFixedLengthStreamingMode(body.length);
-            OutputStream out = connection.getOutputStream();
-            out.write(body);
-            out.close();
-            int code = connection.getResponseCode();
-            if (code >= 200 && code < 300) {
-                return readCapped(connection.getInputStream());
-            }
-            // Non-2xx (v1.3.7): return the ERROR body instead of
-            // null, so a caller's error parsing finally sees the
-            // server's real verdict (e.g. Google's JSON error)
-            // instead of a bare "did not answer". A bodyless error
-            // still returns null, and any failure while reading
-            // lands in the catch below -> null, exactly as before.
-            InputStream err = connection.getErrorStream();
-            if (err == null) {
-                return null;
-            }
-            return readCapped(err);
+            JsPluginManager.invokePluginCallbackWithArg(pluginId, fn, (cx, scope) -> {
+                Scriptable value = cx.newObject(scope);
+                value.put("status", value, Double.valueOf(result.status));
+                value.put("body", value, result.body);
+                return value;
+            });
         } catch (Throwable t) {
-            JsPluginManager.appendLog(pluginId, "[error] amin.httpPost failed: " + t);
-            return null;
-        } finally {
-            if (connection != null) {
-                connection.disconnect();
-            }
+            JsPluginManager.appendLog(pluginId, "[error] amin http async delivery failed: " + t);
         }
     }
 
@@ -727,17 +1187,240 @@ public class AminBridge {
         }
     }
 
+    // ------------------------------------------------------------------
+    // JSON conversion helpers (v2.1, storage v2) — public statics,
+    // pure: org.json + Rhino types only, no Android/framework state,
+    // so they are unit-testable off-device. jsToJson serialises any
+    // JSON-shaped JS value (objects, arrays, strings, numbers,
+    // booleans, null); undefined and function values are dropped
+    // from objects, become null inside arrays, and a top-level
+    // undefined/function serialises to a null return (the caller —
+    // Storage.setJSON — treats that as "not serialisable").
+    // Numbers follow JSON: integral values stay integral, NaN and
+    // infinities become null. jsonToJs parses back into live Rhino
+    // values inside the caller's context/scope; it returns null on
+    // any parse failure (and for the JSON literal null).
+    // ------------------------------------------------------------------
+
+    public static String jsToJson(Object value) {
+        // A top-level null/undefined/function has no JSON document
+        // form: report it as unserialisable (Java null). Nested
+        // occurrences are handled inside toJsonValue (dropped from
+        // objects, null inside arrays, JSON null for real nulls).
+        if (value == null || value instanceof Undefined || value instanceof Function) {
+            return null;
+        }
+        try {
+            Object converted = toJsonValue(value, 0);
+            if (converted == null) {
+                return null;
+            }
+            if (converted instanceof String) {
+                return JSONObject.quote((String) converted);
+            }
+            return converted.toString();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static Object toJsonValue(Object value, int depth) throws Exception {
+        if (value == null || value instanceof Undefined) {
+            return JSONObject.NULL;
+        }
+        if (value instanceof String || value instanceof Boolean) {
+            return value;
+        }
+        if (value instanceof Number) {
+            double d = ((Number) value).doubleValue();
+            if (Double.isNaN(d) || Double.isInfinite(d)) {
+                return JSONObject.NULL;
+            }
+            if (d == Math.floor(d) && Math.abs(d) < 9.0e15) {
+                return Long.valueOf((long) d);
+            }
+            return Double.valueOf(d);
+        }
+        if (depth > 32) {
+            return JSONObject.NULL;
+        }
+        if (value instanceof NativeArray) {
+            NativeArray array = (NativeArray) value;
+            JSONArray out = new JSONArray();
+            long length = array.getLength();
+            for (long i = 0; i < length; i++) {
+                Object element = array.get((int) i, array);
+                if (element == null || element == Scriptable.NOT_FOUND
+                        || element instanceof Function) {
+                    out.put(JSONObject.NULL);
+                } else {
+                    out.put(toJsonValue(element, depth + 1));
+                }
+            }
+            return out;
+        }
+        if (value instanceof Scriptable) {
+            Scriptable obj = (Scriptable) value;
+            JSONObject out = new JSONObject();
+            for (Object id : obj.getIds()) {
+                Object v;
+                String key;
+                if (id instanceof Number) {
+                    v = obj.get(((Number) id).intValue(), obj);
+                    key = String.valueOf(((Number) id).intValue());
+                } else {
+                    key = String.valueOf(id);
+                    v = obj.get(key, obj);
+                }
+                if (v == null || v == Scriptable.NOT_FOUND
+                        || v instanceof Undefined || v instanceof Function) {
+                    continue;
+                }
+                out.put(key, toJsonValue(v, depth + 1));
+            }
+            return out;
+        }
+        return String.valueOf(value);
+    }
+
+    public static Object jsonToJs(String json, org.mozilla.javascript.Context cx, org.mozilla.javascript.Scriptable scope) {
+        if (json == null || cx == null || scope == null) {
+            return null;
+        }
+        try {
+            String trimmed = json.trim();
+            if (trimmed.startsWith("{")) {
+                return fromJsonValue(new JSONObject(json), cx, scope, 0);
+            }
+            if (trimmed.startsWith("[")) {
+                return fromJsonValue(new JSONArray(json), cx, scope, 0);
+            }
+            if ("null".equals(trimmed)) {
+                return null;
+            }
+            if ("true".equals(trimmed)) {
+                return Boolean.TRUE;
+            }
+            if ("false".equals(trimmed)) {
+                return Boolean.FALSE;
+            }
+            if (trimmed.startsWith("\"")) {
+                // A quoted JSON string literal.
+                Object parsedString = new org.json.JSONTokener(json).nextValue();
+                return parsedString instanceof String ? parsedString : null;
+            }
+            // Strictly numeric scalars only: a bare unquoted word
+            // is NOT valid JSON, so it takes the parse-failure path
+            // (null) — this is what makes Storage.getJSON return
+            // its default for a plain string stored via set().
+            try {
+                return Double.valueOf(trimmed);
+            } catch (Exception e) {
+                return null;
+            }
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static Object fromJsonValue(Object value, org.mozilla.javascript.Context cx,
+                                        org.mozilla.javascript.Scriptable scope, int depth) {
+        if (value == null || value == JSONObject.NULL) {
+            return null;
+        }
+        if (value instanceof String || value instanceof Boolean) {
+            return value;
+        }
+        if (value instanceof Number) {
+            return Double.valueOf(((Number) value).doubleValue());
+        }
+        if (value instanceof JSONObject) {
+            JSONObject obj = (JSONObject) value;
+            Scriptable out = newJsObject(cx, scope);
+            java.util.Iterator<String> keys = obj.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                out.put(key, out, fromJsonValue(obj.opt(key), cx, scope, depth + 1));
+            }
+            return out;
+        }
+        if (value instanceof JSONArray) {
+            JSONArray array = (JSONArray) value;
+            Scriptable out = newJsArray(cx, scope, array.length());
+            for (int i = 0; i < array.length(); i++) {
+                out.put(i, out, fromJsonValue(array.opt(i), cx, scope, depth + 1));
+            }
+            return out;
+        }
+        return String.valueOf(value);
+    }
+
+    private static Scriptable newJsObject(org.mozilla.javascript.Context cx,
+                                          org.mozilla.javascript.Scriptable scope) {
+        try {
+            Scriptable obj = cx.newObject(scope);
+            if (obj != null) {
+                return obj;
+            }
+        } catch (Throwable ignored) {
+        }
+        return new NativeObject();
+    }
+
+    private static Scriptable newJsArray(org.mozilla.javascript.Context cx,
+                                         org.mozilla.javascript.Scriptable scope, int length) {
+        try {
+            Scriptable array = cx.newArray(scope, length);
+            if (array != null) {
+                return array;
+            }
+        } catch (Throwable ignored) {
+        }
+        return new NativeArray(length);
+    }
+
     /** Per-plugin key/value storage, backed by its own
      *  SharedPreferences file ("amingram_jsstore_<id>"). Values are
      *  strings under the hood; get() converts to the type of the
      *  provided default (bool/number/string), as the master prompt
-     *  documents string/number/bool values. */
+     *  documents string/number/bool values.
+     *
+     *  v2.1 (storage v2) adds, without changing get/set at all:
+     *    getJSON(key, def)   the stored string parsed as JSON into a
+     *                        live JS value; def when the key is
+     *                        absent OR the stored text is not valid
+     *                        JSON (corruption path — note this means
+     *                        a plain string saved via set() reads
+     *                        back as def here, while get() still
+     *                        returns it untouched; the two views
+     *                        coexist on the same physical keys).
+     *                        A stored JSON null also reads as def.
+     *    setJSON(key, value) any JSON-serialisable JS value, stored
+     *                        via jsToJson; undefined/function values
+     *                        are logged and ignored (no-op). Values
+     *                        over 64 KB are stored but logged [warn].
+     *    remove(key)         deletes the key.
+     *    keys(prefix)        JS array of this view's key names
+     *                        starting with prefix (null/"" = all),
+     *                        sorted.
+     *    ns(name)            a Storage VIEW whose keys are physically
+     *                        "<name>:<key>" in the same prefs file —
+     *                        cheap namespacing inside one plugin.
+     *                        Views nest ("a:b:key"). */
     public static class Storage {
 
         private final String prefsName;
+        private final String pluginId;
+        private final String keyPrefix;
 
         public Storage(String pluginId) {
-            this.prefsName = JsPluginManager.storagePrefsName(pluginId);
+            this(JsPluginManager.storagePrefsName(pluginId), pluginId, "");
+        }
+
+        private Storage(String prefsName, String pluginId, String keyPrefix) {
+            this.prefsName = prefsName;
+            this.pluginId = pluginId;
+            this.keyPrefix = keyPrefix;
         }
 
         public Object get(Object key, Object defaultValue) {
@@ -745,7 +1428,7 @@ public class AminBridge {
             if (context == null || key == null) {
                 return defaultValue;
             }
-            String stored = prefs(context).getString(String.valueOf(key), null);
+            String stored = prefs(context).getString(keyPrefix + String.valueOf(key), null);
             if (stored == null) {
                 return defaultValue;
             }
@@ -768,25 +1451,142 @@ public class AminBridge {
                 return;
             }
             SharedPreferences.Editor edit = prefs(context).edit();
+            String storedKey = keyPrefix + String.valueOf(key);
             if (value == null) {
-                edit.remove(String.valueOf(key));
+                edit.remove(storedKey);
             } else if (value instanceof Boolean) {
-                edit.putString(String.valueOf(key), ((Boolean) value) ? "true" : "false");
+                edit.putString(storedKey, ((Boolean) value) ? "true" : "false");
             } else if (value instanceof Number) {
                 double d = ((Number) value).doubleValue();
                 if (d == Math.floor(d) && !Double.isInfinite(d) && Math.abs(d) < 1e15) {
-                    edit.putString(String.valueOf(key), String.valueOf((long) d));
+                    edit.putString(storedKey, String.valueOf((long) d));
                 } else {
-                    edit.putString(String.valueOf(key), String.valueOf(d));
+                    edit.putString(storedKey, String.valueOf(d));
                 }
             } else {
-                edit.putString(String.valueOf(key), String.valueOf(value));
+                edit.putString(storedKey, String.valueOf(value));
             }
             edit.apply();
         }
 
+        /** Stored JSON → live JS value; defaultValue when absent
+         *  or unparseable (see the class javadoc). */
+        public Object getJSON(Object key, Object defaultValue) {
+            Context context = ApplicationLoader.applicationContext;
+            if (context == null || key == null) {
+                return defaultValue;
+            }
+            String stored = prefs(context).getString(keyPrefix + String.valueOf(key), null);
+            if (stored == null) {
+                return defaultValue;
+            }
+            org.mozilla.javascript.Context cx = org.mozilla.javascript.Context.getCurrentContext();
+            if (cx == null) {
+                return defaultValue;
+            }
+            Scriptable scope = defaultValue instanceof Scriptable
+                    ? ScriptableObject.getTopLevelScope((Scriptable) defaultValue)
+                    : new NativeObject();
+            Object parsed = jsonToJs(stored, cx, scope);
+            return parsed == null ? defaultValue : parsed;
+        }
+
+        /** Any JSON-serialisable JS value → stored JSON text.
+         *  undefined/function values are logged and ignored. */
+        public void setJSON(Object key, Object value) {
+            if (key == null) {
+                return;
+            }
+            if (value == null || value instanceof Undefined || value instanceof Function) {
+                JsPluginManager.appendLog(pluginId,
+                        "[warn] amin.storage.setJSON: undefined/function value for key " + key + " ignored");
+                return;
+            }
+            String json = jsToJson(value);
+            if (json == null) {
+                JsPluginManager.appendLog(pluginId,
+                        "[warn] amin.storage.setJSON: value for key " + key + " is not JSON-serialisable; ignored");
+                return;
+            }
+            if (json.length() > 64 * 1024) {
+                JsPluginManager.appendLog(pluginId,
+                        "[warn] amin.storage.setJSON: value for key " + key + " is "
+                                + json.length() + " chars (> 64 KB); storing anyway");
+            }
+            Context context = ApplicationLoader.applicationContext;
+            if (context == null) {
+                return;
+            }
+            prefs(context).edit()
+                    .putString(keyPrefix + String.valueOf(key), json)
+                    .apply();
+        }
+
+        public void remove(Object key) {
+            Context context = ApplicationLoader.applicationContext;
+            if (context == null || key == null) {
+                return;
+            }
+            prefs(context).edit().remove(keyPrefix + String.valueOf(key)).apply();
+        }
+
+        /** This view's keys starting with prefix (null/"" = all),
+         *  as a JS array of strings, sorted. Namespace prefixes of
+         *  sub-views are part of the key names seen from here. */
+        public Object keys(Object prefix) {
+            java.util.List<String> out = new java.util.ArrayList<>();
+            Context context = ApplicationLoader.applicationContext;
+            if (context != null) {
+                String p = prefix == null || prefix instanceof Undefined
+                        ? "" : String.valueOf(prefix);
+                String full = keyPrefix + p;
+                try {
+                    for (String storedKey : prefs(context).getAll().keySet()) {
+                        if (storedKey != null && storedKey.startsWith(full)) {
+                            out.add(storedKey.substring(keyPrefix.length()));
+                        }
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+            Collections.sort(out);
+            return new NativeArray(out.toArray());
+        }
+
+        /** A namespaced view of this same store: its keys live
+         *  physically as "<name>:<key>" in the same prefs file. */
+        public Storage ns(Object name) {
+            String namespace = name == null || name instanceof Undefined
+                    ? "" : String.valueOf(name);
+            if (namespace.isEmpty()) {
+                JsPluginManager.appendLog(pluginId,
+                        "[warn] amin.storage.ns: empty namespace name; returning the same view");
+                return this;
+            }
+            return new Storage(prefsName, pluginId, keyPrefix + namespace + ":");
+        }
+
         private SharedPreferences prefs(Context context) {
             return context.getSharedPreferences(prefsName, Context.MODE_PRIVATE);
+        }
+    }
+
+    /** Platform introspection (v2.1, Platform Phase A9):
+     *  amin.platform — present on EVERY bridge variant. Plugins
+     *  feature-detect instead of version-sniffing:
+     *    if (amin.platform.has("act")) { ... }
+     *  has() answers from the fixed feature set this build ships. */
+    public static class PlatformInfo {
+
+        public int apiVersion = 2;
+
+        private static final Set<String> FEATURES = new HashSet<>(Arrays.asList(
+                "rich-msg", "lazy-lookup", "act", "http-async", "storage-json",
+                "settings-v2", "lifecycle", "watchdog", "platform",
+                "sendFile", "http-headers", "reply-context"));
+
+        public boolean has(String name) {
+            return name != null && FEATURES.contains(name);
         }
     }
 
@@ -874,6 +1674,37 @@ public class AminBridge {
                 JsPluginManager.invokePluginCallback(pluginId, fn, Boolean.FALSE);
             }
         }
+
+        /** The active Google API mode (v2.1): "aistudio" or
+         *  "vertex" — which endpoint/scope family GoogleAuthManager
+         *  is currently configured for, so dual-mode plugins (the
+         *  Gemini chat plugin) can build the right request without
+         *  guessing. "" if the mode cannot be read. */
+        public String getMode() {
+            try {
+                Context context = ApplicationLoader.applicationContext;
+                if (context == null) {
+                    return "";
+                }
+                String mode = GoogleAuthManager.getApiMode(context);
+                return mode == null ? "" : mode;
+            } catch (Throwable t) {
+                return "";
+            }
+        }
+
+        /** The most recent Google authorize failure's detail
+         *  (v2.1), or "" when none — lets a plugin show WHY a token
+         *  request failed (e.g. an invalid_scope verdict) instead
+         *  of a bare "did not answer". */
+        public String getLastAuthError() {
+            try {
+                String error = GoogleAuthManager.getLastAuthError();
+                return error == null ? "" : error;
+            } catch (Throwable t) {
+                return "";
+            }
+        }
     }
 
     /** The bridge handed to plugins whose manifest declares the
@@ -929,6 +1760,89 @@ public class AminBridge {
          *  See the class javadoc for the full contract. */
         public boolean sendFile(Object url, Object opts) {
             return doSendFile(url, opts);
+        }
+    }
+
+    /** The bridge handed to plugins whose manifest declares the
+     *  `act` capability (v2.1): the plain bridge PLUS the public
+     *  amin.editMessage / amin.react wrappers. The implementations
+     *  are {@link AminBridge#doEditMessage} / {@link AminBridge#doReact}
+     *  (protected on the base, hence invisible to Rhino there);
+     *  these public wrappers are the only places they become
+     *  reachable from JS. Kept by patch 0010 and whitelisted by
+     *  JsPluginManager's ClassShutter, like the other variants. */
+    public static class WithAct extends AminBridge {
+
+        public WithAct(String pluginId) {
+            super(pluginId);
+        }
+
+        /** amin.editMessage(ref, text) -> boolean. Edits one of
+         *  the user's OWN messages; see doEditMessage. */
+        public boolean editMessage(Object ref, Object text) {
+            return doEditMessage(ref, text == null ? null : String.valueOf(text));
+        }
+
+        /** amin.react(ref, emoji) -> boolean. See doReact. */
+        public boolean react(Object ref, Object emoji) {
+            return doReact(ref, emoji == null ? null : String.valueOf(emoji));
+        }
+    }
+
+    /** `act` + `google` (v2.1): amin.google (inherited from
+     *  WithGoogle) PLUS the editMessage/react wrappers. */
+    public static class WithGoogleAct extends WithGoogle {
+
+        public WithGoogleAct(String pluginId) {
+            super(pluginId);
+        }
+
+        /** amin.editMessage(ref, text) -> boolean. See doEditMessage. */
+        public boolean editMessage(Object ref, Object text) {
+            return doEditMessage(ref, text == null ? null : String.valueOf(text));
+        }
+
+        /** amin.react(ref, emoji) -> boolean. See doReact. */
+        public boolean react(Object ref, Object emoji) {
+            return doReact(ref, emoji == null ? null : String.valueOf(emoji));
+        }
+    }
+
+    /** `act` + `file` (v2.1): amin.sendFile (inherited from
+     *  WithFile) PLUS the editMessage/react wrappers. */
+    public static class WithFileAct extends WithFile {
+
+        public WithFileAct(String pluginId) {
+            super(pluginId);
+        }
+
+        /** amin.editMessage(ref, text) -> boolean. See doEditMessage. */
+        public boolean editMessage(Object ref, Object text) {
+            return doEditMessage(ref, text == null ? null : String.valueOf(text));
+        }
+
+        /** amin.react(ref, emoji) -> boolean. See doReact. */
+        public boolean react(Object ref, Object emoji) {
+            return doReact(ref, emoji == null ? null : String.valueOf(emoji));
+        }
+    }
+
+    /** `act` + `google` + `file` (v2.1): every surface — amin.google,
+     *  amin.sendFile, amin.editMessage, amin.react. */
+    public static class WithGoogleFileAct extends WithGoogleFile {
+
+        public WithGoogleFileAct(String pluginId) {
+            super(pluginId);
+        }
+
+        /** amin.editMessage(ref, text) -> boolean. See doEditMessage. */
+        public boolean editMessage(Object ref, Object text) {
+            return doEditMessage(ref, text == null ? null : String.valueOf(text));
+        }
+
+        /** amin.react(ref, emoji) -> boolean. See doReact. */
+        public boolean react(Object ref, Object emoji) {
+            return doReact(ref, emoji == null ? null : String.valueOf(emoji));
         }
     }
 }

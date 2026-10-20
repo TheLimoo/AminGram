@@ -18,6 +18,7 @@ import com.google.android.gms.auth.api.signin.GoogleSignInAccount;
 import com.google.android.gms.common.api.Scope;
 
 import org.json.JSONObject;
+import org.telegram.messenger.ApplicationLoader;
 
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
@@ -38,13 +39,18 @@ import javax.crypto.spec.GCMParameterSpec;
  * Built on the Authorization API of play-services-auth 21.6.0
  * ({@code Identity.getAuthorizationClient} — verified against the
  * real AAR; the upstream-pinned 20.4.0 does not contain it, hence
- * patch 0016's version bump). Requested scopes:
- * {@code https://www.googleapis.com/auth/cloud-platform}
- * (Google Cloud Platform — broad, since v1.3.6: Google's console
- * refuses to register the narrower generative-language scope for
- * this app and the device flow dies with invalid_scope, while
- * the Gemini API accepts cloud-platform tokens) + {@code email}
- * (so the UI can show WHICH account is connected). Online access only — no server client id, no
+ * patch 0016's version bump). Dual API mode (v2.1, pref
+ * {@code api_mode} in the same prefs): "aistudio" (default)
+ * requests {@code https://www.googleapis.com/auth/generative-language}
+ * — the scope generativelanguage.googleapis.com demands, which
+ * Google's console currently cannot register for this app
+ * (Google-side defect; authorize dies with invalid_scope, kept
+ * diagnosable via {@link #getLastAuthError}); "vertex" requests
+ * {@code https://www.googleapis.com/auth/cloud-platform} for the
+ * Vertex AI project endpoint (works today; its gate is project
+ * billing, not scopes). Both modes also request
+ * {@code https://www.googleapis.com/auth/userinfo.email} (so the
+ * UI can show WHICH account is connected). Online access only — no server client id, no
  * refresh token exists in this API; tokens live about an hour.
  *
  * Token cache: a token fetched interactively (or silently) is
@@ -72,12 +78,26 @@ import javax.crypto.spec.GCMParameterSpec;
  */
 public final class GoogleAuthManager {
 
+    public static final String SCOPE_GENERATIVE_LANGUAGE =
+            "https://www.googleapis.com/auth/generative-language";
     public static final String SCOPE_CLOUD_PLATFORM =
             "https://www.googleapis.com/auth/cloud-platform";
-    public static final String SCOPE_EMAIL = "email";
+    public static final String SCOPE_EMAIL =
+            "https://www.googleapis.com/auth/userinfo.email";
+
+    /** API modes for {@link #getApiMode} / {@link #setApiMode}. */
+    public static final String MODE_AISTUDIO = "aistudio";
+    public static final String MODE_VERTEX = "vertex";
 
     private static final String PREFS = "amingram_google";
     private static final String KEY_BLOB = "auth_blob_v1";
+    private static final String KEY_MODE = "api_mode";
+
+    /** Most recent authorize failure's detail ("" when none / the
+     *  last authorize succeeded) — lets plugins tell an
+     *  invalid_scope (Google-side, aistudio mode) apart from an
+     *  ordinary "please reconnect". */
+    private static volatile String lastAuthError = "";
     private static final String KEY_ALIAS = "amingram_google_auth";
     /** Access tokens from this API live ~1 h; cache for 50 min. */
     private static final long TOKEN_TTL_MS = 50L * 60L * 1000L;
@@ -133,6 +153,11 @@ public final class GoogleAuthManager {
 
     /** Called by GoogleAuthActivity exactly once per flow. */
     static synchronized void deliverInteractiveResult(boolean success, String error) {
+        if (success) {
+            lastAuthError = "";
+        } else if (error != null && !error.isEmpty()) {
+            lastAuthError = error;
+        }
         AuthCallback callback = pendingCallback;
         pendingCallback = null;
         flowRunning = false;
@@ -173,6 +198,71 @@ public final class GoogleAuthManager {
         return cache == null ? null : cache.email;
     }
 
+    /** The active API mode: {@link #MODE_VERTEX} only when the
+     *  pref says so, {@link #MODE_AISTUDIO} otherwise (default —
+     *  also for a null context or any read failure). The mode
+     *  decides which scopes {@link #buildRequest} asks for:
+     *  aistudio → generative-language, vertex → cloud-platform
+     *  (plus userinfo.email in both). */
+    public static String getApiMode(Context context) {
+        try {
+            if (context == null) {
+                return MODE_AISTUDIO;
+            }
+            String mode = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .getString(KEY_MODE, null);
+            return MODE_VERTEX.equals(mode) ? MODE_VERTEX : MODE_AISTUDIO;
+        } catch (Throwable t) {
+            return MODE_AISTUDIO;
+        }
+    }
+
+    /** Switches the API mode and CLEARS the token cache (the
+     *  blob disconnect removes — same prefs edit, factored into
+     *  {@link #clearTokenCache}): a token minted for one mode's
+     *  scopes must never be served for the other's. This is NOT
+     *  a disconnect — no grant is revoked with Google and the
+     *  stored mode survives; the user simply reconnects under
+     *  the new mode's scopes. */
+    public static void setApiMode(Context context, String mode) {
+        if (context == null) {
+            return;
+        }
+        Context app = context.getApplicationContext();
+        try {
+            app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .edit().putString(KEY_MODE,
+                            MODE_VERTEX.equals(mode) ? MODE_VERTEX : MODE_AISTUDIO)
+                    .apply();
+        } catch (Throwable ignored) {
+        }
+        clearTokenCache(app);
+    }
+
+    /** The most recent authorize failure's detail (e.g. a string
+     *  containing "invalid_scope"), or "" when no authorize has
+     *  failed since the last success. */
+    public static String getLastAuthError() {
+        String error = lastAuthError;
+        return error == null ? "" : error;
+    }
+
+    private static void noteAuthError(String error) {
+        if (error != null && !error.isEmpty()) {
+            lastAuthError = error;
+        }
+    }
+
+    /** The cache-clearing half of disconnect: removes the
+     *  encrypted token/email/expiry blob from prefs. */
+    private static void clearTokenCache(Context context) {
+        try {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .edit().remove(KEY_BLOB).apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
     /** Returns a valid access token: the cache while it has more
      *  than 60 s of (conservative) life left, otherwise a silent
      *  re-authorization. Fails (null + error) when not connected
@@ -192,6 +282,7 @@ public final class GoogleAuthManager {
         try {
             final Cache cache = readCache(app);
             if (cache == null || cache.token == null) {
+                noteAuthError("Google account is not connected.");
                 safeToken(callback, null, "Google account is not connected.");
                 return;
             }
@@ -199,10 +290,12 @@ public final class GoogleAuthManager {
                 safeToken(callback, cache.token, null);
                 return;
             }
-            Identity.getAuthorizationClient(app).authorize(buildRequest(cache.email))
+            Identity.getAuthorizationClient(app).authorize(buildRequest(app, cache.email))
                     .addOnCompleteListener(task -> {
                         try {
                             if (!task.isSuccessful()) {
+                                noteAuthError("Google sign-in check failed: "
+                                        + brief(task.getException()));
                                 safeToken(callback, null, "Google sign-in check failed: "
                                         + brief(task.getException()));
                                 return;
@@ -210,6 +303,8 @@ public final class GoogleAuthManager {
                             AuthorizationResult result = task.getResult();
                             if (result == null || result.hasResolution()
                                     || result.getAccessToken() == null) {
+                                noteAuthError(
+                                        "Google needs an interactive sign-in first.");
                                 safeToken(callback, null,
                                         "Google needs an interactive sign-in first.");
                                 return;
@@ -219,10 +314,12 @@ public final class GoogleAuthManager {
                                     email != null ? email : cache.email);
                             safeToken(callback, result.getAccessToken(), null);
                         } catch (Throwable t) {
+                            noteAuthError("Google sign-in check failed: " + brief(t));
                             safeToken(callback, null, "Google sign-in check failed: " + brief(t));
                         }
                     });
         } catch (Throwable t) {
+            noteAuthError("Google sign-in check failed: " + brief(t));
             safeToken(callback, null, "Google sign-in check failed: " + brief(t));
         }
     }
@@ -236,11 +333,7 @@ public final class GoogleAuthManager {
         }
         Context app = context.getApplicationContext();
         Cache cache = readCache(app);
-        try {
-            app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                    .edit().remove(KEY_BLOB).apply();
-        } catch (Throwable ignored) {
-        }
+        clearTokenCache(app);
         if (cache == null) {
             return;
         }
@@ -255,7 +348,7 @@ public final class GoogleAuthManager {
             }
             try {
                 RevokeAccessRequest.Builder builder = RevokeAccessRequest.builder()
-                        .setScopes(requestedScopes());
+                        .setScopes(requestedScopes(app));
                 if (cache.email != null) {
                     builder.setAccount(new Account(cache.email, "com.google"));
                 }
@@ -270,20 +363,43 @@ public final class GoogleAuthManager {
     // Authorization plumbing shared with GoogleAuthActivity
     // ------------------------------------------------------------------
 
-    static List<Scope> requestedScopes() {
+    /** THE scope-construction site — every AuthorizationRequest
+     *  in the app is built here (interactive sign-in via
+     *  GoogleAuthActivity, silent re-authorize in
+     *  {@link #getValidToken}, and disconnect's revoke list), so
+     *  pinning the mode split here pins all of them: aistudio →
+     *  generative-language, vertex → cloud-platform, plus
+     *  userinfo.email in both modes. */
+    static List<Scope> requestedScopes(Context context) {
         List<Scope> scopes = new ArrayList<>();
-        scopes.add(new Scope(SCOPE_CLOUD_PLATFORM));
+        if (MODE_VERTEX.equals(getApiMode(context))) {
+            scopes.add(new Scope(SCOPE_CLOUD_PLATFORM));
+        } else {
+            scopes.add(new Scope(SCOPE_GENERATIVE_LANGUAGE));
+        }
         scopes.add(new Scope(SCOPE_EMAIL));
         return scopes;
     }
 
-    static AuthorizationRequest buildRequest(String email) {
+    static AuthorizationRequest buildRequest(Context context, String email) {
         AuthorizationRequest.Builder builder = AuthorizationRequest.builder()
-                .setRequestedScopes(requestedScopes());
+                .setRequestedScopes(requestedScopes(context));
         if (email != null && !email.isEmpty()) {
             builder.setAccount(new Account(email, "com.google"));
         }
         return builder.build();
+    }
+
+    /** Legacy entry kept for GoogleAuthActivity (which has no
+     *  manager context of its own): resolves the mode from the
+     *  application context, exactly like the bridge does. */
+    static AuthorizationRequest buildRequest(String email) {
+        Context context = null;
+        try {
+            context = ApplicationLoader.applicationContext;
+        } catch (Throwable ignored) {
+        }
+        return buildRequest(context, email);
     }
 
     static String emailOf(AuthorizationResult result) {
@@ -302,6 +418,8 @@ public final class GoogleAuthManager {
         if (context == null || token == null) {
             return;
         }
+        // A fresh token means the last authorize succeeded.
+        lastAuthError = "";
         Cache cache = new Cache();
         cache.token = token;
         cache.expiryMs = System.currentTimeMillis() + TOKEN_TTL_MS;

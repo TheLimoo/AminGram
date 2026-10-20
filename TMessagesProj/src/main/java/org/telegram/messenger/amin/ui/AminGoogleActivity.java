@@ -113,9 +113,12 @@ public class AminGoogleActivity extends BaseFragment {
             return;
         }
         rows.clear();
+        boolean vertex = false;
         try {
             boolean connected = GoogleAuthManager.isSignedIn(context);
             String email = GoogleAuthManager.connectedEmail(context);
+            vertex = GoogleAuthManager.MODE_VERTEX.equals(
+                    GoogleAuthManager.getApiMode(context));
             addHeader("Google Account");
             if (connected) {
                 addInfo("Connected as " + (email != null ? email : "your Google account") + ".\n"
@@ -130,14 +133,20 @@ public class AminGoogleActivity extends BaseFragment {
                         + "API key.");
                 addAction("connect", "Connect Google Account", null);
             }
+            addAction("api_mode", "API mode", vertex ? "Vertex AI" : "AI Studio");
         } catch (Throwable ignored) {
         }
         Row footer = new Row();
         footer.kind = KIND_FOOTER;
-        footer.title = "Sign-in requests Google Cloud Platform access — a broad Google "
-                + "permission (Google will not register the narrower Gemini-only scope "
-                + "for this app), so google-capable plugins can call Gemini with your "
-                + "account. Tokens are stored only on this device, encrypted with an Android "
+        footer.title = (vertex
+                ? "Vertex AI: same models via Google Cloud. Works with your account "
+                        + "(Cloud Platform permission) or an AI Studio API key set in "
+                        + "the Gemini Chat plugin settings. Requires billing enabled on "
+                        + "the project for account mode."
+                : "AI Studio: free quota via the Gemini API. Currently blocked by a "
+                        + "Google-side scope registration defect — sign-in may fail "
+                        + "until Google fixes it.")
+                + "\n\nTokens are stored only on this device, encrypted with an Android "
                 + "Keystore key, and are sent nowhere except to Google. amin.google exists "
                 + "only in plugins whose manifest declares the google capability. Sign-in "
                 + "needs Google Play Services, and because AminGram is not verified with "
@@ -223,6 +232,8 @@ public class AminGoogleActivity extends BaseFragment {
                     connect(context);
                 } else if ("disconnect".equals(row.action)) {
                     confirmDisconnect(context);
+                } else if ("api_mode".equals(row.action)) {
+                    showApiModeDialog(context);
                 }
             }
         } catch (Throwable ignored) {
@@ -241,6 +252,30 @@ public class AminGoogleActivity extends BaseFragment {
             }
             rebuild();
         });
+    }
+
+    /** Single-choice mode picker. Switching calls setApiMode,
+     *  which clears the cached token (scopes differ per mode), so
+     *  the refreshed page shows the disconnected state and the
+     *  user reconnects under the new mode. */
+    private void showApiModeDialog(Context context) {
+        if (getParentActivity() == null) {
+            return;
+        }
+        CharSequence[] items = new CharSequence[]{"AI Studio", "Vertex AI"};
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle("API mode");
+        builder.setItems(items, (dialog, which) -> {
+            try {
+                GoogleAuthManager.setApiMode(context,
+                        which == 1 ? GoogleAuthManager.MODE_VERTEX
+                                : GoogleAuthManager.MODE_AISTUDIO);
+            } catch (Throwable ignored) {
+            }
+            rebuild();
+        });
+        builder.setNegativeButton("Cancel", null);
+        showDialog(builder.create());
     }
 
     private void confirmDisconnect(Context context) {

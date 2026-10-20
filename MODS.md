@@ -1056,3 +1056,381 @@ deleted); everything else is overlay code under
   the 1-arg form is untouched and `AminBridge`'s whole-class R8
   name-keep covers the overload. Documented in
   PLUGIN-MASTER-PROMPT v2.
+
+## v2.1 — Plugin Platform Phase A + the fork-tonight pack (2026-10-21)
+
+Two batches in one version. **Plugin Platform Phase A** (items A1–A9
+below) is the PLATFORM-V2-DESIGN Phase A, built overlay-only with
+**zero new upstream patches** — the one patch it touches is 0010
+(proguard keeps for the new bridge classes). The **fork-tonight pack**
+is the exception Amin ordered on top of it: three NEW upstream
+patches (0017/0018/0019) that take the series beyond the Phase-A
+zero-patch constraint, plus two native modules and a dual-mode
+Gemini rework. Patch series is now 0001–0004, 0006–0014, 0016–0019
+(intentional gaps: 0005 google-services — CI-generated; 0015 design
+hook — deleted in v2.0). Plugin contract documented in
+docs/PLUGIN-MASTER-PROMPT.md v2.1 (all three copies byte-identical).
+
+### Plugin Platform Phase A — engine summary (A1–A9)
+
+All in `org.telegram.messenger.amin.plugins.js` unless noted.
+`JsPluginManager.PLATFORM_API_VERSION` = 2.
+
+- **A1 — rich msg + lazy lookups + reply context.** `buildMsg` now
+  also emits `replyToId`, `editDate`, `fwdFrom` (forward origin's
+  display NAME only — header `from_name`, else the resolved peer
+  name, else the post author; no peer object leaks), `groupedId`,
+  `chatTitle`, `chatType` ("private"/"group"/"supergroup"/
+  "channel"), `senderUsername`, `senderIsBot`, and `media` — null
+  when the message has none, else `{kind, fileName, mimeType,
+  sizeBytes, durationSec, width, height}` built purely by
+  instanceof checks on the already-loaded media (kind ∈ photo /
+  document / video / audio / voice / sticker / gif / webpage /
+  poll / other; nothing is downloaded). New BASE-bridge lookups
+  (every plugin, no capability needed): `amin.getChatInfo(chatId)`
+  → `{id, type, title, username, memberCount}` (memberCount 0 for
+  private chats), `amin.getUserInfo(userId)` → `{id, name,
+  username, isBot, isPremium}`, `amin.getMessage(chatId, id)` → a
+  buildMsg-shaped object — each null when unknown, and getMessage
+  ONLY searches already-loaded messages (per-dialog list, then the
+  global by-id map with dialog verification): unloaded messages
+  are never fetched — that bound is contractual. Command dispatch
+  also gains `ctx.replyTo` `{text, caption, senderName, chatId,
+  messageId}` when the command message replies to another
+  (caption = the target's text when it carries media, else "";
+  an unresolved target still yields the object, with empty
+  text/senderName).
+- **A2 — `act` capability.** See the dedicated entry below.
+- **A3 — async HTTP.** `amin.httpGetAsync(url, headersOrNull, fn)`
+  / `amin.httpPostAsync(url, body, headers, fn)` on the BASE
+  bridge. Sync and async forms now share `httpGetCore` /
+  `httpPostCore` returning `{status, body}`, so the sync semantics
+  are byte-compatible by construction (GET sync: body on 2xx/3xx,
+  null otherwise; POST sync: body on 2xx, ERROR body on an HTTP
+  error status, null on transport failure). The async callback
+  receives exactly one `{status, body}` object — status 0 =
+  transport failure (body null); async GET delivers body null on
+  error statuses (status still reported), async POST delivers the
+  error body, matching sync. The request runs on a lazily-created
+  daemon cached pool ("AminGramHttp"); headers are snapshotted to
+  a plain map on the calling thread so no Rhino object is touched
+  off-thread; delivery goes through
+  `JsPluginManager.invokePluginCallbackWithArg`, so the callback
+  runs on the plugin thread inside the budget + error funnel.
+- **A4 — storage v2** (`AminBridge.Storage`). Legacy string
+  get/set unchanged (incl. set(key, null) removes the key). New:
+  `getJSON(key, def)` / `setJSON(key, value)` — any JSON-shaped
+  value via the pure `jsToJson` / `jsonToJs` converters (org.json
+  + Rhino only, unit-testable off-device); getJSON returns the
+  default when the key is absent OR the stored value doesn't
+  parse (e.g. a legacy string); setJSON ignores undefined/function
+  values with a [warn] log; values over 64 KB are stored but
+  logged [warn] (64 KB is the documented author limit). Plus
+  `remove(key)`, `keys(prefix)` (this view's keys with the
+  prefix, sorted, as a JS array; null/"" = all) and `ns(name)` —
+  a view of the same prefs file whose keys are physically
+  `"<name>:<key>"`; views nest and expose the full surface.
+- **A5 — settings schema v2** (NEW `SettingsSchema` validator +
+  `JsPlugin.SettingDef` v2 fields + hub renderer in
+  `ui/AminJsPluginActivity`). Types are now **bool, text, number,
+  slider, select, header**. SettingDef gains help, maxLength,
+  multiline, min/max/step (Doubles, null = unset), option
+  value/label lists, and dependsOnKey/dependsOnEquals. The
+  JS-side schema form: text rows take `help` / `maxLength` /
+  `multiline`; number/slider take `min` / `max` / `step` and a
+  numeric `def` (0 when omitted); select takes `options` —
+  `{value, label}` objects or plain strings (string = value and
+  label) — and stores the chosen value; a `header` row has NO
+  key (title only); any row may carry
+  `dependsOn: {key, equals}` (a bare string is also accepted as
+  key-only) — the hub shows the row only while the OTHER
+  setting's raw stored value string-equals `equals` (a bool
+  stores "true"/"false"). Renderer: bool = check cell, text =
+  input (maxLength as an InputFilter, multiline honored),
+  number = numeric dialog, slider = seek row (min/max default
+  0/100, tap opens the same numeric entry), select = single-
+  choice dialog, header = section row; every write goes through
+  the one writeSetting path (persist raw string → notify manager
+  → rebuild rows, so dependents refresh immediately).
+  **Validation law:** NEW plugin ids validate STRICT — invalid
+  schema = install fails with "Invalid SETTINGS: …" naming the
+  keys (unknown type, option-less select, min > max, non-numeric
+  number/slider default, duplicate key). Reinstalls of an
+  existing id validate LOOSE: warnings logged + coercion
+  (unknown type → text; option-less select → text; min > max →
+  min/max dropped, never swapped; bad numeric default → 0;
+  duplicate key → first wins — in BOTH modes). Header-with-key
+  and dependsOn-to-unknown-key are warnings only in both modes.
+- **A6 — lifecycle hooks** (probe-detected: hasEnable /
+  hasDisable / hasSettingsChanged / hasMigrate on JsPlugin).
+  Warm-up sequence inside ensureRuntime: evaluate → `onLoad` →
+  `onMigrate` → pending-settings delivery; `onEnable` fires
+  right after, on the install / toggle-on paths only (NOT on
+  Resume). `onDisable` runs on the plugin thread BEFORE the
+  runtime is dropped, inside the same queued runnable, so no
+  dispatch can slip between hook and drop; it goes through
+  callHook, so a throw is funnelled and never blocks the
+  disable. `onSettingsChanged(key, newValue, oldValue)` carries
+  the RAW stored strings: live runtime → delivered immediately
+  via `JsPluginManager.onSettingWritten`; no live runtime → the
+  key is remembered (one pending key per plugin) and delivered
+  ONCE at next warm-up with oldValue == newValue == the current
+  stored value. **Migration:** manifest `@dataVersion` (A9)
+  vs the persisted `dataVersionStored` — a fresh id (or a legacy
+  meta with none recorded) adopts the declared version silently;
+  when declared > stored, `onMigrate(stored, declared)` runs
+  right after onLoad, before onEnable / pending settings / any
+  dispatched hook (dispatch entries skip the plugin via the
+  `migrating` gate while it runs). The stored version advances
+  ONLY on a clean return (persisted immediately); a throwing
+  migration is funnelled as an error, the stored version stays,
+  and the plugin still runs — the migration retries at the next
+  start. A plugin without onMigrate adopts the declared version.
+- **A7 — watchdog counters + badge.** `noteHookError` is now the
+  SINGLE funnel for every hook / load / probe / callback
+  failure: it logs the "[error] <hook>: <throwable>" line,
+  mirrors to FileLog, and increments the plugin's PERSISTED
+  per-day counter (`errDay` / `errCount` on the meta record —
+  counters survive reinstall; suspension does not). The hub
+  plugin card appends "· ⚠ N" while today's count > 0, and the
+  plugin page gains a Status section (suspension + Resume row,
+  and a "⚠ N error(s) today" row linking into the log viewer
+  filtered to errors). Accepted behavior change vs the v1.3 note
+  ("no auto-throttle / auto-disable"): the counters themselves
+  change nothing at runtime — the teeth are A8's, and they bite
+  only on storms.
+- **A8 — storm suspension + per-hook budget.** NEW
+  `ErrorStormTracker` (pure java.util): ≥ **20 hook errors in a
+  trailing 60 s** window session-suspends the plugin — dispatch
+  entries skip it, warm-ups refuse it, the user's `enabled`
+  toggle is NEVER touched, and the reason ("error storm: 20+
+  hook errors in 60s") is shown on the plugin page with a
+  **Resume** action (hub overflow menu too). Resume clears the
+  suspension, the tracker AND today's counter, then re-warms
+  (without re-firing onEnable); a successful reinstall also
+  clears suspension + tracker. NEW `AminContextFactory` (Rhino
+  ContextFactory): every context carries an instruction
+  observer; `callHook` (the one hook funnel) arms a **5000 ms
+  per-hook budget** — expiry throws `HookBudgetError` (an Error,
+  so plugin try/catch can't swallow it) which kills THAT hook
+  invocation only and logs "hook budget exceeded". The observer
+  fires on instruction ticks, so wall-clock inside a blocking
+  native call trips at the first tick after the deadline —
+  ≈5 s of JS execution, as documented. Steady, non-throwing
+  plugins are never throttled: no other rate limit exists.
+- **A9 — platform introspection + manifest v2 fields.**
+  `amin.platform` (`AminBridge.PlatformInfo`, present on EVERY
+  bridge variant): `apiVersion` = 2 and `has(name)` over exactly
+  twelve feature names — `rich-msg`, `lazy-lookup`, `act`,
+  `http-async`, `storage-json`, `settings-v2`, `lifecycle`,
+  `watchdog`, `platform`, `sendFile`, `http-headers`,
+  `reply-context`. Manifest gains optional `@minPlatform` and
+  `@dataVersion` (ints, default 1; parsed leniently — an
+  unparsable / non-positive value falls back to 1 rather than
+  failing the install). `@minPlatform` above the running
+  platform NEVER blocks: the install succeeds and a [warn] line
+  lands in the plugin's log ("wants platform vN; this build is
+  v2 — installing anyway"). Patch 0010's proguard block += keeps
+  for the four act variants + PlatformInfo (hunk header +57,24
+  region), and the ClassShutter whitelist grows by exactly those
+  five class names.
+
+### `act` capability (A2)
+
+- NEW known capability `act` (JsManifest's set is now observe,
+  commands, send, settings, http, menu, google, file, **act**).
+  The bridge family doubles again: `WithAct`, `WithGoogleAct`,
+  `WithFileAct`, `WithGoogleFileAct` — `newScope` picks among
+  all eight variants from the declared google/file/act triple,
+  so `amin.editMessage` / `amin.react` exist ONLY for
+  act-capable plugins (structural gate, same pattern as google /
+  file; implementations `doEditMessage` / `doReact` are
+  protected on the base bridge).
+- `amin.editMessage(ref, text)` → boolean. ref = a msg object
+  or any `{chatId, id}` object. The target is resolved ONLY
+  among loaded messages (DeletedStore.findLive's method:
+  dialogMessage list, then dialogMessagesByIds with dialog
+  verification). The own-message rule is enforced NATIVELY:
+  the resolved MessageObject must be outgoing AND
+  `isOutOwner()` — anything else is refused (false + log);
+  ephemeral messages are refused too. **Accepted deviation:**
+  `SendMessagesHelper.editMessage(...)` returns 0 immediately
+  when its BaseFragment is null / has no parent activity — a
+  plugin thread has neither — so the bridge builds the exact
+  `TL_messages_editMessage` that method builds (peer via
+  getInputPeer, flags |= 2048, quick-reply shortcut preserved)
+  and sends it via ConnectionsManager.sendRequest with the
+  same processUpdates completion, mirroring the helper's own
+  body (SendMessagesHelper.java:3580-3615 in 13.0.2).
+- `amin.react(ref, emoji)` → boolean. Any author's message (no
+  own-message check — reacting to others is the point). Same
+  loaded-message resolution and the same deviation:
+  `SendMessagesHelper.sendReaction` is fragment-gated too, so
+  the bridge mirrors its body (SendMessagesHelper.java:
+  3971-4027) — TL_messages_sendReaction with one
+  TL_reactionEmoji (flags |= 1), including its thread-message
+  saved-from special case — via ConnectionsManager.
+- Both return true once the request is dispatched, false on
+  any failure, and never throw across the bridge.
+- **Deliberately absent:** there is NO delete and NO pin
+  surface in v2.1 — reserved for a later phase (Phase B), and
+  the master prompt says so explicitly so plugin authors don't
+  invent them.
+
+### Fork-tonight pack — NEW patches 0017 / 0018 / 0019
+
+These three patches are NEW upstream patches beyond the Phase-A
+zero-patch constraint, added at Amin's order for the pack.
+Both CI apply lists carry all three.
+
+- **0017-hide-sponsored** (2 files, guard at the choke points):
+  `MessagesController.getSponsoredMessages` returns null when
+  the module is on (one 3-line FQ guard at the method head —
+  every sponsored-post surface reads through it), and
+  `DialogsSearchAdapter`'s sponsored-peers gate gains
+  `|| org.telegram.messenger.amin.AminHooks.hideSponsored()`
+  so sponsored peers are never requested in search.
+  **Placement decision:** the guards sit at these two choke
+  points rather than in DialogsActivity (the original pack
+  sketch) — DialogsActivity only renders what the controller
+  hands it, so gating the controller + the search request
+  covers channels and search with 2 touch points instead of
+  chasing render sites.
+- **0018-message-details** (1 file, ChatActivity): two touch
+  points — `fillMessageMenu` appends via
+  `AminHooks.addMessageDetailsOption(icons, items, options)`,
+  and `processSelectedOption` gains a case for
+  `AminHooks.OPTION_MESSAGE_DETAILS` (= 200, provably unused by
+  upstream's OPTION_* block in 13.0.2: 0–35 and 100–117) →
+  `AminHooks.showMessageDetails(ChatActivity.this,
+  selectedObject)`. See the Message Details entry below.
+- **0019-screenshot-unlock** (8 files): every FLAG_SECURE
+  decision for secret / protected content is routed through
+  `!org.telegram.messenger.amin.AminHooks.screenshotUnlocked()`
+  — the FlagSecureReason lambdas in ChatActivity,
+  ProfileActivity and ChatMessageCell, the FLAG_SECURE sets in
+  PhotoViewer and SecretMediaViewer, and the secure gates in
+  SecretVoicePlayer, Stories/StoryViewer (allowScreenshots)
+  and Components/TranslateAlert2. With the module off every
+  expression reduces to the upstream one.
+
+### Native modules (fork-tonight pack)
+
+- **Hide Sponsored** — module `hide_sponsored` (Privacy,
+  enabledByDefault = TRUE): "Removes sponsored posts from
+  channels and sponsored peers from search." Pure manifest —
+  all behavior is patch 0017 reading
+  `AminHooks.hideSponsored()` → PluginRegistry. Status line:
+  "Active" while on.
+- **Screenshot Unlock** — module `screenshot_unlock` (Privacy,
+  default OFF): "Allows screenshots and screen capture in
+  secret chats and protected (no-forward) media." Pure
+  manifest; behavior is patch 0019 reading
+  `AminHooks.screenshotUnlocked()`. Status line: "Secret chats
+  & protected media can be captured" while on.
+- **Message Details** (patch 0018; NO module — always
+  available): a "Details" row (msg_info icon) in every
+  message's long-press menu opens an AlertDialog with a
+  one-fact-per-line dump of the message's server metadata,
+  built by `AminHooks.messageDetails`: message id (with the
+  real id when the grouped id differs), dialog id, sender id +
+  resolved sender name, post author, sent / edited dates,
+  forward origin (+ forwarded post id), reply-to id, grouped
+  id, media facts, views — text only, nothing stored. The
+  dialog's positive button copies the whole dump to the
+  clipboard. Throwable-isolated like every AminHooks entry.
+
+### Dual-mode Gemini (v2.1)
+
+The v1.3.6 cloud-platform direction is superseded by an
+explicit per-mode scope split in `amin.google.GoogleAuthManager`:
+
+- NEW pref `api_mode` ("amingram_google" prefs): **"aistudio"**
+  (default) or **"vertex"**. `getApiMode` returns vertex only
+  when the pref says so. `setApiMode` persists the mode AND
+  clears the token cache (a token minted for one mode's scopes
+  is meaningless under the other). The hub's Google Account
+  page (`ui/AminGoogleActivity`) gains an **API mode** row +
+  single-choice picker; switching tells the user they
+  reconnect under the new mode.
+- Scopes are pinned per mode in requestedScopes: aistudio →
+  `generative-language`, vertex → `cloud-platform`; both also
+  request `userinfo.email`. **The scope verdict (device +
+  console, 2026-10-21):** generativelanguage.googleapis.com
+  REJECTS cloud-platform tokens ("Request had insufficient
+  authentication scopes"), while the generative-language scope
+  itself is UNREGISTRABLE — Google's console rejects it as
+  invalid in the picker and by manual entry, and the classic
+  consent screen is retired (all classic URLs redirect to the
+  new Auth Platform). That is a **Google-side defect**: in
+  aistudio mode, authorize dies with `invalid_scope` and no
+  client-side change can fix it. Vertex mode VERIFIED working
+  with BOTH the account token (cloud-platform authorizes fine)
+  and an existing AI Studio API key on the project endpoint —
+  the only remaining gate is **project billing** (403 "requires
+  billing"); Amin's decision (2026-10-21): WAIT — billing stays OFF; Vertex mode ships dormant until he flips it.
+- NEW bridge surface on `GoogleAccess` (google-capable plugins
+  only, as always): `amin.google.getMode()` → "aistudio" /
+  "vertex" ("" when unreadable) and
+  `amin.google.getLastAuthError()` → the most recent authorize
+  failure's detail ("" when none / last attempt succeeded) —
+  the manager keeps it in a volatile `lastAuthError`, cleared
+  on success, so a plugin can tell an `invalid_scope` verdict
+  apart from a plain "please reconnect".
+- **Bundled gemini-chat goes dual-mode** (same /ai command +
+  menu hint): reads `amin.google.getMode()`; aistudio keeps the
+  ORIGINAL generativelanguage request untouched; vertex builds
+  `https://<location>-aiplatform.googleapis.com/v1/projects/
+  <project>/locations/<location>/publishers/google/models/
+  <model>:generateContent`. SETTINGS gain `vertexProject`
+  (def "gen-lang-client-0433595679"), `vertexLocation`
+  (def "us-central1"), `vertexModel` (def "gemini-2.5-flash")
+  and `vertexApiKey` (def ""). **Key mode needs NO Google
+  sign-in:** with vertexApiKey set, the plugin sends
+  `x-goog-api-key` and never calls signIn / getAccessToken —
+  the key is the credential. Failure mapping is plain-words,
+  never raw dumps: a null token whose lastAuthError contains
+  `invalid_scope` (aistudio) → "AI Studio mode needs a
+  Google-side scope fix — switch to Vertex AI in Plugins →
+  Google Account, or wait for the fix."; a vertex error body
+  mentioning billing → "Vertex needs billing enabled on the
+  project (one console step) — or switch back to AI Studio
+  mode…". Amin's shipped direction remains account-only; the
+  key mode is plumbing that ships dormant unless he sets it.
+
+### Bundled plugins 11 + 12 (inventory now 12)
+
+Assets under `TMessagesProj/src/main/assets/amingram_plugins/`,
+registered in BundledPlugins (pre-install / library rules
+unchanged from v2.0):
+
+- **ai-actions** (capabilities commands, send, http, google,
+  menu, observe, settings; `@icon sparkles`, `@menuLabel "AI:
+  summarize"`): reply to a message with **/sum** (summarize),
+  **/explain** (explain simply) or **/draft** (draft a reply) —
+  the target text comes from `ctx.replyTo` — or pass text
+  directly (`/sum <text>`). The attach-menu action summarizes
+  the last text message its `observe` hook saw in that chat
+  (hence observe + the menu hint's honest "watch this chat a
+  while"). Same dual-mode Gemini plumbing as gemini-chat,
+  including the vertex settings and both plain-words failure
+  lines. **Accepted deviation:** it carries the `settings`
+  capability (for the model / vertex settings) — noted here
+  because the fork pack's sketch had it settings-free.
+- **quick-replies** (capabilities commands, send, settings):
+  text templates — `/tpl set <name> <text>` saves, `/tpl
+  <name>` posts, `/tpl list` lists, `/tpl del <name>` removes
+  (names `[a-z0-9_-]{1,24}`, list/set/del/help reserved). All
+  templates live as ONE JSON object under the storage key
+  "templates", written via storage v2 `getJSON` / `setJSON`
+  when `amin.platform.has("storage-json")` says yes, else the
+  legacy string get/set with JSON encode/decode — the
+  canonical feature-detect + fallback pattern. **Honest wart,
+  stated in its own @description:** the /tpl command message
+  itself also appears in the chat — the platform cannot
+  swallow outgoing commands yet.
+
+- **Bundled inventory = 12**: `shout`, `vip-alert`, `media-dl`,
+  `temp-mail`, `aesthetic-text`, `quick-translate`,
+  `gemini-chat`, `link-cleaner`, `qr-maker`, `price-check`,
+  `ai-actions`, `quick-replies`.

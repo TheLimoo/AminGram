@@ -618,16 +618,44 @@ public class AminPluginsActivity extends BaseFragment {
     private void showPluginOverflow(JsPlugin plugin) {
         Context context = getContext();
         if (context == null || getParentActivity() == null) return;
-        CharSequence[] items = new CharSequence[]{"Settings", "Log", "Move up", "Move down", "Delete"};
+        // v2.1: the item list is built per plugin state — a suspended
+        // plugin (watchdog error storm) gains a Resume item; the
+        // parallel action codes keep the dispatch below unchanged
+        // for the always-present items.
+        List<String> labels = new ArrayList<>();
+        List<Integer> actions = new ArrayList<>();
+        labels.add("Settings");
+        actions.add(0);
+        labels.add("Log");
+        actions.add(1);
+        if (JsPluginManager.isSuspended(plugin.id)) {
+            labels.add("Resume");
+            actions.add(5);
+        }
+        labels.add("Move up");
+        actions.add(2);
+        labels.add("Move down");
+        actions.add(3);
+        labels.add("Delete");
+        actions.add(4);
+        CharSequence[] items = labels.toArray(new CharSequence[0]);
         AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
         builder.setTitle(plugin.name);
         builder.setItems(items, (dialog, which) -> {
-            switch (which) {
+            if (which < 0 || which >= actions.size()) {
+                return;
+            }
+            switch (actions.get(which)) {
                 case 0: presentFragment(new AminJsPluginActivity(plugin.id)); break;
                 case 1: pluginCardCallbacks.onPluginLog(plugin); break;
                 case 2: JsPluginManager.movePlugin(context, plugin.id, -1); rebuild(); break;
                 case 3: JsPluginManager.movePlugin(context, plugin.id, 1); rebuild(); break;
                 case 4: pluginCardCallbacks.onDeletePlugin(plugin); break;
+                case 5:
+                    JsPluginManager.resumePlugin(context, plugin.id);
+                    bulletin(R.raw.contact_check, "Plugin resumed");
+                    rebuild();
+                    break;
             }
         });
         builder.setNegativeButton("Cancel", null);
@@ -1534,17 +1562,30 @@ public class AminPluginsActivity extends BaseFragment {
             nameView.setText(plugin.name);
 
             String meta = "Version " + (plugin.version == null ? "?" : plugin.version);
-            if (plugin.author != null && !plugin.author.isEmpty()) {
+            // v2.1 watchdog badge on the meta (subtitle/status) line:
+            // a suspended plugin's line is replaced by the suspended
+            // text (takes precedence); otherwise today's error count
+            // is appended when there is one.
+            boolean suspended = JsPluginManager.isSuspended(plugin.id);
+            int errorsToday = !suspended
+                    ? JsPluginManager.errorsToday(plugin.id) : 0;
+            if (suspended) {
+                metaView.setText("⏸ Suspended — error storm");
+            } else if (plugin.author != null && !plugin.author.isEmpty()) {
                 String author = plugin.author.startsWith("@")
                         ? plugin.author : "@" + plugin.author;
                 String full = meta + " · " + author;
+                if (errorsToday > 0) {
+                    full += " · ⚠ " + errorsToday;
+                }
                 SpannableString spanned = new SpannableString(full);
                 spanned.setSpan(new ForegroundColorSpan(accentColor()),
-                        full.length() - author.length(), full.length(),
+                        meta.length() + 3, meta.length() + 3 + author.length(),
                         Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
                 metaView.setText(spanned);
             } else {
-                metaView.setText(meta);
+                metaView.setText(errorsToday > 0
+                        ? meta + " · ⚠ " + errorsToday : meta);
             }
 
             if (plugin.description == null || plugin.description.isEmpty()) {

@@ -1,0 +1,23 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -33442,6 +33442,10 @@
+         }
+         boolean preserveDim = false;
+         switch (option) {
++            case org.telegram.messenger.amin.AminHooks.OPTION_MESSAGE_DETAILS: {
++                org.telegram.messenger.amin.AminHooks.showMessageDetails(ChatActivity.this, selectedObject);
++                break;
++            }
+             case OPTION_RETRY: {
+                 final MessageObject object = selectedObject;
+                 final MessageObject.GroupedMessages group = selectedObjectGroup;
+@@ -46541,6 +46545,8 @@
+             options.add(OPTION_WELCOME_REVERT);
+             icons.add(R.drawable.outline_revert_24);
+         }
++
++        org.telegram.messenger.amin.AminHooks.addMessageDetailsOption(icons, items, options);
+     }
+ 
+     private boolean showWelcomeMessageRevertOption(MessageObject messageObject) {

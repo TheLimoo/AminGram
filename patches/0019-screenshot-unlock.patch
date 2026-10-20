@@ -1,0 +1,103 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -8725,8 +8725,8 @@
+         chatScrollHelper.setAnimationCallback(chatScrollHelperCallback);
+ 
+         flagSecure = new FlagSecureReason(getParentActivity().getWindow(), () ->
+-            currentEncryptedChat != null ||
+-            isPeerNoForwards()
++            !org.telegram.messenger.amin.AminHooks.screenshotUnlocked() && (currentEncryptedChat != null ||
++            isPeerNoForwards())
+         );
+ 
+         if (oldMessage != null) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+@@ -2523,7 +2523,7 @@
+             flagSecure = null;
+         }
+         if (layout != null && layout.getParentActivity() != null) {
+-            flagSecure = new FlagSecureReason(layout.getParentActivity().getWindow(), () -> currentEncryptedChat != null || isPeerNoForwards());
++            flagSecure = new FlagSecureReason(layout.getParentActivity().getWindow(), () -> !org.telegram.messenger.amin.AminHooks.screenshotUnlocked() && (currentEncryptedChat != null || isPeerNoForwards()));
+         }
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
+@@ -12063,7 +12063,7 @@
+             Window window = activity == null ? null : activity.getWindow();
+             if (window != null) {
+                 flagSecure = new FlagSecureReason(window, () ->
+-                    currentMessageObject != null && currentMessageObject.messageOwner != null && (
++                    !org.telegram.messenger.amin.AminHooks.screenshotUnlocked() && currentMessageObject != null && currentMessageObject.messageOwner != null && (
+                         currentMessageObject.type == MessageObject.TYPE_PAID_MEDIA && (groupMedia == null || !groupMedia.hidden) ||
+                         currentMessageObject.messageOwner.noforwards && !currentMessageObject.isEphemeral() ||
+                         currentMessageObject.isVoiceOnce() ||
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java b/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java
+--- a/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java
+@@ -17442,10 +17442,10 @@
+                 WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR |
+                 WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM |
+                 WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS;
+-            if (chatActivity != null && chatActivity.getCurrentEncryptedChat() != null ||
++            if (!org.telegram.messenger.amin.AminHooks.screenshotUnlocked() && (chatActivity != null && chatActivity.getCurrentEncryptedChat() != null ||
+                 avatarsDialogId != 0 && MessagesController.getInstance(currentAccount).isPeerNoForwards(avatarsDialogId) ||
+                 messageObject != null && (MessagesController.getInstance(currentAccount).isPeerNoForwards(messageObject.getDialogId()) ||
+-                (messageObject.messageOwner != null && messageObject.messageOwner.noforwards)) || messageObject != null && messageObject.hasRevealedExtendedMedia()
++                (messageObject.messageOwner != null && messageObject.messageOwner.noforwards)) || messageObject != null && messageObject.hasRevealedExtendedMedia())
+             ) {
+                 windowLayoutParams.flags |= WindowManager.LayoutParams.FLAG_SECURE;
+                 AndroidUtilities.logFlagSecure();
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/SecretMediaViewer.java b/TMessagesProj/src/main/java/org/telegram/ui/SecretMediaViewer.java
+--- a/TMessagesProj/src/main/java/org/telegram/ui/SecretMediaViewer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/SecretMediaViewer.java
+@@ -965,7 +965,9 @@
+                 WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR |
+                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
+                 WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS;
+-        windowLayoutParams.flags |= WindowManager.LayoutParams.FLAG_SECURE;
++        if (!org.telegram.messenger.amin.AminHooks.screenshotUnlocked()) {
++            windowLayoutParams.flags |= WindowManager.LayoutParams.FLAG_SECURE;
++        }
+         AndroidUtilities.logFlagSecure();
+         centerImage.setParentView(containerView);
+         centerImage.setForceCrossfade(true);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/SecretVoicePlayer.java b/TMessagesProj/src/main/java/org/telegram/ui/SecretVoicePlayer.java
+--- a/TMessagesProj/src/main/java/org/telegram/ui/SecretVoicePlayer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/SecretVoicePlayer.java
+@@ -238,7 +238,7 @@
+             WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR |
+             WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS |
+             WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION;
+-        if (!BuildVars.DEBUG_PRIVATE_VERSION) {
++        if (!BuildVars.DEBUG_PRIVATE_VERSION && !org.telegram.messenger.amin.AminHooks.screenshotUnlocked()) {
+             params.flags |= WindowManager.LayoutParams.FLAG_SECURE;
+             AndroidUtilities.logFlagSecure();
+         }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Stories/StoryViewer.java b/TMessagesProj/src/main/java/org/telegram/ui/Stories/StoryViewer.java
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Stories/StoryViewer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Stories/StoryViewer.java
+@@ -2873,6 +2873,7 @@
+         if (BuildVars.DEBUG_PRIVATE_VERSION) {
+             return;
+         }
++        allowScreenshots = allowScreenshots || org.telegram.messenger.amin.AminHooks.screenshotUnlocked();
+         allowScreenshots = !isShowing || allowScreenshots;
+         if (this.allowScreenshots != allowScreenshots) {
+             this.allowScreenshots = allowScreenshots;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/TranslateAlert2.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/TranslateAlert2.java
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/TranslateAlert2.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/TranslateAlert2.java
+@@ -1034,7 +1034,7 @@
+         if (textView != null) {
+             textView.setTextIsSelectable(!noforwards);
+         }
+-        if (noforwards) {
++        if (noforwards && !org.telegram.messenger.amin.AminHooks.screenshotUnlocked()) {
+             getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+             AndroidUtilities.logFlagSecure();
+         } else {

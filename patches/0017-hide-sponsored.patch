@@ -1,0 +1,25 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -21663,6 +21663,9 @@
+     }
+ 
+     public SponsoredMessagesInfo getSponsoredMessages(long dialogId) {
++        if (org.telegram.messenger.amin.AminHooks.hideSponsored()) {
++            return null;
++        }
+         SponsoredMessagesInfo info = sponsoredMessages.get(dialogId);
+         if (info != null && (info.loading || Math.abs(SystemClock.elapsedRealtime() - info.loadTime) <= 5 * 60 * 1000)) {
+             return info;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsSearchAdapter.java b/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsSearchAdapter.java
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsSearchAdapter.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsSearchAdapter.java
+@@ -1131,7 +1131,7 @@
+                 ConnectionsManager.getInstance(currentAccount).cancelRequest(sponsoredReqId, true);
+                 sponsoredReqId = 0;
+             }
+-            if (query == null || query.length() < 4 || UserConfig.getInstance(currentAccount).isPremium() && MessagesController.getInstance(currentAccount).isSponsoredDisabled()) {
++            if (query == null || query.length() < 4 || org.telegram.messenger.amin.AminHooks.hideSponsored() || UserConfig.getInstance(currentAccount).isPremium() && MessagesController.getInstance(currentAccount).isSponsoredDisabled()) {
+                 sponsoredQuery = null;
+             } else {
+                 final TLRPC.TL_contacts_getSponsoredPeers req = new TLRPC.TL_contacts_getSponsoredPeers();

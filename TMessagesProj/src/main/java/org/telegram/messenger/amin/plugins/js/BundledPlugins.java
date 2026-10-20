@@ -53,6 +53,13 @@ import java.util.Set;
  * - gemini-chat: /ai chat with Gemini, authorized by the user's
  *               own connected Google account (the `google`
  *               capability + amin.httpPost; no API key).
+ * - ai-actions: /sum, /explain and /draft acting on a message
+ *               (reply target, passed text, or — via the attach
+ *               menu — the last message observed in the chat),
+ *               same dual-mode Gemini auth as gemini-chat.
+ * - quick-replies: /tpl text templates (set/list/del/send),
+ *               stored as one JSON object (storage v2 when the
+ *               platform offers it, legacy strings otherwise).
  */
 public final class BundledPlugins {
 
@@ -93,6 +100,10 @@ public final class BundledPlugins {
                 "/qr <text or link> posts a QR code image for it."));
         LIST.add(new Bundled("price-check", "Price Check", "amingram_plugins/price-check.js",
                 "/price shows live dollar, gold, coin, BTC and ETH prices in tomans."));
+        LIST.add(new Bundled("ai-actions", "AI Actions", "amingram_plugins/ai-actions.js",
+                "/sum, /explain and /draft act on a message with Gemini — reply to one, or pass text."));
+        LIST.add(new Bundled("quick-replies", "Quick Replies", "amingram_plugins/quick-replies.js",
+                "/tpl saves text templates and posts them: /tpl set <name> <text>, /tpl <name>."));
     }
 
     private BundledPlugins() {

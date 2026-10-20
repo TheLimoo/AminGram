@@ -45,11 +45,16 @@ public final class JsManifest {
     public String icon = "";
     /** Optional manifest @menuLabel ("" when unset). */
     public String menuLabel = "";
+    /** Optional manifest @dataVersion (Platform v2, A6); 1 when unset. */
+    public int dataVersion = 1;
+    /** Optional manifest @minPlatform (Platform v2, A9); 1 when unset. */
+    public int minPlatform = 1;
     public final List<String> capabilities = new ArrayList<>();
 
     private static final Pattern ID_PATTERN = Pattern.compile("^[a-z0-9][a-z0-9-]*$");
     private static final String[] KNOWN_CAPABILITIES = {
-            "observe", "commands", "send", "settings", "http", "menu", "google", "file"
+            "observe", "commands", "send", "settings", "http", "menu", "google", "file",
+            "act"
     };
 
     private JsManifest() {
@@ -110,6 +115,12 @@ public final class JsManifest {
                 case "menuLabel":
                     manifest.menuLabel = value;
                     break;
+                case "dataVersion":
+                    manifest.dataVersion = parsePositiveInt(value, 1);
+                    break;
+                case "minPlatform":
+                    manifest.minPlatform = parsePositiveInt(value, 1);
+                    break;
                 case "capabilities":
                     for (String cap : value.split(",")) {
                         String c = cap.trim().toLowerCase();
@@ -154,6 +165,19 @@ public final class JsManifest {
             }
         }
         return manifest;
+    }
+
+    /** Lenient int for the optional v2 fields: an unparsable or
+     *  non-positive value keeps the default instead of failing the
+     *  install (manifest evolution rule — new fields warn, never
+     *  brick). */
+    private static int parsePositiveInt(String value, int fallback) {
+        try {
+            int parsed = Integer.parseInt(value.trim());
+            return parsed > 0 ? parsed : fallback;
+        } catch (Exception e) {
+            return fallback;
+        }
     }
 
     private static boolean isEmpty(String s) {

@@ -4,12 +4,16 @@ import android.content.Context;
 
 import androidx.collection.LongSparseArray;
 
+import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ApplicationLoader;
+import org.telegram.messenger.DialogObject;
 import org.telegram.messenger.MessageObject;
 import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.NotificationCenter;
+import org.telegram.messenger.R;
 import org.telegram.messenger.SendMessagesHelper;
 import org.telegram.messenger.UserConfig;
+import org.telegram.messenger.UserObject;
 import org.telegram.messenger.Utilities;
 import org.telegram.messenger.amin.core.DeletedStore;
 import org.telegram.messenger.amin.core.HiddenChatsStore;
@@ -18,9 +22,14 @@ import org.telegram.messenger.amin.core.SendWhenOnlineStore;
 import org.telegram.messenger.amin.plugins.PluginRegistry;
 import org.telegram.messenger.amin.plugins.js.JsPluginManager;
 import org.telegram.tgnet.TLRPC;
+import org.telegram.ui.ActionBar.AlertDialog;
+import org.telegram.ui.ActionBar.BaseFragment;
 
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -73,6 +82,217 @@ public final class AminHooks {
 
     public static boolean hideStories() {
         return moduleEnabled("hide_stories");
+    }
+
+    public static boolean hideSponsored() {
+        return moduleEnabled("hide_sponsored");
+    }
+
+    public static boolean screenshotUnlocked() {
+        return moduleEnabled("screenshot_unlock");
+    }
+
+    // ------------------------------------------------------------------
+    // Message Details (patch 0018, ChatActivity.fillMessageMenu /
+    // processSelectedOption). Always available — no module gate.
+    // OPTION_MESSAGE_DETAILS = 200 is provably unused by ChatActivity's
+    // OPTION_* block (upstream uses 0-35 and 100-117 in 13.0.2).
+    // ------------------------------------------------------------------
+
+    public static final int OPTION_MESSAGE_DETAILS = 200;
+
+    /** Appends the "Details" row to the message long-press menu.
+     *  Pure list append — safe on the UI thread while the menu builds. */
+    public static void addMessageDetailsOption(ArrayList<Integer> icons,
+                                               ArrayList<CharSequence> items,
+                                               ArrayList<Integer> options) {
+        try {
+            if (icons == null || items == null || options == null) {
+                return;
+            }
+            items.add("Details");
+            options.add(OPTION_MESSAGE_DETAILS);
+            icons.add(R.drawable.msg_info);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    public static void showMessageDetails(BaseFragment fragment, MessageObject messageObject) {
+        try {
+            if (fragment == null || fragment.getParentActivity() == null || messageObject == null) {
+                return;
+            }
+            final String text = messageDetails(messageObject);
+            AlertDialog.Builder builder = new AlertDialog.Builder(fragment.getParentActivity());
+            builder.setTitle("Message Details");
+            builder.setMessage(text);
+            builder.setPositiveButton("Copy", (dialog, which) -> AndroidUtilities.addToClipboard(text));
+            builder.setNegativeButton("Close", null);
+            fragment.showDialog(builder.create());
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** Readable one-fact-per-line dump of a message's server metadata.
+     *  Text only — nothing is stored. */
+    public static String messageDetails(MessageObject messageObject) {
+        StringBuilder sb = new StringBuilder();
+        try {
+            if (messageObject == null || messageObject.messageOwner == null) {
+                return "No message";
+            }
+            TLRPC.Message message = messageObject.messageOwner;
+            int account = messageObject.currentAccount;
+            sb.append("Message ID: ").append(messageObject.getId());
+            if (message.id != messageObject.getId()) {
+                sb.append(" (real ").append(message.id).append(')');
+            }
+            sb.append('\n');
+            sb.append("Dialog ID: ").append(messageObject.getDialogId()).append('\n');
+            long senderId = messageObject.getSenderId();
+            sb.append("Sender ID: ").append(senderId).append('\n');
+            String senderName = peerName(account, senderId);
+            if (senderName != null) {
+                sb.append("Sender: ").append(senderName).append('\n');
+            }
+            if (message.post_author != null && !message.post_author.isEmpty()) {
+                sb.append("Post author: ").append(message.post_author).append('\n');
+            }
+            sb.append("Sent: ").append(formatDetailsDate(message.date)).append('\n');
+            if (message.edit_date != 0) {
+                sb.append("Edited: ").append(formatDetailsDate(message.edit_date)).append('\n');
+            }
+            if (message.fwd_from != null) {
+                String origin = null;
+                if (message.fwd_from.from_name != null && !message.fwd_from.from_name.isEmpty()) {
+                    origin = message.fwd_from.from_name;
+                } else if (message.fwd_from.from_id != null) {
+                    long originId = DialogObject.getPeerDialogId(message.fwd_from.from_id);
+                    origin = peerName(account, originId);
+                    if (origin == null) {
+                        origin = String.valueOf(originId);
+                    }
+                }
+                if (origin != null) {
+                    sb.append("Forwarded from: ").append(origin).append('\n');
+                }
+                if (message.fwd_from.channel_post != 0) {
+                    sb.append("Forwarded post ID: ").append(message.fwd_from.channel_post).append('\n');
+                }
+            }
+            if (message.reply_to != null && message.reply_to.reply_to_msg_id != 0) {
+                sb.append("Reply to ID: ").append(message.reply_to.reply_to_msg_id).append('\n');
+            }
+            if (message.grouped_id != 0) {
+                sb.append("Grouped ID: ").append(message.grouped_id).append('\n');
+            }
+            appendMediaDetails(sb, messageObject, message);
+            if (message.views != 0) {
+                sb.append("Views: ").append(message.views).append('\n');
+            }
+            if (message.forwards != 0) {
+                sb.append("Forwards: ").append(message.forwards).append('\n');
+            }
+        } catch (Throwable ignored) {
+        }
+        while (sb.length() > 0 && sb.charAt(sb.length() - 1) == '\n') {
+            sb.setLength(sb.length() - 1);
+        }
+        return sb.toString();
+    }
+
+    private static void appendMediaDetails(StringBuilder sb, MessageObject messageObject, TLRPC.Message message) {
+        try {
+            TLRPC.MessageMedia media = MessageObject.getMedia(message);
+            if (media == null || media instanceof TLRPC.TL_messageMediaEmpty) {
+                sb.append("Type: Text\n");
+                return;
+            }
+            TLRPC.Document document = messageObject.getDocument();
+            if (document != null) {
+                String kind;
+                if (messageObject.isRoundVideo()) {
+                    kind = "Round video";
+                } else if (messageObject.isVideo()) {
+                    kind = "Video";
+                } else if (messageObject.isVoice()) {
+                    kind = "Voice";
+                } else if (messageObject.isMusic()) {
+                    kind = "Audio";
+                } else if (messageObject.isGif()) {
+                    kind = "GIF";
+                } else if (messageObject.isSticker()) {
+                    kind = "Sticker";
+                } else {
+                    kind = "File";
+                }
+                sb.append("Media: ").append(kind).append('\n');
+                String fileName = messageObject.getFileName();
+                if (fileName != null && !fileName.isEmpty()) {
+                    sb.append("File: ").append(fileName).append('\n');
+                }
+                if (document.mime_type != null && !document.mime_type.isEmpty()) {
+                    sb.append("MIME: ").append(document.mime_type).append('\n');
+                }
+                if (document.size != 0) {
+                    sb.append("Size: ").append(AndroidUtilities.formatFileSize(document.size))
+                            .append(" (").append(document.size).append(" bytes)\n");
+                }
+                if (document.dc_id != 0) {
+                    sb.append("DC ID: ").append(document.dc_id).append('\n');
+                }
+                return;
+            }
+            if (media instanceof TLRPC.TL_messageMediaPhoto && media.photo != null) {
+                sb.append("Media: Photo\n");
+                long biggest = 0;
+                if (media.photo.sizes != null) {
+                    for (TLRPC.PhotoSize size : media.photo.sizes) {
+                        if (size != null && size.size > biggest) {
+                            biggest = size.size;
+                        }
+                    }
+                }
+                if (biggest != 0) {
+                    sb.append("Size: ").append(AndroidUtilities.formatFileSize(biggest))
+                            .append(" (").append(biggest).append(" bytes)\n");
+                }
+                if (media.photo.dc_id != 0) {
+                    sb.append("DC ID: ").append(media.photo.dc_id).append('\n');
+                }
+                return;
+            }
+            String kind = media.getClass().getSimpleName()
+                    .replace("TL_messageMedia", "").replace("TL_message", "");
+            sb.append("Media: ").append(kind.isEmpty() ? "Other" : kind).append('\n');
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static String peerName(int account, long peerId) {
+        try {
+            if (peerId == 0) {
+                return null;
+            }
+            MessagesController controller = MessagesController.getInstance(account);
+            if (peerId > 0) {
+                TLRPC.User user = controller.getUser(peerId);
+                return user != null ? UserObject.getUserName(user) : null;
+            }
+            TLRPC.Chat chat = controller.getChat(-peerId);
+            return chat != null ? chat.title : null;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static String formatDetailsDate(int seconds) {
+        try {
+            return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+                    .format(new Date(seconds * 1000L));
+        } catch (Throwable ignored) {
+            return String.valueOf(seconds);
+        }
     }
 
     // ------------------------------------------------------------------

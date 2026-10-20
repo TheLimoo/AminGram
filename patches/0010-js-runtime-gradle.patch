@@ -14,7 +14,7 @@ diff --git a/TMessagesProj/proguard-rules.pro b/TMessagesProj/proguard-rules.pro
 index 049c7b7..f3b4b2b 100644
 --- a/TMessagesProj/proguard-rules.pro
 +++ b/TMessagesProj/proguard-rules.pro
-@@ -57,4 +57,18 @@
+@@ -57,4 +57,24 @@
  
  # Use -keep to explicitly keep any other classes shrinking would remove
  #-dontoptimize
@@ -35,3 +35,9 @@ index 049c7b7..f3b4b2b 100644
 +# AminGram: same for the file surface (v2.0): sendFile is reached from JS by name, only in plugins declaring the file capability.
 +-keep class org.telegram.messenger.amin.plugins.js.AminBridge$WithFile { *; }
 +-keep class org.telegram.messenger.amin.plugins.js.AminBridge$WithGoogleFile { *; }
++# AminGram: same for the act surface (v2.1): editMessage/react are reached from JS by name, only in plugins declaring the act capability; PlatformInfo (amin.platform) sits on every bridge variant.
++-keep class org.telegram.messenger.amin.plugins.js.AminBridge$WithAct { *; }
++-keep class org.telegram.messenger.amin.plugins.js.AminBridge$WithGoogleAct { *; }
++-keep class org.telegram.messenger.amin.plugins.js.AminBridge$WithFileAct { *; }
++-keep class org.telegram.messenger.amin.plugins.js.AminBridge$WithGoogleFileAct { *; }
++-keep class org.telegram.messenger.amin.plugins.js.AminBridge$PlatformInfo { *; }

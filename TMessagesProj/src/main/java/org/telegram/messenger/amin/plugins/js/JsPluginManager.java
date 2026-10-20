@@ -9,7 +9,6 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import org.mozilla.javascript.ClassShutter;
 import org.mozilla.javascript.Function;
-import org.mozilla.javascript.NativeArray;
 import org.mozilla.javascript.ScriptRuntime;
 import org.mozilla.javascript.Scriptable;
 import org.mozilla.javascript.ScriptableObject;
@@ -79,11 +78,15 @@ import java.util.Set;
 public final class JsPluginManager {
 
     public static final String PREFS = "amingram_jsplugins";
+    /** Plugin platform API level of this build (A9). Plugins
+     *  negotiate via @minPlatform in their manifest and (via the
+     *  bridge) amin.platform; installs never block on it. */
+    public static final int PLATFORM_API_VERSION = 2;
     private static final String KEY_ORDER = "order";
     private static final String KEY_META_PREFIX = "meta_";
     private static final String KEY_LOG_PREFIX = "log_";
     private static final String KEY_ENGINE = "engine_enabled";
-    private static final int LOG_CAP = 200;
+    private static final int LOG_CAP = 500;
 
     private static final List<JsPlugin> cache = new ArrayList<>();
     private static boolean cacheLoaded;
@@ -93,6 +96,30 @@ public final class JsPluginManager {
      *  single-threaded. */
     private static final Map<String, Runtime> runtimes = new HashMap<>();
     private static final Set<String> broken = Collections.synchronizedSet(new HashSet<>());
+
+    /** The single Rhino context factory (A8): installs the
+     *  instruction observer that enforces the per-hook budget. */
+    private static final AminContextFactory CONTEXT_FACTORY = new AminContextFactory();
+    /** Per-hook JS execution budget in wall-clock ms (A8). */
+    private static final long HOOK_BUDGET_MS = 5000L;
+
+    /** Session suspension set (A7/A8): plugins paused by the error
+     *  storm watchdog. Distinct from `enabled` (the user's toggle
+     *  is never touched) and from `broken` (load failure). Cleared
+     *  by resumePlugin() or a successful reinstall. */
+    private static final Set<String> suspended = Collections.synchronizedSet(new HashSet<>());
+    private static final Map<String, String> suspendReasons =
+            Collections.synchronizedMap(new HashMap<>());
+    private static final Map<String, ErrorStormTracker> stormTrackers = new HashMap<>();
+
+    /** Plugins whose onMigrate is currently running (A6). Dispatch
+     *  entries skip these so no hook of new code runs mid-migration. */
+    private static final Set<String> migrating = Collections.synchronizedSet(new HashSet<>());
+
+    /** Last settings key written while a plugin had no live runtime
+     *  (A6): delivered once as onSettingsChanged at next warm-up. */
+    private static final Map<String, String> pendingSettingKeys =
+            Collections.synchronizedMap(new HashMap<>());
 
     private static volatile int dispatchAccount;
 
@@ -105,6 +132,16 @@ public final class JsPluginManager {
                     || fullClassName.equals(AminBridge.GoogleAccess.class.getName())
                     || fullClassName.equals(AminBridge.WithFile.class.getName())
                     || fullClassName.equals(AminBridge.WithGoogleFile.class.getName())
+                    // Platform v2 bridge family (A9): act-capability
+                    // variants + the amin.platform info object. Named
+                    // as literals because these classes are added by
+                    // the bridge layer; the shutter must allow them
+                    // by exact name once they exist.
+                    || fullClassName.equals("org.telegram.messenger.amin.plugins.js.AminBridge$WithAct")
+                    || fullClassName.equals("org.telegram.messenger.amin.plugins.js.AminBridge$WithGoogleAct")
+                    || fullClassName.equals("org.telegram.messenger.amin.plugins.js.AminBridge$WithFileAct")
+                    || fullClassName.equals("org.telegram.messenger.amin.plugins.js.AminBridge$WithGoogleFileAct")
+                    || fullClassName.equals("org.telegram.messenger.amin.plugins.js.AminBridge$PlatformInfo")
                     || fullClassName.equals("java.lang.Object")
                     || fullClassName.equals("java.lang.String")
                     || fullClassName.equals("java.lang.Boolean")
@@ -624,14 +661,21 @@ public final class JsPluginManager {
             try {
                 cx.compileString(source, manifest.id + ".js", 1, null);
             } catch (Throwable t) {
+                noteHookError(manifest.id, "compile", t);
                 return "JavaScript error: " + t.getMessage();
             }
             // Probe-evaluate in a throwaway scope to read SETTINGS and
             // detect which hooks exist. onLoad is NOT called here.
             ScriptableObject probe = newScope(cx, manifest.id, manifest.capabilities);
             try {
-                cx.evaluateString(probe, source, manifest.id + ".js", 1, null);
+                AminContextFactory.beginHook(HOOK_BUDGET_MS);
+                try {
+                    cx.evaluateString(probe, source, manifest.id + ".js", 1, null);
+                } finally {
+                    AminContextFactory.endHook();
+                }
             } catch (Throwable t) {
+                noteHookError(manifest.id, "probe", t);
                 return "Plugin failed to load: " + t.getMessage();
             }
             JsPlugin existing = get(context, manifest.id);
@@ -653,7 +697,41 @@ public final class JsPluginManager {
                     instanceof Function;
             plugin.hasMenu = ScriptableObject.getProperty(probe, "onMenuAction")
                     instanceof Function;
-            readSettings(probe, plugin);
+            plugin.hasEnable = ScriptableObject.getProperty(probe, "onEnable")
+                    instanceof Function;
+            plugin.hasDisable = ScriptableObject.getProperty(probe, "onDisable")
+                    instanceof Function;
+            plugin.hasSettingsChanged = ScriptableObject.getProperty(probe, "onSettingsChanged")
+                    instanceof Function;
+            plugin.hasMigrate = ScriptableObject.getProperty(probe, "onMigrate")
+                    instanceof Function;
+            plugin.dataVersion = manifest.dataVersion;
+            plugin.minPlatform = manifest.minPlatform;
+            // Data-version bookkeeping (A6): a fresh id (or a legacy
+            // meta that never recorded one) adopts the declared
+            // version silently; a real reinstall keeps the stored
+            // version so warm-up can run onMigrate when the
+            // declared version has moved past it.
+            plugin.dataVersionStored = (existing == null || existing.dataVersionStored <= 0)
+                    ? plugin.dataVersion : existing.dataVersionStored;
+            // Watchdog counters are per-day state, not code state:
+            // they survive a reinstall (suspension itself does not —
+            // see the success path below).
+            plugin.errDay = existing != null && existing.errDay != null ? existing.errDay : "";
+            plugin.errCount = existing != null ? existing.errCount : 0;
+            // Settings schema (A5): strict for ids this install is
+            // the first record of (bundled deliveries of NEW ids
+            // included), loose for reinstalls of a known id.
+            boolean isReinstall = existing != null;
+            List<String> settingsWarnings = new ArrayList<>();
+            List<String> settingsErrors = readSettings(probe, plugin, !isReinstall, settingsWarnings);
+            if (!settingsWarnings.isEmpty()) {
+                appendLog(plugin.id, "[warn] settings: " + joinStrings(settingsWarnings, "; "));
+            }
+            if (!settingsErrors.isEmpty()) {
+                appendLog(plugin.id, "[error] settings: " + joinStrings(settingsErrors, "; "));
+                return "Invalid SETTINGS: " + joinStrings(settingsErrors, "; ");
+            }
             if (plugin.hasCapability("settings") && plugin.settings.isEmpty()) {
                 // Declared settings but no SETTINGS array — not fatal.
                 appendLog(plugin.id, "[info] declares 'settings' but defines no SETTINGS array");
@@ -686,10 +764,25 @@ public final class JsPluginManager {
             // reinstalled bundled plugin stays reinstalled.
             BundledPlugins.onInstalled(context, plugin.id);
             appendLog(plugin.id, "[info] installed v" + plugin.version + " by " + plugin.author);
+            if (plugin.minPlatform > PLATFORM_API_VERSION) {
+                appendLog(plugin.id, "[warn] " + plugin.name + " wants platform v"
+                        + plugin.minPlatform + "; this build is v" + PLATFORM_API_VERSION
+                        + " — installing anyway");
+            }
             broken.remove(plugin.id);
+            // A successful (re)install is the fix path: it also
+            // clears any storm suspension for this id.
+            suspended.remove(plugin.id);
+            suspendReasons.remove(plugin.id);
+            synchronized (stormTrackers) {
+                ErrorStormTracker tracker = stormTrackers.get(plugin.id);
+                if (tracker != null) {
+                    tracker.reset();
+                }
+            }
             dropRuntime(plugin.id);
             if (plugin.enabled) {
-                warmUp(plugin.id);
+                warmUp(plugin.id, true);
             }
             return null;
         } finally {
@@ -702,10 +795,34 @@ public final class JsPluginManager {
         persistMeta(context, plugin);
         if (enabled) {
             broken.remove(plugin.id);
-            warmUp(plugin.id);
+            warmUp(plugin.id, true);
         } else {
-            dropRuntime(plugin.id);
+            disableRuntime(plugin.id);
         }
+    }
+
+    /** Disable path (A6): onDisable runs on the plugin thread
+     *  BEFORE the runtime is dropped, inside the same queued
+     *  runnable, so no dispatch can slip between the hook and the
+     *  drop. A throwing onDisable is funnelled by callHook and
+     *  never blocks the disable. */
+    private static void disableRuntime(final String pluginId) {
+        postToPluginThread(() -> {
+            Runtime runtime = runtimes.get(pluginId);
+            if (runtime != null && runtime.plugin != null && runtime.plugin.hasDisable) {
+                org.mozilla.javascript.Context cx = null;
+                try {
+                    cx = enterContext();
+                    callHook(cx, runtime, "onDisable", new Object[0]);
+                } catch (Throwable ignored) {
+                } finally {
+                    if (cx != null) {
+                        org.mozilla.javascript.Context.exit();
+                    }
+                }
+            }
+            runtimes.remove(pluginId);
+        });
     }
 
     public static void delete(Context context, JsPlugin plugin) {
@@ -767,6 +884,13 @@ public final class JsPluginManager {
         BundledPlugins.markUserDeleted(context, pluginId);
         dropRuntime(pluginId);
         broken.remove(pluginId);
+        suspended.remove(pluginId);
+        suspendReasons.remove(pluginId);
+        migrating.remove(pluginId);
+        pendingSettingKeys.remove(pluginId);
+        synchronized (stormTrackers) {
+            stormTrackers.remove(pluginId);
+        }
     }
 
     /** Removes a per-plugin storage prefs file completely — values,
@@ -874,11 +998,194 @@ public final class JsPluginManager {
     }
 
     // ------------------------------------------------------------------
+    // Watchdog (A7/A8) + settings-change notification (A6)
+    // ------------------------------------------------------------------
+
+    private static String todayString() {
+        return new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                .format(new java.util.Date());
+    }
+
+    private static String joinStrings(List<String> parts, String separator) {
+        StringBuilder sb = new StringBuilder();
+        for (String part : parts) {
+            if (sb.length() > 0) {
+                sb.append(separator);
+            }
+            sb.append(part);
+        }
+        return sb.toString();
+    }
+
+    private static ErrorStormTracker trackerFor(String pluginId) {
+        synchronized (stormTrackers) {
+            ErrorStormTracker tracker = stormTrackers.get(pluginId);
+            if (tracker == null) {
+                tracker = new ErrorStormTracker();
+                stormTrackers.put(pluginId, tracker);
+            }
+            return tracker;
+        }
+    }
+
+    private static boolean dispatchBlocked(String pluginId) {
+        return suspended.contains(pluginId) || migrating.contains(pluginId);
+    }
+
+    /**
+     * The single error funnel (A7): every hook / load / probe /
+     * callback failure routes through here. Logs in the existing
+     * "[error] &lt;hook&gt;: &lt;throwable&gt;" format (a budget
+     * expiry gets its own wording), increments the plugin's
+     * persisted per-day counter, and feeds its storm tracker —
+     * reaching the storm threshold session-suspends the plugin
+     * (A8). The user's enabled toggle is never touched.
+     */
+    public static void noteHookError(String pluginId, String hook, Throwable t) {
+        if (pluginId == null) {
+            return;
+        }
+        if (t instanceof AminContextFactory.HookBudgetError) {
+            appendLog(pluginId, "[error] hook budget exceeded (" + hook + ")");
+        } else {
+            appendLog(pluginId, "[error] " + hook + ": " + t);
+        }
+        try {
+            FileLog.e("AminGram plugin " + pluginId + " " + hook + " failed", t);
+        } catch (Throwable ignored) {
+        }
+        try {
+            Context context = ApplicationLoader.applicationContext;
+            if (context != null) {
+                JsPlugin plugin = get(context, pluginId);
+                if (plugin != null) {
+                    String today = todayString();
+                    if (!today.equals(plugin.errDay)) {
+                        plugin.errDay = today;
+                        plugin.errCount = 0;
+                    }
+                    plugin.errCount++;
+                    persistMeta(context, plugin);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        if (trackerFor(pluginId).record(System.currentTimeMillis())
+                && !suspended.contains(pluginId)) {
+            suspended.add(pluginId);
+            suspendReasons.put(pluginId,
+                    "error storm: " + ErrorStormTracker.THRESHOLD + "+ hook errors in 60s");
+            appendLog(pluginId, "[error] suspended — error storm ("
+                    + ErrorStormTracker.THRESHOLD
+                    + "+ errors in 60s); resume from the plugin page");
+        }
+    }
+
+    /** Hook errors recorded for this plugin today (hub badge, A7). */
+    public static int errorsToday(String pluginId) {
+        try {
+            Context context = ApplicationLoader.applicationContext;
+            if (context == null || pluginId == null) {
+                return 0;
+            }
+            JsPlugin plugin = get(context, pluginId);
+            if (plugin == null) {
+                return 0;
+            }
+            return todayString().equals(plugin.errDay) ? plugin.errCount : 0;
+        } catch (Throwable ignored) {
+            return 0;
+        }
+    }
+
+    /** True while the plugin is storm-suspended for this session. */
+    public static boolean isSuspended(String pluginId) {
+        return pluginId != null && suspended.contains(pluginId);
+    }
+
+    /** Why the plugin is suspended ("" when it is not). */
+    public static String suspendReason(String pluginId) {
+        String reason = pluginId == null ? null : suspendReasons.get(pluginId);
+        return reason == null ? "" : reason;
+    }
+
+    /**
+     * Hub Resume (A7/A8): clears the suspension, the storm tracker
+     * and today's error counter (per the blueprint, "Resume clears
+     * counters"), then re-warms the plugin if it is enabled. The
+     * onEnable hook is NOT re-fired — the plugin was never disabled.
+     */
+    public static void resumePlugin(Context context, String pluginId) {
+        if (pluginId == null) {
+            return;
+        }
+        suspended.remove(pluginId);
+        suspendReasons.remove(pluginId);
+        synchronized (stormTrackers) {
+            ErrorStormTracker tracker = stormTrackers.get(pluginId);
+            if (tracker != null) {
+                tracker.reset();
+            }
+        }
+        broken.remove(pluginId);
+        if (context != null) {
+            JsPlugin plugin = get(context, pluginId);
+            if (plugin != null) {
+                plugin.errDay = todayString();
+                plugin.errCount = 0;
+                persistMeta(context, plugin);
+                if (plugin.enabled) {
+                    warmUp(pluginId, false);
+                }
+            }
+        }
+    }
+
+    /**
+     * Hub settings-write notification (A6). When the plugin has a
+     * live runtime, onSettingsChanged(key, newValue, oldValue)
+     * runs on the plugin thread; otherwise the key is remembered
+     * and the hook is delivered once at the next warm-up with
+     * oldValue == newValue == the current stored value.
+     */
+    public static void onSettingWritten(final Context context, final String pluginId,
+                                        final String key, final String newValue,
+                                        final String oldValue) {
+        if (pluginId == null || key == null) {
+            return;
+        }
+        postToPluginThread(() -> {
+            Context ctx = context != null ? context : ApplicationLoader.applicationContext;
+            Runtime runtime = runtimes.get(pluginId);
+            JsPlugin plugin = ctx != null ? get(ctx, pluginId) : null;
+            if (runtime != null && plugin != null && plugin.hasSettingsChanged) {
+                org.mozilla.javascript.Context cx = null;
+                try {
+                    cx = enterContext();
+                    callHook(cx, runtime, "onSettingsChanged", new Object[]{
+                            key, newValue == null ? "" : newValue,
+                            oldValue == null ? "" : oldValue});
+                } catch (Throwable ignored) {
+                } finally {
+                    if (cx != null) {
+                        org.mozilla.javascript.Context.exit();
+                    }
+                }
+            } else {
+                pendingSettingKeys.put(pluginId, key);
+                appendLog(pluginId, "[info] setting '" + key
+                        + "' changed while the plugin was not running;"
+                        + " onSettingsChanged will fire once on next start");
+            }
+        });
+    }
+
+    // ------------------------------------------------------------------
     // Rhino plumbing
     // ------------------------------------------------------------------
 
     private static org.mozilla.javascript.Context enterContext() {
-        org.mozilla.javascript.Context cx = org.mozilla.javascript.Context.enter();
+        org.mozilla.javascript.Context cx = CONTEXT_FACTORY.enterContext();
         cx.setOptimizationLevel(-1); // interpreted: required on Android
         cx.setLanguageVersion(org.mozilla.javascript.Context.VERSION_ES6);
         cx.setClassShutter(CLASS_SHUTTER);
@@ -902,13 +1209,22 @@ public final class JsPluginManager {
         // does not exist at all.
         boolean hasGoogle = capabilities != null && capabilities.contains("google");
         boolean hasFile = capabilities != null && capabilities.contains("file");
+        boolean hasAct = capabilities != null && capabilities.contains("act");
         AminBridge bridge;
-        if (hasGoogle && hasFile) {
+        if (hasGoogle && hasFile && hasAct) {
+            bridge = new AminBridge.WithGoogleFileAct(pluginId);
+        } else if (hasGoogle && hasFile) {
             bridge = new AminBridge.WithGoogleFile(pluginId);
+        } else if (hasGoogle && hasAct) {
+            bridge = new AminBridge.WithGoogleAct(pluginId);
+        } else if (hasFile && hasAct) {
+            bridge = new AminBridge.WithFileAct(pluginId);
         } else if (hasGoogle) {
             bridge = new AminBridge.WithGoogle(pluginId);
         } else if (hasFile) {
             bridge = new AminBridge.WithFile(pluginId);
+        } else if (hasAct) {
+            bridge = new AminBridge.WithAct(pluginId);
         } else {
             bridge = new AminBridge(pluginId);
         }
@@ -936,6 +1252,9 @@ public final class JsPluginManager {
             if (context == null || get(context, pluginId) == null) {
                 return;
             }
+            if (suspended.contains(pluginId)) {
+                return;
+            }
             org.mozilla.javascript.Context cx = null;
             try {
                 cx = enterContext();
@@ -943,9 +1262,14 @@ public final class JsPluginManager {
                 if (scope == null) {
                     return;
                 }
-                fn.call(cx, scope, scope, new Object[]{value});
+                AminContextFactory.beginHook(HOOK_BUDGET_MS);
+                try {
+                    fn.call(cx, scope, scope, new Object[]{value});
+                } finally {
+                    AminContextFactory.endHook();
+                }
             } catch (Throwable t) {
-                appendLog(pluginId, "[error] async callback: " + t);
+                noteHookError(pluginId, "async callback", t);
             } finally {
                 if (cx != null) {
                     org.mozilla.javascript.Context.exit();
@@ -954,43 +1278,72 @@ public final class JsPluginManager {
         });
     }
 
-    private static void readSettings(ScriptableObject scope, JsPlugin plugin) {
-        Object raw = ScriptableObject.getProperty(scope, "SETTINGS");
-        if (!(raw instanceof NativeArray)) {
-            return;
-        }
-        NativeArray array = (NativeArray) raw;
-        for (int i = 0; i < array.getLength(); i++) {
-            Object item = array.get(i, array);
-            if (!(item instanceof Scriptable)) {
-                continue;
-            }
-            Scriptable def = (Scriptable) item;
-            JsPlugin.SettingDef setting = new JsPlugin.SettingDef();
-            setting.key = stringProp(def, "key");
-            setting.type = stringProp(def, "type");
-            setting.title = stringProp(def, "title");
-            Object defValue = def.get("def", def);
-            setting.def = defValue == Scriptable.NOT_FOUND ? "" : defValue;
-            if (setting.key == null || setting.key.isEmpty()) {
-                continue;
-            }
-            if (!"bool".equals(setting.type)) {
-                setting.type = "text";
-            }
-            if (setting.title == null || setting.title.isEmpty()) {
-                setting.title = setting.key;
-            }
-            plugin.settings.add(setting);
-        }
+    /** Builds the single argument for {@link #invokePluginCallbackWithArg}
+     *  (A3 support): invoked INSIDE the callback's guarded context
+     *  on the plugin thread, so implementations can create Rhino
+     *  values (objects/arrays) in the right scope. */
+    public interface CallbackArgFactory {
+        Object build(org.mozilla.javascript.Context cx, Scriptable scope);
     }
 
-    private static String stringProp(Scriptable obj, String key) {
-        Object value = obj.get(key, obj);
-        if (value == null || value == Scriptable.NOT_FOUND) {
-            return null;
+    /**
+     * Twin of {@link #invokePluginCallback} whose single callback
+     * argument is produced lazily by {@code factory} inside the
+     * guard (A3: async bridge results that are structured values,
+     * e.g. an HTTP result object, are built with the live context
+     * and the callback's own scope instead of being captured from
+     * another thread). Same contract otherwise: plugin thread,
+     * fresh context inside the guard, dropped when the plugin was
+     * deleted or is storm-suspended, failures funnelled through
+     * noteHookError, hook budget applied.
+     */
+    public static void invokePluginCallbackWithArg(final String pluginId, final Object fnObject,
+                                                   final CallbackArgFactory factory) {
+        if (!(fnObject instanceof Function)) {
+            return;
         }
-        return String.valueOf(value);
+        final Function fn = (Function) fnObject;
+        postToPluginThread(() -> {
+            Context context = ApplicationLoader.applicationContext;
+            if (context == null || get(context, pluginId) == null) {
+                return;
+            }
+            if (suspended.contains(pluginId)) {
+                return;
+            }
+            org.mozilla.javascript.Context cx = null;
+            try {
+                cx = enterContext();
+                Scriptable scope = fn.getParentScope();
+                if (scope == null) {
+                    return;
+                }
+                AminContextFactory.beginHook(HOOK_BUDGET_MS);
+                try {
+                    Object arg = factory != null ? factory.build(cx, scope) : null;
+                    fn.call(cx, scope, scope, new Object[]{arg});
+                } finally {
+                    AminContextFactory.endHook();
+                }
+            } catch (Throwable t) {
+                noteHookError(pluginId, "async callback", t);
+            } finally {
+                if (cx != null) {
+                    org.mozilla.javascript.Context.exit();
+                }
+            }
+        });
+    }
+
+    /** Reads + validates the probe scope's SETTINGS array via
+     *  {@link SettingsSchema} (A5). Fills plugin.settings and
+     *  returns the validation ERRORS (empty = ok); warnings are
+     *  appended to {@code warnings}. {@code strict} is true for a
+     *  first install of the id, false for a reinstall. */
+    private static List<String> readSettings(ScriptableObject scope, JsPlugin plugin,
+                                             boolean strict, List<String> warnings) {
+        Object raw = ScriptableObject.getProperty(scope, "SETTINGS");
+        return SettingsSchema.parseAndValidate(raw, plugin.settings, strict, warnings);
     }
 
     // ------------------------------------------------------------------
@@ -1002,6 +1355,15 @@ public final class JsPluginManager {
     }
 
     private static void warmUp(final String pluginId) {
+        warmUp(pluginId, false);
+    }
+
+    /** Warms the plugin's runtime (load + onLoad + migration +
+     *  pending settings delivery, all inside ensureRuntime). With
+     *  {@code fireOnEnable} (the setEnabled / install paths, A6),
+     *  onEnable runs right after that sequence completes.
+     *  Storm-suspended plugins are not warmed at all. */
+    private static void warmUp(final String pluginId, final boolean fireOnEnable) {
         postToPluginThread(() -> {
             Context context = ApplicationLoader.applicationContext;
             if (context == null) {
@@ -1011,10 +1373,16 @@ public final class JsPluginManager {
             if (plugin == null || !plugin.enabled || !isEngineEnabled(context)) {
                 return;
             }
+            if (suspended.contains(pluginId)) {
+                return;
+            }
             org.mozilla.javascript.Context cx = null;
             try {
                 cx = enterContext();
-                ensureRuntime(cx, context, plugin);
+                Runtime runtime = ensureRuntime(cx, context, plugin);
+                if (runtime != null && fireOnEnable && plugin.hasEnable) {
+                    callHook(cx, runtime, "onEnable", new Object[0]);
+                }
             } catch (Throwable ignored) {
             } finally {
                 if (cx != null) {
@@ -1046,9 +1414,14 @@ public final class JsPluginManager {
         runtime.plugin = plugin;
         try {
             runtime.scope = newScope(cx, plugin.id, plugin.capabilities);
-            cx.evaluateString(runtime.scope, source, plugin.id + ".js", 1, null);
+            AminContextFactory.beginHook(HOOK_BUDGET_MS);
+            try {
+                cx.evaluateString(runtime.scope, source, plugin.id + ".js", 1, null);
+            } finally {
+                AminContextFactory.endHook();
+            }
         } catch (Throwable t) {
-            appendLog(plugin.id, "[error] load failed: " + t);
+            noteHookError(plugin.id, "load failed", t);
             broken.add(plugin.id);
             return null;
         }
@@ -1056,20 +1429,98 @@ public final class JsPluginManager {
         if (!runtime.onLoadCalled) {
             runtime.onLoadCalled = true;
             callHook(cx, runtime, "onLoad", new Object[0]);
+            runMigrationIfNeeded(cx, context, runtime);
+            deliverPendingSettingsChanged(cx, context, runtime);
         }
         return runtime;
     }
 
+    /**
+     * Data migration (A6): when the installed code declares a
+     * @dataVersion past the stored one (and a version was actually
+     * stored before), onMigrate(stored, declared) runs right after
+     * onLoad — before onEnable, any pending settings delivery, and
+     * any dispatched hook of the new code (dispatch entries check
+     * the {@code migrating} gate; this sequence itself is
+     * synchronous on the plugin thread). The stored version
+     * advances only when the hook returns normally; a throwing
+     * migration is funnelled as an error, the stored version stays,
+     * and the plugin still runs. A plugin without onMigrate has
+     * nothing that could migrate its data, so the stored version
+     * simply adopts the declared one.
+     */
+    private static void runMigrationIfNeeded(org.mozilla.javascript.Context cx,
+                                             Context context, Runtime runtime) {
+        JsPlugin plugin = runtime.plugin;
+        int stored = plugin.dataVersionStored;
+        int declared = plugin.dataVersion;
+        if (stored <= 0 || declared <= stored) {
+            return;
+        }
+        migrating.add(plugin.id);
+        try {
+            Object fn = ScriptableObject.getProperty(runtime.scope, "onMigrate");
+            if (!plugin.hasMigrate || !(fn instanceof Function)) {
+                plugin.dataVersionStored = declared;
+                persistMeta(context, plugin);
+                return;
+            }
+            AminContextFactory.beginHook(HOOK_BUDGET_MS);
+            try {
+                ((Function) fn).call(cx, runtime.scope, runtime.scope,
+                        new Object[]{Double.valueOf(stored), Double.valueOf(declared)});
+            } finally {
+                AminContextFactory.endHook();
+            }
+            plugin.dataVersionStored = declared;
+            persistMeta(context, plugin);
+            appendLog(plugin.id, "[info] migrated data v" + stored + " -> v" + declared);
+        } catch (Throwable t) {
+            noteHookError(plugin.id, "onMigrate", t);
+        } finally {
+            migrating.remove(plugin.id);
+        }
+    }
+
+    /** Delivers a settings change that arrived while the plugin
+     *  had no live runtime (A6): fired once, right after onLoad
+     *  (and after any migration), with oldValue == newValue ==
+     *  the currently stored value. */
+    private static void deliverPendingSettingsChanged(org.mozilla.javascript.Context cx,
+                                                      Context context, Runtime runtime) {
+        String key = pendingSettingKeys.remove(runtime.plugin.id);
+        if (key == null || !runtime.plugin.hasSettingsChanged) {
+            return;
+        }
+        String current = storageGetRaw(context, runtime.plugin.id, key);
+        if (current == null) {
+            current = "";
+        }
+        callHook(cx, runtime, "onSettingsChanged", new Object[]{key, current, current});
+    }
+
+    /** The one hook-invocation funnel: every dispatched and
+     *  lifecycle hook (onLoad, onMessage, onCommand, onMenuAction,
+     *  onEnable, onDisable, onSettingsChanged) runs through here,
+     *  so the A8 budget wrap and the A7 error funnel each live in
+     *  exactly one place. (onMigrate is the exception — its
+     *  success/failure drives the stored data version, so it is
+     *  invoked, with the same wrap + funnel, by
+     *  runMigrationIfNeeded.) */
     private static Object callHook(org.mozilla.javascript.Context cx, Runtime runtime,
                                    String name, Object[] args) {
         try {
             Object fn = ScriptableObject.getProperty(runtime.scope, name);
             if (fn instanceof Function) {
-                return ((Function) fn).call(cx, runtime.scope, runtime.scope, args);
+                AminContextFactory.beginHook(HOOK_BUDGET_MS);
+                try {
+                    return ((Function) fn).call(cx, runtime.scope, runtime.scope, args);
+                } finally {
+                    AminContextFactory.endHook();
+                }
             }
         } catch (Throwable t) {
-            appendLog(runtime.plugin.id, "[error] " + name + ": " + t);
-            FileLog.e("AminGram plugin " + runtime.plugin.id + " " + name + " failed", t);
+            noteHookError(runtime.plugin.id, name, t);
         }
         return null;
     }
@@ -1085,7 +1536,8 @@ public final class JsPluginManager {
         }
         final List<JsPlugin> targets = new ArrayList<>();
         for (JsPlugin plugin : plugins(context)) {
-            if (plugin.enabled && plugin.hasCapability("observe")) {
+            if (plugin.enabled && plugin.hasCapability("observe")
+                    && !dispatchBlocked(plugin.id)) {
                 targets.add(plugin);
             }
         }
@@ -1098,6 +1550,9 @@ public final class JsPluginManager {
             try {
                 cx = enterContext();
                 for (JsPlugin plugin : targets) {
+                    if (dispatchBlocked(plugin.id)) {
+                        continue;
+                    }
                     Runtime runtime = ensureRuntime(cx, context, plugin);
                     if (runtime == null) {
                         continue;
@@ -1155,6 +1610,9 @@ public final class JsPluginManager {
                 cx = enterContext();
                 long selfId = UserConfig.getInstance(account).getClientUserId();
                 for (JsPlugin plugin : enabledCommandPlugins(context)) {
+                    if (dispatchBlocked(plugin.id)) {
+                        continue;
+                    }
                     Runtime runtime = ensureRuntime(cx, context, plugin);
                     if (runtime == null) {
                         continue;
@@ -1171,7 +1629,8 @@ public final class JsPluginManager {
                     msg.put("outgoing", msg, Boolean.TRUE);
                     msg.put("channel", msg, Boolean.FALSE);
                     putNum(msg, "date", (int) (System.currentTimeMillis() / 1000L));
-                    Scriptable ctx = buildCtx(cx, runtime.scope, msg, peer, selfId, command, args);
+                    Scriptable ctx = buildCtx(cx, runtime.scope, msg, peer, selfId, command, args,
+                            account, null, params.replyToMsg);
                     Object result = callHook(cx, runtime, "onCommand", new Object[]{ctx});
                     if (result != null && ScriptRuntime.toBoolean(result)) {
                         break;
@@ -1199,6 +1658,9 @@ public final class JsPluginManager {
             try {
                 cx = enterContext();
                 for (JsPlugin plugin : enabledCommandPlugins(context)) {
+                    if (dispatchBlocked(plugin.id)) {
+                        continue;
+                    }
                     Runtime runtime = ensureRuntime(cx, context, plugin);
                     if (runtime == null) {
                         continue;
@@ -1209,7 +1671,8 @@ public final class JsPluginManager {
                     Scriptable msg = buildMsg(cx, runtime.scope, account, message);
                     long chatId = MessageObject.getDialogId(message);
                     long senderId = UserConfig.getInstance(account).getClientUserId();
-                    Scriptable ctx = buildCtx(cx, runtime.scope, msg, chatId, senderId, command, args);
+                    Scriptable ctx = buildCtx(cx, runtime.scope, msg, chatId, senderId, command, args,
+                            account, message, null);
                     Object result = callHook(cx, runtime, "onCommand", new Object[]{ctx});
                     if (result != null && ScriptRuntime.toBoolean(result)) {
                         break;
@@ -1232,6 +1695,9 @@ public final class JsPluginManager {
         postToPluginThread(() -> {
             JsPlugin plugin = get(context, pluginId);
             if (plugin == null || !plugin.enabled) {
+                return;
+            }
+            if (dispatchBlocked(pluginId)) {
                 return;
             }
             dispatchAccount = UserConfig.selectedAccount;
@@ -1257,7 +1723,8 @@ public final class JsPluginManager {
     private static List<JsPlugin> enabledCommandPlugins(Context context) {
         List<JsPlugin> out = new ArrayList<>();
         for (JsPlugin plugin : plugins(context)) {
-            if (plugin.enabled && plugin.hasCapability("commands")) {
+            if (plugin.enabled && plugin.hasCapability("commands")
+                    && !dispatchBlocked(plugin.id)) {
                 out.add(plugin);
             }
         }
@@ -1268,6 +1735,147 @@ public final class JsPluginManager {
     // JS value builders
     // ------------------------------------------------------------------
 
+    // ------------------------------------------------------------------
+    // Lazy rich lookups (A1, blueprint §1.1): the public statics the
+    // bridge's amin.getChatInfo / getUserInfo / getMessage delegate
+    // to. They run on the calling (plugin) thread during JS
+    // execution, so a Rhino context is already current; objects are
+    // built in the plugin runtime's scope when it can be resolved,
+    // else in a fresh standard scope — they are plain data either
+    // way. Account follows the manager's dispatch idiom:
+    // dispatchAccount (set by every dispatch entry before hooks
+    // run), falling back to UserConfig.selectedAccount.
+    // ------------------------------------------------------------------
+
+    private static int resolveLookupAccount() {
+        int account = dispatchAccount;
+        if (account < 0) {
+            account = UserConfig.selectedAccount;
+        }
+        return account;
+    }
+
+    private static Scriptable lookupScope(org.mozilla.javascript.Context cx, String pluginId) {
+        Runtime runtime = pluginId != null ? runtimes.get(pluginId) : null;
+        if (runtime != null && runtime.scope != null) {
+            return runtime.scope;
+        }
+        return cx.initStandardObjects();
+    }
+
+    /** {id, type, title, username, memberCount} for a dialog id,
+     *  or null when the user/chat is not loaded. memberCount is
+     *  the chat's participants_count; 0 for private chats. */
+    public static Scriptable lookupChatInfo(String pluginId, long chatId) {
+        org.mozilla.javascript.Context cx = org.mozilla.javascript.Context.getCurrentContext();
+        if (cx == null || chatId == 0) {
+            return null;
+        }
+        try {
+            int account = resolveLookupAccount();
+            MessagesController controller = MessagesController.getInstance(account);
+            Scriptable scope = lookupScope(cx, pluginId);
+            Scriptable obj = cx.newObject(scope);
+            if (chatId > 0) {
+                TLRPC.User user = controller.getUser(chatId);
+                if (user == null) {
+                    return null;
+                }
+                putNum(obj, "id", chatId);
+                putStr(obj, "type", "private");
+                putStr(obj, "title", UserObject.getUserName(user));
+                putStr(obj, "username", user.username == null ? "" : user.username);
+                putNum(obj, "memberCount", 0);
+                return obj;
+            }
+            TLRPC.Chat chat = controller.getChat(-chatId);
+            if (chat == null) {
+                return null;
+            }
+            putNum(obj, "id", chatId);
+            putStr(obj, "type", chat.broadcast ? "channel"
+                    : (chat.megagroup ? "supergroup" : "group"));
+            putStr(obj, "title", chat.title == null ? "" : chat.title);
+            putStr(obj, "username", chat.username == null ? "" : chat.username);
+            putNum(obj, "memberCount", chat.participants_count);
+            return obj;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /** {id, name, username, isBot, isPremium} for a user id, or
+     *  null when the user is not loaded. */
+    public static Scriptable lookupUserInfo(String pluginId, long userId) {
+        org.mozilla.javascript.Context cx = org.mozilla.javascript.Context.getCurrentContext();
+        if (cx == null || userId <= 0) {
+            return null;
+        }
+        try {
+            int account = resolveLookupAccount();
+            TLRPC.User user = MessagesController.getInstance(account).getUser(userId);
+            if (user == null) {
+                return null;
+            }
+            Scriptable scope = lookupScope(cx, pluginId);
+            Scriptable obj = cx.newObject(scope);
+            putNum(obj, "id", userId);
+            putStr(obj, "name", UserObject.getUserName(user));
+            putStr(obj, "username", user.username == null ? "" : user.username);
+            obj.put("isBot", obj, user.bot ? Boolean.TRUE : Boolean.FALSE);
+            obj.put("isPremium", obj, user.premium ? Boolean.TRUE : Boolean.FALSE);
+            return obj;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /** A buildMsg-shaped object for a message that is already
+     *  loaded in MessagesController's maps, or null — the bound is
+     *  contractual: unloaded messages are never fetched. */
+    public static Scriptable lookupMessage(String pluginId, long chatId, long id) {
+        org.mozilla.javascript.Context cx = org.mozilla.javascript.Context.getCurrentContext();
+        if (cx == null) {
+            return null;
+        }
+        try {
+            int account = resolveLookupAccount();
+            TLRPC.Message message = findLoadedMessage(account, chatId, id);
+            if (message == null) {
+                return null;
+            }
+            return buildMsg(cx, lookupScope(cx, pluginId), account, message);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /** Finds a loaded message in MessagesController's maps: the
+     *  per-dialog message list first, then the global by-id map
+     *  (accepted only when its dialog matches). Null when not
+     *  loaded. Shared by lookupMessage and ctx.replyTo. */
+    private static TLRPC.Message findLoadedMessage(int account, long chatId, long messageId) {
+        try {
+            MessagesController controller = MessagesController.getInstance(account);
+            java.util.ArrayList<MessageObject> list = controller.dialogMessage.get(chatId);
+            if (list != null) {
+                for (MessageObject obj : list) {
+                    if (obj != null && obj.getId() == messageId && obj.messageOwner != null) {
+                        return obj.messageOwner;
+                    }
+                }
+            }
+            if (messageId >= Integer.MIN_VALUE && messageId <= Integer.MAX_VALUE) {
+                MessageObject obj = controller.dialogMessagesByIds.get((int) messageId);
+                if (obj != null && obj.getDialogId() == chatId && obj.messageOwner != null) {
+                    return obj.messageOwner;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
     private static Scriptable buildMsg(org.mozilla.javascript.Context cx, Scriptable scope,
                                        int account, TLRPC.Message message) {
         Scriptable msg = cx.newObject(scope);
@@ -1277,28 +1885,298 @@ public final class JsPluginManager {
         putNum(msg, "id", message.id);
         putNum(msg, "chatId", chatId);
         putNum(msg, "senderId", senderId);
-        putStr(msg, "senderName", resolveSenderName(account, senderId, chatId));
+        String senderName = resolveSenderName(account, senderId, chatId);
+        putStr(msg, "senderName", senderName);
         putStr(msg, "text", message.message == null ? "" : message.message);
         msg.put("outgoing", msg, message.out ? Boolean.TRUE : Boolean.FALSE);
+        // Rich context (Platform v2, A1): the chat and sender user
+        // are resolved once here and reused for channel / chatType /
+        // chatTitle / senderUsername / senderIsBot, keeping the
+        // per-message construction allocation-light.
+        MessagesController controller = null;
+        TLRPC.Chat chat = null;
+        TLRPC.User senderUser = null;
+        try {
+            controller = MessagesController.getInstance(account);
+            if (chatId < 0) {
+                chat = controller.getChat(-chatId);
+            }
+            if (senderId > 0) {
+                senderUser = controller.getUser(senderId);
+            }
+        } catch (Throwable ignored) {
+        }
         boolean channel = false;
         if (message.peer_id != null && message.peer_id.channel_id != 0) {
-            TLRPC.Chat chat = MessagesController.getInstance(account).getChat(message.peer_id.channel_id);
-            channel = chat == null || !chat.megagroup;
+            TLRPC.Chat peerChat = chat;
+            if (peerChat == null && controller != null) {
+                try {
+                    peerChat = controller.getChat(message.peer_id.channel_id);
+                } catch (Throwable ignored) {
+                }
+            }
+            channel = peerChat == null || !peerChat.megagroup;
         }
         msg.put("channel", msg, channel ? Boolean.TRUE : Boolean.FALSE);
         putNum(msg, "date", message.date);
+        putNum(msg, "replyToId", message.reply_to != null ? message.reply_to.reply_to_msg_id : 0);
+        putNum(msg, "editDate", message.edit_date);
+        putStr(msg, "fwdFrom", resolveFwdFromName(account, message, chatId));
+        putNum(msg, "groupedId", message.grouped_id);
+        String chatType;
+        String chatTitle = "";
+        if (chatId > 0) {
+            chatType = "private";
+            try {
+                TLRPC.User chatUser = controller != null ? controller.getUser(chatId) : null;
+                if (chatUser != null) {
+                    chatTitle = UserObject.getUserName(chatUser);
+                }
+            } catch (Throwable ignored) {
+            }
+            if (chatTitle == null || chatTitle.isEmpty()) {
+                chatTitle = chatId == senderId && senderName != null ? senderName : "";
+            }
+        } else if (chatId < 0) {
+            if (chat != null) {
+                chatTitle = chat.title == null ? "" : chat.title;
+                chatType = chat.broadcast ? "channel" : (chat.megagroup ? "supergroup" : "group");
+            } else if (message.peer_id != null && message.peer_id.chat_id != 0) {
+                chatType = "group";
+            } else {
+                chatType = "channel";
+            }
+        } else {
+            chatType = "private";
+        }
+        putStr(msg, "chatTitle", chatTitle);
+        putStr(msg, "chatType", chatType);
+        String senderUsername = "";
+        boolean senderIsBot = false;
+        if (senderUser != null) {
+            senderUsername = senderUser.username == null ? "" : senderUser.username;
+            senderIsBot = senderUser.bot;
+        } else if (senderId < 0 && controller != null) {
+            try {
+                TLRPC.Chat senderChat = controller.getChat(-senderId);
+                if (senderChat != null && senderChat.username != null) {
+                    senderUsername = senderChat.username;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        putStr(msg, "senderUsername", senderUsername);
+        msg.put("senderIsBot", msg, senderIsBot ? Boolean.TRUE : Boolean.FALSE);
+        if (message.media != null) {
+            msg.put("media", msg, buildMediaDescriptor(cx, scope, message.media));
+        } else {
+            msg.put("media", msg, null);
+        }
         return msg;
     }
 
+    /** Forward origin display name (A1): the header's from_name
+     *  when present, else the resolved name of its from peer,
+     *  else the post author. Name only — no peer objects leak. */
+    private static String resolveFwdFromName(int account, TLRPC.Message message, long chatId) {
+        try {
+            TLRPC.MessageFwdHeader fwd = message.fwd_from;
+            if (fwd == null) {
+                return "";
+            }
+            if (fwd.from_name != null && !fwd.from_name.isEmpty()) {
+                return fwd.from_name;
+            }
+            if (fwd.from_id != null) {
+                long peerId = DialogObject.getPeerDialogId(fwd.from_id);
+                String name = resolveSenderName(account, peerId, chatId);
+                if (name != null && !name.isEmpty()) {
+                    return name;
+                }
+            }
+            if (fwd.post_author != null && !fwd.post_author.isEmpty()) {
+                return fwd.post_author;
+            }
+        } catch (Throwable ignored) {
+        }
+        return "";
+    }
+
+    /** The msg.media descriptor (A1): built purely by instanceof
+     *  checks on the already-loaded media object — no downloads,
+     *  no FileLoader paths. Unknown media degrades to "other". */
+    private static Scriptable buildMediaDescriptor(org.mozilla.javascript.Context cx,
+                                                   Scriptable scope,
+                                                   TLRPC.MessageMedia media) {
+        Scriptable desc = cx.newObject(scope);
+        String kind = "other";
+        String fileName = "";
+        String mimeType = "";
+        long sizeBytes = 0;
+        long durationSec = 0;
+        long width = 0;
+        long height = 0;
+        try {
+            if (media instanceof TLRPC.TL_messageMediaPhoto) {
+                kind = "photo";
+                TLRPC.Photo photo = media.photo;
+                if (photo != null && photo.sizes != null) {
+                    TLRPC.PhotoSize best = null;
+                    for (TLRPC.PhotoSize size : photo.sizes) {
+                        if (size != null && (best == null || size.size > best.size)) {
+                            best = size;
+                        }
+                    }
+                    if (best != null) {
+                        sizeBytes = best.size;
+                        width = best.w;
+                        height = best.h;
+                    }
+                }
+            } else if (media instanceof TLRPC.TL_messageMediaDocument) {
+                TLRPC.Document doc = media.document;
+                if (doc != null) {
+                    fileName = documentFileName(doc);
+                    mimeType = doc.mime_type == null ? "" : doc.mime_type;
+                    sizeBytes = doc.size;
+                    String docKind = "document";
+                    boolean animated = false;
+                    boolean sticker = false;
+                    if (doc.attributes != null) {
+                        for (TLRPC.DocumentAttribute attr : doc.attributes) {
+                            if (attr == null) {
+                                continue;
+                            }
+                            if (attr instanceof TLRPC.TL_documentAttributeSticker) {
+                                sticker = true;
+                            } else if (attr instanceof TLRPC.TL_documentAttributeAudio) {
+                                docKind = attr.voice ? "voice" : "audio";
+                                durationSec = Math.round(attr.duration);
+                            } else if (attr instanceof TLRPC.TL_documentAttributeAnimated) {
+                                animated = true;
+                            } else if (attr instanceof TLRPC.TL_documentAttributeVideo) {
+                                if ("document".equals(docKind)) {
+                                    docKind = "video";
+                                }
+                                durationSec = Math.round(attr.duration);
+                                width = attr.w;
+                                height = attr.h;
+                            } else if (attr instanceof TLRPC.TL_documentAttributeImageSize) {
+                                if (width == 0) {
+                                    width = attr.w;
+                                    height = attr.h;
+                                }
+                            } else if (attr instanceof TLRPC.TL_documentAttributeFilename) {
+                                if (fileName.isEmpty() && attr.file_name != null) {
+                                    fileName = attr.file_name;
+                                }
+                            }
+                        }
+                    }
+                    if (sticker) {
+                        docKind = "sticker";
+                    } else if (animated && ("document".equals(docKind) || "video".equals(docKind))) {
+                        docKind = "gif";
+                    } else if ("document".equals(docKind) && mimeType.startsWith("video/")) {
+                        docKind = "video";
+                    }
+                    kind = docKind;
+                }
+            } else if (media instanceof TLRPC.TL_messageMediaWebPage) {
+                kind = "webpage";
+            } else if (media instanceof TLRPC.TL_messageMediaPoll) {
+                kind = "poll";
+            } else if (media.photo != null) {
+                // Other media shapes that still carry a photo.
+                kind = "photo";
+                if (media.photo.sizes != null) {
+                    TLRPC.PhotoSize best = null;
+                    for (TLRPC.PhotoSize size : media.photo.sizes) {
+                        if (size != null && (best == null || size.size > best.size)) {
+                            best = size;
+                        }
+                    }
+                    if (best != null) {
+                        sizeBytes = best.size;
+                        width = best.w;
+                        height = best.h;
+                    }
+                }
+            } else if (media.document != null) {
+                kind = "document";
+                fileName = documentFileName(media.document);
+                mimeType = media.document.mime_type == null ? "" : media.document.mime_type;
+                sizeBytes = media.document.size;
+            }
+        } catch (Throwable ignored) {
+        }
+        putStr(desc, "kind", kind);
+        putStr(desc, "fileName", fileName);
+        putStr(desc, "mimeType", mimeType);
+        putNum(desc, "sizeBytes", sizeBytes);
+        putNum(desc, "durationSec", durationSec);
+        putNum(desc, "width", width);
+        putNum(desc, "height", height);
+        return desc;
+    }
+
+    private static String documentFileName(TLRPC.Document doc) {
+        if (doc.file_name_fixed != null && !doc.file_name_fixed.isEmpty()) {
+            return doc.file_name_fixed;
+        }
+        return doc.file_name == null ? "" : doc.file_name;
+    }
+
+    /**
+     * Command context. When the source message is a reply
+     * (reply_to id != 0 — from {@code sourceMessage} on the update
+     * path, or {@code replyTarget} on the outgoing path where the
+     * send params already carry the target MessageObject),
+     * ctx.replyTo is set to {text, caption, senderName, chatId,
+     * messageId} describing the target: resolved through the same
+     * loaded-message lookup as lookupMessage; an unresolved target
+     * still yields the object, with empty text/senderName. caption
+     * is the target's text when the target carries media, else "".
+     */
     private static Scriptable buildCtx(org.mozilla.javascript.Context cx, Scriptable scope,
                                        Scriptable msg, long chatId, long senderId,
-                                       String command, String args) {
+                                       String command, String args, int account,
+                                       TLRPC.Message sourceMessage, MessageObject replyTarget) {
         Scriptable ctx = cx.newObject(scope);
         putNum(ctx, "chatId", chatId);
         putNum(ctx, "senderId", senderId);
         putStr(ctx, "command", command);
         putStr(ctx, "args", args);
         ctx.put("msg", ctx, msg);
+        long replyToId = 0;
+        TLRPC.Message target = null;
+        if (replyTarget != null) {
+            replyToId = replyTarget.getId();
+            target = replyTarget.messageOwner;
+        } else if (sourceMessage != null && sourceMessage.reply_to != null) {
+            replyToId = sourceMessage.reply_to.reply_to_msg_id;
+        }
+        if (replyToId != 0) {
+            if (target == null) {
+                target = findLoadedMessage(account, chatId, replyToId);
+            }
+            Scriptable replyTo = cx.newObject(scope);
+            String targetText = target != null && target.message != null ? target.message : "";
+            putStr(replyTo, "text", targetText);
+            boolean hasMedia = target != null && target.media != null
+                    && !(target.media instanceof TLRPC.TL_messageMediaEmpty);
+            putStr(replyTo, "caption", hasMedia ? targetText : "");
+            String targetSenderName = "";
+            if (target != null) {
+                long targetSenderId = target.from_id != null
+                        ? DialogObject.getPeerDialogId(target.from_id) : chatId;
+                targetSenderName = resolveSenderName(account, targetSenderId, chatId);
+            }
+            putStr(replyTo, "senderName", targetSenderName);
+            putNum(replyTo, "chatId", chatId);
+            putNum(replyTo, "messageId", replyToId);
+            ctx.put("replyTo", ctx, replyTo);
+        }
         return ctx;
     }
 
