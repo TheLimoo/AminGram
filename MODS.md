@@ -728,7 +728,8 @@ account's free quota — native OAuth, no API key typed anywhere.
   the two matching `-keep` lines (hunk header +57,12 → +57,15)
   — same R8 lesson as v1.3.4.
 - **amin.httpPost(url, body, headersObj)** added to the bridge
-  (httpGet's style: 15 s timeouts, 1 MB cap, body or null;
+  (httpGet's style: 15 s timeouts, 1 MB cap, body or null —
+  the null-on-HTTP-error part is superseded by v1.3.7, below;
   JSON Content-Type default; headers from a JS object) — the
   Gemini call needs POST + an Authorization header.
 - **Bundled plugin #7 — gemini-chat** (capabilities commands,
@@ -784,3 +785,43 @@ Bundled gemini-chat's default model moves gemini-2.5-flash →
 gemini-3-flash-preview (2.5-flash is retired for new users — 404
 verified against a real key; 3-flash-preview verified answering).
 GOOGLE-CLOUD-SETUP.md step 3 now names cloud-platform.
+
+## v1.3.7 (2026-10-21, TEST build, on top of c314301) — httpPost error bodies
+
+- **amin.httpPost returns the HTTP error body.** Since v1.3.5 the
+  bridge returned null for every non-2xx without ever reading
+  getErrorStream(), so a caller's error parsing (written for
+  exactly those bodies) could never run, and every API rejection
+  masqueraded as "did not answer". Now: 2xx unchanged (same read
+  loop, same 1 MB cap); a non-2xx WITH a body returns the error
+  body; bodyless errors and transport failures still return
+  null. httpGet is deliberately NOT changed — older plugins
+  depend on its null-on-error. Purpose of this test build: the
+  account-route (OAuth) Gemini call fails on device while the
+  key route answers; the account call's real Google verdict has
+  never been visible — now it will be.
+- **Audit of the v1.3.5 httpPost** (prompted by the same
+  failure): plain URL.openConnection() — the platform
+  HttpURLConnection, NOT Telegram's network stack, so no in-app
+  proxy/MTProto interception; setRequestMethod("POST") +
+  setDoOutput(true) before anything else; ALL headers from the
+  JS object are set via setRequestProperty BEFORE
+  getOutputStream() is opened (correct order — nothing is set
+  after connect); body = UTF-8 bytes of the JS string with
+  setFixedLengthStreamingMode(body.length) set before connect,
+  written, then the stream closed; it runs on the PluginQueue
+  HandlerThread ("AminGramPlugins"), not the UI thread. No
+  header-ordering, header-dropping, downgrade or proxy defect
+  found. Corroboration from the device: the failing calls left
+  NO [error] line in the plugin log — an exception (e.g. an
+  IllegalStateException from a late header) would have logged;
+  a completed request with an error status returns silently,
+  which is exactly the pre-fix behavior.
+- **gemini-chat trims its stored settings** (model,
+  systemPrompt) before use — a trailing space from a mobile
+  keyboard turns the model name into a 404. Default model
+  unchanged (gemini-3-flash-preview).
+- Shipped AI stays keyless: the bundled set's only AI plugin is
+  gemini-chat (OAuth). The key-based plugins (gemini-key,
+  gemini-fix) are standalone diagnostics kept in
+  ~/workspace/amingram/plugins/ — they are NOT bundled.

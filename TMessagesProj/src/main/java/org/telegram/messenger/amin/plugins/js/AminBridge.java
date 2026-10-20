@@ -30,7 +30,8 @@ import java.nio.charset.StandardCharsets;
  *   amin.send(chatId, text)              send a message AS THE USER
  *   amin.reply(msg, text)                send into the msg's chat
  *   amin.httpGet(url)                    response text, or null (blocking)
- *   amin.httpPost(url, body, headers)    response text, or null (blocking)
+ *   amin.httpPost(url, body, headers)    response text (the HTTP error body
+ *                                        on an error status), or null (blocking)
  *
  * Plugins whose manifest declares the `google` capability get the
  * {@link WithGoogle} variant, which adds:
@@ -156,11 +157,14 @@ public class AminBridge {
     }
 
     /** Blocking POST on the plugin dispatch thread, in httpGet's
-     *  style: 15 s timeouts, response body capped at 1 MB, body
-     *  text or null on any failure (including non-2xx). The third
-     *  argument is a JS object of header name → value pairs; a
-     *  JSON Content-Type is assumed when the caller doesn't set
-     *  one. Needed for API calls like Gemini's generateContent. */
+     *  style: 15 s timeouts, bodies capped at 1 MB. On 2xx the
+     *  response body text; on an HTTP error status the ERROR body
+     *  text (v1.3.7 — so a caller's error parsing can finally see
+     *  the server's real verdict instead of a bare null); null on
+     *  transport failure or a bodyless error. The third argument
+     *  is a JS object of header name → value pairs; a JSON
+     *  Content-Type is assumed when the caller doesn't set one.
+     *  Needed for API calls like Gemini's generateContent. */
     public String httpPost(Object urlObject, Object bodyObject, Object headersObject) {
         if (urlObject == null) {
             return null;
@@ -213,23 +217,20 @@ public class AminBridge {
             out.write(body);
             out.close();
             int code = connection.getResponseCode();
-            if (code < 200 || code >= 300) {
+            if (code >= 200 && code < 300) {
+                return readCapped(connection.getInputStream());
+            }
+            // Non-2xx (v1.3.7): return the ERROR body instead of
+            // null, so a caller's error parsing finally sees the
+            // server's real verdict (e.g. Google's JSON error)
+            // instead of a bare "did not answer". A bodyless error
+            // still returns null, and any failure while reading
+            // lands in the catch below -> null, exactly as before.
+            InputStream err = connection.getErrorStream();
+            if (err == null) {
                 return null;
             }
-            InputStream in = connection.getInputStream();
-            ByteArrayOutputStream result = new ByteArrayOutputStream();
-            byte[] buffer = new byte[8192];
-            int read;
-            int total = 0;
-            while ((read = in.read(buffer)) > 0) {
-                total += read;
-                if (total > 1024 * 1024) {
-                    break;
-                }
-                result.write(buffer, 0, read);
-            }
-            in.close();
-            return new String(result.toByteArray(), StandardCharsets.UTF_8);
+            return readCapped(err);
         } catch (Throwable t) {
             JsPluginManager.appendLog(pluginId, "[error] amin.httpPost failed: " + t);
             return null;
@@ -238,6 +239,25 @@ public class AminBridge {
                 connection.disconnect();
             }
         }
+    }
+
+    /** Reads a response stream to the end, capped at 1 MB, as
+     *  UTF-8 — the same read loop httpPost has always used (the
+     *  chunk that crosses the cap is not written). */
+    private static String readCapped(InputStream in) throws java.io.IOException {
+        ByteArrayOutputStream result = new ByteArrayOutputStream();
+        byte[] buffer = new byte[8192];
+        int read;
+        int total = 0;
+        while ((read = in.read(buffer)) > 0) {
+            total += read;
+            if (total > 1024 * 1024) {
+                break;
+            }
+            result.write(buffer, 0, read);
+        }
+        in.close();
+        return new String(result.toByteArray(), StandardCharsets.UTF_8);
     }
 
     static long toLong(Object value) {

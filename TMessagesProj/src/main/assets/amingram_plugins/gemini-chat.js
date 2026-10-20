@@ -72,11 +72,13 @@ function fetchAndAnswer(ctx, prompt) {
           + "in Plugins → Google Account, then try again.");
         return;
       }
-      var model = amin.storage.get("model", "gemini-3-flash-preview");
+      // Trim stored settings (v1.3.7): a trailing space from a
+      // mobile keyboard turns the model name into a 404.
+      var model = String(amin.storage.get("model", "gemini-3-flash-preview") || "").trim();
       if (!model) {
         model = "gemini-3-flash-preview";
       }
-      var system = amin.storage.get("systemPrompt", "");
+      var system = String(amin.storage.get("systemPrompt", "") || "").trim();
       var text = system ? (system + "\n\n" + prompt) : prompt;
       var url = "https://generativelanguage.googleapis.com/v1beta/models/"
         + encodeURIComponent(model) + ":generateContent";

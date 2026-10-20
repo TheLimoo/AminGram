@@ -51,7 +51,9 @@ amin.send(chatId, text)             // send a message AS THE USER to a chat
 amin.reply(msg, text)               // send a message into the same chat the msg came from
 amin.httpGet(url)                   // returns response text, or null on failure (blocking: call sparingly)
 amin.httpPost(url, body, headers)   // POST: body is a string, headers a {name: value} object;
-                                    // returns response text, or null on failure (blocking)
+                                    // returns response text; on an HTTP error status returns the
+                                    // ERROR body instead (read the server's verdict, e.g. its JSON
+                                    // error); null only when the request itself failed (blocking)
 ```
 
 ## Google account (`google` capability only)
