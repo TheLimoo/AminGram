@@ -7,7 +7,6 @@ import android.graphics.PorterDuff;
 import android.graphics.PorterDuffColorFilter;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
-import android.text.InputType;
 import android.text.SpannableString;
 import android.text.Spanned;
 import android.text.TextUtils;
@@ -144,7 +143,6 @@ public class AminPluginsActivity extends BaseFragment {
         JsPlugin plugin;
         BundledPlugins.Bundled bundled;
         SendWhenOnlineStore.Entry swoEntry;
-        long hiddenId;
         // Presentation-only fields:
         int seg = SEG_NONE;
         String statusText;
@@ -357,9 +355,22 @@ public class AminPluginsActivity extends BaseFragment {
                 action("view_edits", "Edit history", String.valueOf(count));
                 break;
             }
-            case "hidden_chats":
-                addHiddenChatsActions(context);
+            case "hidden_chats": {
+                // v1.3.4: ONE row into the dedicated management
+                // page (AminHiddenChatsActivity) — the scattered
+                // set-PIN / unlock / per-chat / lock rows that
+                // used to be generated here are gone.
+                String value;
+                if (!HiddenChatsStore.hasPin(context)) {
+                    value = "Set a PIN";
+                } else if (!HiddenChatsStore.isUnlocked()) {
+                    value = "Locked";
+                } else {
+                    value = HiddenChatsStore.getHiddenIds(context).size() + " hidden";
+                }
+                action("manage_hidden_chats", "Manage hidden chats", value);
                 break;
+            }
             case "video_background": {
                 String path = VideoBackgroundHelper.getVideoPath(context);
                 action("pick_video", "Video background file",
@@ -409,28 +420,6 @@ public class AminPluginsActivity extends BaseFragment {
         }
     }
 
-    private void addHiddenChatsActions(Context context) {
-        if (!HiddenChatsStore.hasPin(context)) {
-            action("pin_set", "Set a PIN to use Hidden Chats", null);
-            return;
-        }
-        if (!HiddenChatsStore.isUnlocked()) {
-            action("pin_unlock", "Unlock hidden chats", null);
-            return;
-        }
-        action("hide_chat", "Hide a chat…", null);
-        for (Long id : HiddenChatsStore.getHiddenIds(context)) {
-            Row row = new Row();
-            row.kind = KIND_ACTION;
-            row.action = "hidden_entry";
-            row.hiddenId = id;
-            row.title = AminDialogPickerActivity.dialogName(currentAccount, id);
-            row.value = "tap to unhide";
-            rows.add(row);
-        }
-        action("pin_lock", "Lock hidden chats", null);
-    }
-
     private void addPluginsSection(Context context) {
         Row header = new Row();
         header.kind = KIND_HEADER;
@@ -449,14 +438,25 @@ public class AminPluginsActivity extends BaseFragment {
             card.plugin = plugin;
             rows.add(card);
         }
+        // v1.3.4: bundled plugins are pre-installed (see
+        // BundledPlugins.ensureInstalled) and live above as normal
+        // rich cards — no Install rows for them. A bundled row
+        // remains only for a bundled plugin that is NOT installed:
+        // either it was delivered once and the user deleted it
+        // ("Built-in · deleted — tap to reinstall"; auto-install
+        // never resurrects it) or delivery has not happened yet
+        // (plain "Install" fallback).
         for (BundledPlugins.Bundled bundled : BundledPlugins.all()) {
+            if (BundledPlugins.isInstalled(context, bundled)) {
+                continue;
+            }
             Row row = new Row();
             row.kind = KIND_ACTION;
             row.action = "bundled";
             row.bundled = bundled;
             row.title = bundled.name;
-            row.value = BundledPlugins.isInstalled(context, bundled)
-                    ? "Installed — tap to update" : "Install";
+            row.value = BundledPlugins.wasSeen(context, bundled.id)
+                    ? "Built-in · deleted — tap to reinstall" : "Install";
             rows.add(row);
             Row info = new Row();
             info.kind = KIND_INFO;
@@ -619,29 +619,8 @@ public class AminPluginsActivity extends BaseFragment {
             case "app_icon":
                 pickAppIcon();
                 break;
-            case "pin_set":
-                pinSetFlow(context);
-                break;
-            case "pin_unlock":
-                pinUnlockFlow(context);
-                break;
-            case "pin_lock":
-                HiddenChatsStore.setUnlocked(false);
-                bulletin(R.raw.contact_check, "Hidden chats locked");
-                rebuild();
-                break;
-            case "hide_chat":
-                presentFragment(new AminDialogPickerActivity("Hide a chat", false,
-                        (dialogId, name) -> {
-                            HiddenChatsStore.setHidden(context, dialogId, true);
-                            bulletin(R.raw.contact_check, "Chat hidden");
-                            rebuild();
-                        }));
-                break;
-            case "hidden_entry":
-                HiddenChatsStore.setHidden(context, row.hiddenId, false);
-                bulletin(R.raw.contact_check, "Chat unhidden");
-                rebuild();
+            case "manage_hidden_chats":
+                presentFragment(new AminHiddenChatsActivity());
                 break;
             case "swo_new":
                 presentFragment(new AminDialogPickerActivity("Send when online — pick a person", true,
@@ -757,59 +736,6 @@ public class AminPluginsActivity extends BaseFragment {
             }
         }
         return "Default";
-    }
-
-    private void pinSetFlow(Context context) {
-        EditTextBoldCursor first = textField(context, "New PIN (4+ digits)", false);
-        first.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
-        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
-        builder.setTitle("Set a PIN for Hidden Chats");
-        builder.setView(fieldContainer(context, first));
-        builder.setPositiveButton("Next", (dialog, which) -> {
-            String pin = first.getText().toString().trim();
-            if (pin.length() < 4) {
-                bulletin(R.raw.error, "PIN must be at least 4 digits");
-                return;
-            }
-            EditTextBoldCursor second = textField(context, "Repeat the PIN", false);
-            second.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
-            AlertDialog.Builder confirm = new AlertDialog.Builder(getParentActivity());
-            confirm.setTitle("Confirm PIN");
-            confirm.setView(fieldContainer(context, second));
-            confirm.setPositiveButton("Set PIN", (d2, w2) -> {
-                if (pin.equals(second.getText().toString().trim())) {
-                    HiddenChatsStore.setPin(context, pin);
-                    HiddenChatsStore.setUnlocked(true);
-                    bulletin(R.raw.contact_check, "PIN set — hidden chats unlocked");
-                } else {
-                    bulletin(R.raw.error, "PINs did not match");
-                }
-                rebuild();
-            });
-            confirm.setNegativeButton("Cancel", null);
-            showDialog(confirm.create());
-        });
-        builder.setNegativeButton("Cancel", null);
-        showDialog(builder.create());
-    }
-
-    private void pinUnlockFlow(Context context) {
-        EditTextBoldCursor field = textField(context, "PIN", false);
-        field.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
-        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
-        builder.setTitle("Unlock hidden chats");
-        builder.setView(fieldContainer(context, field));
-        builder.setPositiveButton("Unlock", (dialog, which) -> {
-            if (HiddenChatsStore.checkPin(context, field.getText().toString().trim())) {
-                HiddenChatsStore.setUnlocked(true);
-                bulletin(R.raw.contact_check, "Unlocked");
-            } else {
-                bulletin(R.raw.error, "Wrong PIN");
-            }
-            rebuild();
-        });
-        builder.setNegativeButton("Cancel", null);
-        showDialog(builder.create());
     }
 
     private void swoComposeText(Context context, long peer, String name) {
@@ -1454,6 +1380,8 @@ public class AminPluginsActivity extends BaseFragment {
                     AndroidUtilities.dp(12), AndroidUtilities.dp(6));
             TextView label = new TextView(context);
             label.setText("Enable Plugins Engine");
+            label.setSingleLine(true);
+            label.setEllipsize(TextUtils.TruncateAt.END);
             label.setTextSize(16);
             label.setTypeface(AndroidUtilities.getTypeface("fonts/rmedium.ttf"));
             label.setTextColor(0xFFFFFFFF);
@@ -1473,6 +1401,23 @@ public class AminPluginsActivity extends BaseFragment {
             bg.setCornerRadius(AndroidUtilities.dp(28));
             setBackground(bg);
             switchView.setChecked(on, false);
+        }
+
+        /** v1.3.4: the pill's height is pinned here, in the view
+         *  itself. v1.3.3 left it entirely to wrap-content
+         *  measurement of a horizontal LinearLayout inside
+         *  RecyclerListView (whose adapter also rewrites the
+         *  item's LayoutParams margins at bind time); on device
+         *  the item measured to the full offered slot height and
+         *  only the accent fill painted — a giant empty blue
+         *  block with the label and switch lost inside it
+         *  (Amin's field screenshot). An exact height spec (plus
+         *  an exact height in the adapter's LayoutParams) makes
+         *  that failure structurally impossible. */
+        @Override
+        protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+            super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(
+                    AndroidUtilities.dp(56), MeasureSpec.EXACTLY));
         }
     }
 
@@ -1515,6 +1460,21 @@ public class AminPluginsActivity extends BaseFragment {
             LinearLayout header = new LinearLayout(context);
             header.setOrientation(HORIZONTAL);
             header.setGravity(Gravity.CENTER_VERTICAL);
+            // v1.3.4: header and the actions row are CLICKABLE
+            // containers. RecyclerListView's item-click listener
+            // suppresses the item click only when a DIRECT child
+            // of the item view under the touch is clickable (its
+            // one-level check — see RecyclerListViewItemClick-
+            // Listener.onInterceptTouchEvent); the card's real
+            // buttons (switch hit area, settings/log/delete) are
+            // nested two levels deep, so without this the item
+            // click fired ALONGSIDE the button click — tapping
+            // delete opened the confirm AND navigated into the
+            // plugin page (Amin's field report). The containers
+            // have no listener of their own: deepest children get
+            // the touch first, and taps on the containers' empty
+            // areas are simply consumed.
+            header.setClickable(true);
             addView(header, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
@@ -1597,6 +1557,7 @@ public class AminPluginsActivity extends BaseFragment {
             LinearLayout actions = new LinearLayout(context);
             actions.setOrientation(HORIZONTAL);
             actions.setGravity(Gravity.CENTER_VERTICAL);
+            actions.setClickable(true); // see header note above
             addView(actions, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, AndroidUtilities.dp(44)));
 
@@ -1779,7 +1740,9 @@ public class AminPluginsActivity extends BaseFragment {
                     break;
             }
             view.setLayoutParams(new RecyclerView.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    viewType == KIND_ENGINE ? AndroidUtilities.dp(56)
+                            : ViewGroup.LayoutParams.WRAP_CONTENT));
             return new RecyclerListView.Holder(view);
         }
 

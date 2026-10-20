@@ -10,7 +10,7 @@ public class HiddenChatsModule implements ModModule {
     @Override public String id() { return "hidden_chats"; }
     @Override public String title() { return "Hidden Chats"; }
     @Override public String description() {
-        return "Hide chosen chats from the chat list behind a PIN. Unlock below to see and manage them; locking again (or restarting the app) hides them.";
+        return "Hide chosen chats from the chat list behind a PIN. Open “Manage hidden chats” below to unlock, add or remove chats; locking again (or restarting the app) hides them.";
     }
     @Override public boolean enabledByDefault() { return false; }
     @Override public int section() { return SECTION_PRIVACY; }

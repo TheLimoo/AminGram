@@ -65,7 +65,8 @@ import java.util.Set;
  *
  * Storage layout:
  * - prefs "amingram_jsplugins": "order" (JSONArray of ids),
- *   "meta_<id>" (JsPlugin JSON), logs under "log_<id>" (VaultStore).
+ *   "meta_<id>" (JsPlugin JSON), logs under "log_<id>" (VaultStore),
+ *   "bundled_seen" (BundledPlugins' pre-install delivery set).
  * - code: app-private files dir, jsplugins/<id>.js.
  * - per-plugin storage: prefs "amingram_jsstore_<id>".
  */
@@ -207,23 +208,33 @@ public final class JsPluginManager {
         cache.clear();
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         String raw = prefs.getString(KEY_ORDER, null);
-        if (raw == null) {
-            return;
-        }
-        try {
-            JSONArray order = new JSONArray(raw);
-            for (int i = 0; i < order.length(); i++) {
-                String id = order.optString(i);
-                String meta = prefs.getString(KEY_META_PREFIX + id, null);
-                if (meta == null) {
-                    continue;
+        if (raw != null) {
+            try {
+                JSONArray order = new JSONArray(raw);
+                for (int i = 0; i < order.length(); i++) {
+                    String id = order.optString(i);
+                    String meta = prefs.getString(KEY_META_PREFIX + id, null);
+                    if (meta == null) {
+                        continue;
+                    }
+                    JsPlugin plugin = JsPlugin.fromJson(new JSONObject(meta));
+                    if (plugin != null) {
+                        cache.add(plugin);
+                    }
                 }
-                JsPlugin plugin = JsPlugin.fromJson(new JSONObject(meta));
-                if (plugin != null) {
-                    cache.add(plugin);
-                }
+            } catch (Exception ignored) {
             }
-        } catch (Exception ignored) {
+        }
+        // v1.3.4: bundled plugins are pre-installed. loadCache is
+        // the single funnel every plugin-system entry point passes
+        // through exactly once per process, so this is the lightest
+        // reliable auto-install point. cacheLoaded is already true
+        // here, so the install path's own loadCache calls no-op and
+        // cannot recurse; BundledPlugins guards itself too and only
+        // ever delivers each bundled id once (deletions stick).
+        try {
+            BundledPlugins.ensureInstalled(context);
+        } catch (Throwable ignored) {
         }
     }
 

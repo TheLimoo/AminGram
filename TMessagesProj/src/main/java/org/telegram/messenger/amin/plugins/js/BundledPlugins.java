@@ -1,18 +1,33 @@
 package org.telegram.messenger.amin.plugins.js;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.content.res.AssetManager;
+
+import org.json.JSONArray;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
- * Plugins bundled with AminGram, installable in one tap from the hub.
- * They are ordinary plugin files (assets/amingram_plugins/*.js) and go
- * through the exact same manifest validation + install path as
- * user-added plugins — no special casing.
+ * Plugins bundled with AminGram. They are ordinary plugin files
+ * (assets/amingram_plugins/*.js) and go through the exact same
+ * manifest validation + install path as user-added plugins — no
+ * special casing.
+ *
+ * v1.3.4: bundled plugins come PRE-INSTALLED (Amin's call — no
+ * Install buttons). The first time the plugin system initializes
+ * in a process, {@link #ensureInstalled} installs every bundled
+ * plugin that has never been auto-installed before. Delivery is
+ * tracked per id in the "bundled_seen" set (in the JsPluginManager
+ * prefs): once a bundled plugin has been delivered — or was
+ * already installed by hand — it is never auto-installed again,
+ * so a bundled plugin the user DELETES stays deleted. The hub
+ * offers those back as "Built-in · deleted — tap to reinstall".
  *
  * - shout:      the command example from PLUGIN-MASTER-PROMPT.md.
  * - vip-alert:  the observer+settings example from the master prompt.
@@ -67,6 +82,79 @@ public final class BundledPlugins {
 
     public static boolean isInstalled(Context context, Bundled bundled) {
         return JsPluginManager.get(context, bundled.id) != null;
+    }
+
+    // ------------------------------------------------------------------
+    // Pre-install (v1.3.4)
+    // ------------------------------------------------------------------
+
+    private static final String KEY_SEEN = "bundled_seen";
+    private static boolean ensured;
+
+    /** True once this bundled id has been delivered by auto-install
+     *  (or found already installed). Seen ids are never auto-
+     *  installed again — a user deletion is permanent. */
+    public static boolean wasSeen(Context context, String id) {
+        return seenIds(context).contains(id);
+    }
+
+    private static Set<String> seenIds(Context context) {
+        Set<String> out = new HashSet<>();
+        try {
+            String raw = prefs(context).getString(KEY_SEEN, null);
+            if (raw != null) {
+                JSONArray arr = new JSONArray(raw);
+                for (int i = 0; i < arr.length(); i++) {
+                    out.add(arr.optString(i));
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return out;
+    }
+
+    /** Installs every bundled plugin that has never been delivered
+     *  before, through the normal install path. Runs at most once
+     *  per process (called from JsPluginManager.loadCache) and is
+     *  fully Throwable-isolated: auto-install must never break the
+     *  plugin system's first touch. An id is marked seen only when
+     *  the plugin actually ends up installed, so a failed delivery
+     *  is retried on the next process start and the hub keeps its
+     *  plain "Install" fallback row meanwhile. */
+    public static void ensureInstalled(Context context) {
+        if (ensured) {
+            return;
+        }
+        ensured = true;
+        try {
+            Set<String> seen = seenIds(context);
+            boolean changed = false;
+            for (Bundled bundled : LIST) {
+                if (seen.contains(bundled.id)) {
+                    continue;
+                }
+                boolean installed = JsPluginManager.get(context, bundled.id) != null;
+                if (!installed) {
+                    installed = install(context, bundled) == null;
+                }
+                if (installed) {
+                    seen.add(bundled.id);
+                    changed = true;
+                }
+            }
+            if (changed) {
+                JSONArray arr = new JSONArray();
+                for (String id : seen) {
+                    arr.put(id);
+                }
+                prefs(context).edit().putString(KEY_SEEN, arr.toString()).apply();
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static SharedPreferences prefs(Context context) {
+        return context.getSharedPreferences(JsPluginManager.PREFS, Context.MODE_PRIVATE);
     }
 
     /** Installs (or reinstalls/updates) a bundled plugin through the
