@@ -95,6 +95,8 @@ public final class JsPluginManager {
         public boolean visibleToScripts(String fullClassName) {
             return fullClassName.equals(AminBridge.class.getName())
                     || fullClassName.equals(AminBridge.Storage.class.getName())
+                    || fullClassName.equals(AminBridge.WithGoogle.class.getName())
+                    || fullClassName.equals(AminBridge.GoogleAccess.class.getName())
                     || fullClassName.equals("java.lang.Object")
                     || fullClassName.equals("java.lang.String")
                     || fullClassName.equals("java.lang.Boolean")
@@ -289,7 +291,7 @@ public final class JsPluginManager {
             }
             // Probe-evaluate in a throwaway scope to read SETTINGS and
             // detect which hooks exist. onLoad is NOT called here.
-            ScriptableObject probe = newScope(cx, manifest.id);
+            ScriptableObject probe = newScope(cx, manifest.id, manifest.capabilities);
             try {
                 cx.evaluateString(probe, source, manifest.id + ".js", 1, null);
             } catch (Throwable t) {
@@ -477,7 +479,8 @@ public final class JsPluginManager {
         return cx;
     }
 
-    private static ScriptableObject newScope(org.mozilla.javascript.Context cx, String pluginId) {
+    private static ScriptableObject newScope(org.mozilla.javascript.Context cx, String pluginId,
+                                             java.util.Collection<String> capabilities) {
         ScriptableObject scope = cx.initStandardObjects();
         // Defense in depth on top of the ClassShutter: the standard
         // scope has no Java access, but strip the names if present.
@@ -485,8 +488,52 @@ public final class JsPluginManager {
         for (String name : banned) {
             ScriptableObject.deleteProperty(scope, name);
         }
-        scope.put("amin", scope, org.mozilla.javascript.Context.javaToJS(new AminBridge(pluginId), scope));
+        // The `google` capability is structural: only plugins whose
+        // manifest declares it get the WithGoogle bridge variant —
+        // on the plain bridge, amin.google does not exist at all.
+        AminBridge bridge = capabilities != null && capabilities.contains("google")
+                ? new AminBridge.WithGoogle(pluginId)
+                : new AminBridge(pluginId);
+        scope.put("amin", scope, org.mozilla.javascript.Context.javaToJS(bridge, scope));
         return scope;
+    }
+
+    /** Delivers an async bridge result to a plugin callback
+     *  function (v1.3.5, built for amin.google's token / sign-in
+     *  callbacks). Runs on the plugin thread with a fresh Rhino
+     *  context — the same isolation pattern as every dispatch
+     *  entry (v1.3.2 audit): enterContext INSIDE the guard,
+     *  Context.exit() only when a context was entered. The
+     *  function's own parent scope is the invocation scope, so a
+     *  callback closes over the plugin scope it was defined in.
+     *  A deleted plugin's pending callbacks are dropped. */
+    public static void invokePluginCallback(final String pluginId, final Object fnObject,
+                                            final Object value) {
+        if (!(fnObject instanceof Function)) {
+            return;
+        }
+        final Function fn = (Function) fnObject;
+        postToPluginThread(() -> {
+            Context context = ApplicationLoader.applicationContext;
+            if (context == null || get(context, pluginId) == null) {
+                return;
+            }
+            org.mozilla.javascript.Context cx = null;
+            try {
+                cx = enterContext();
+                Scriptable scope = fn.getParentScope();
+                if (scope == null) {
+                    return;
+                }
+                fn.call(cx, scope, scope, new Object[]{value});
+            } catch (Throwable t) {
+                appendLog(pluginId, "[error] async callback: " + t);
+            } finally {
+                if (cx != null) {
+                    org.mozilla.javascript.Context.exit();
+                }
+            }
+        });
     }
 
     private static void readSettings(ScriptableObject scope, JsPlugin plugin) {
@@ -580,7 +627,7 @@ public final class JsPluginManager {
         runtime = new Runtime();
         runtime.plugin = plugin;
         try {
-            runtime.scope = newScope(cx, plugin.id);
+            runtime.scope = newScope(cx, plugin.id, plugin.capabilities);
             cx.evaluateString(runtime.scope, source, plugin.id + ".js", 1, null);
         } catch (Throwable t) {
             appendLog(plugin.id, "[error] load failed: " + t);

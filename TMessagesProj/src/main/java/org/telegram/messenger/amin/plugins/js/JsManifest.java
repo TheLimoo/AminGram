@@ -19,8 +19,10 @@ import java.util.regex.Pattern;
  *
  * All six fields are required. @id must be lowercase letters, digits
  * and '-'. @capabilities entries must come from the known set
- * (observe, commands, send, settings, http, menu) — an unknown word
- * makes the plugin invalid, per the master prompt.
+ * (observe, commands, send, settings, http, menu, google) — an
+ * unknown word makes the plugin invalid, per the master prompt.
+ * `google` (v1.3.5) is the amin.google surface: the plugin's
+ * bridge carries it only when this capability is declared.
  */
 public final class JsManifest {
 
@@ -33,7 +35,7 @@ public final class JsManifest {
 
     private static final Pattern ID_PATTERN = Pattern.compile("^[a-z0-9][a-z0-9-]*$");
     private static final String[] KNOWN_CAPABILITIES = {
-            "observe", "commands", "send", "settings", "http", "menu"
+            "observe", "commands", "send", "settings", "http", "menu", "google"
     };
 
     private JsManifest() {
