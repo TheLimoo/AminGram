@@ -42,6 +42,7 @@ jobs:
           git apply ../patches/0017-hide-sponsored.patch
           git apply ../patches/0018-message-details.patch
           git apply ../patches/0019-screenshot-unlock.patch
+          git apply ../patches/0020-context-menu-items.patch
 
       - name: Register fork package in google-services.json
         run: |
