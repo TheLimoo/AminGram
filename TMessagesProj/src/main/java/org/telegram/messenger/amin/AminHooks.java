@@ -20,6 +20,7 @@ import org.telegram.messenger.amin.core.HiddenChatsStore;
 import org.telegram.messenger.amin.core.MessagePipeline;
 import org.telegram.messenger.amin.core.SendWhenOnlineStore;
 import org.telegram.messenger.amin.plugins.PluginRegistry;
+import org.telegram.messenger.amin.plugins.js.JsPlugin;
 import org.telegram.messenger.amin.plugins.js.JsPluginManager;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.ui.ActionBar.AlertDialog;
@@ -465,6 +466,88 @@ public final class AminHooks {
     public static void onPluginMenuAction(String pluginId, long chatId) {
         try {
             JsPluginManager.dispatchMenuAction(pluginId, chatId);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // JS plugin message context-menu items (patch 0020,
+    // ChatActivity.fillMessageMenu / processSelectedOption; design
+    // §1.8b). OPTION_PLUGIN_CONTEXT_BASE..+3 are provably unused by
+    // ChatActivity's OPTION_* block (upstream uses 0-35 and 100-117
+    // in 13.0.2; OPTION_MESSAGE_DETAILS above uses 200).
+    // ------------------------------------------------------------------
+
+    public static final int OPTION_PLUGIN_CONTEXT_BASE = 300;
+    public static final int MAX_PLUGIN_CONTEXT_ITEMS = 4;
+
+    /** One plugin row in the message long-press menu: the plugin
+     *  id to dispatch to and the label to show. */
+    public static final class ContextItem {
+        public final String pluginId;
+        public final String label;
+
+        public ContextItem(String pluginId, String label) {
+            this.pluginId = pluginId;
+            this.label = label;
+        }
+    }
+
+    /** Enabled plugins that offer a message context-menu action,
+     *  in hub order (JsPluginManager.plugins() order), capped at
+     *  MAX_PLUGIN_CONTEXT_ITEMS. An item appears only when the
+     *  plugin's manifest context-menu label is non-empty AND it
+     *  defines the context hook (hasContext). Pure meta read —
+     *  exactly the attachMenuPlugins() pattern: no runtime
+     *  creation, no Rhino, no I/O beyond the manager's cached
+     *  meta — safe on the UI thread while the menu builds.
+     *  Selection is manifest-only in v2.2, so chatId / message do
+     *  not filter the list; they are part of the signature for
+     *  parity with the dispatch side and future per-message
+     *  gating. */
+    public static List<ContextItem> pluginContextItems(long chatId, TLRPC.Message message) {
+        try {
+            Context context = ApplicationLoader.applicationContext;
+            if (context == null) {
+                return new ArrayList<>();
+            }
+            List<ContextItem> out = new ArrayList<>();
+            if (!JsPluginManager.isEngineEnabled(context)) {
+                return out;
+            }
+            for (JsPlugin plugin : JsPluginManager.plugins(context)) {
+                if (out.size() >= MAX_PLUGIN_CONTEXT_ITEMS) {
+                    break;
+                }
+                if (plugin == null || !plugin.enabled || !plugin.hasContext) {
+                    continue;
+                }
+                String label = plugin.contextMenu;
+                if (label == null || label.trim().isEmpty()) {
+                    continue;
+                }
+                out.add(new ContextItem(plugin.id, label));
+            }
+            return out;
+        } catch (Throwable ignored) {
+            return new ArrayList<>();
+        }
+    }
+
+    /** A plugin context-menu row was tapped for the selected
+     *  message. The account follows the manager's dispatch idiom
+     *  for entries that are not handed one (dispatchMenuAction /
+     *  dispatchOutgoingCommand): UserConfig.selectedAccount. The
+     *  message itself carries its dialog id, so chatId is not
+     *  forwarded — it is kept in the signature for parity with
+     *  onPluginMenuAction. */
+    public static void onPluginContextAction(String pluginId, long chatId, TLRPC.Message message) {
+        try {
+            if (pluginId == null || message == null) {
+                return;
+            }
+            int account = UserConfig.selectedAccount;
+            JsPluginManager.dispatchContextAction(pluginId, account, message);
         } catch (Throwable ignored) {
         }
     }

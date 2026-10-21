@@ -251,7 +251,7 @@ public final class BackupManager {
                     if (meta == null || code.isEmpty()) {
                         continue;
                     }
-                    String error = JsPluginManager.install(context, code);
+                    String error = JsPluginManager.installWithSource(context, code, "pack");
                     if (error != null) {
                         continue; // skip broken entries, import the rest
                     }
@@ -288,6 +288,94 @@ public final class BackupManager {
         // calls us refreshes itself.
         PluginRegistry.modules();
         return null;
+    }
+
+    // ------------------------------------------------------------------
+    // Plugin packs (§3.4): a plugin-only export format —
+    // {packVersion, plugins: [{meta, code, storage}]} — the same
+    // per-plugin shape the full backup uses, generalised. Export
+    // covers a chosen subset; import is driven by the hub through
+    // the permission review screen, one plugin at a time.
+    // ------------------------------------------------------------------
+
+    public static String exportPackJson(Context context, List<String> pluginIds) {
+        JSONObject root = new JSONObject();
+        try {
+            root.put("packVersion", 1);
+            JSONArray plugins = new JSONArray();
+            for (JsPlugin plugin : JsPluginManager.plugins(context)) {
+                if (pluginIds != null && !pluginIds.contains(plugin.id)) {
+                    continue;
+                }
+                JSONObject o = new JSONObject();
+                o.put("meta", plugin.toJson());
+                String code = JsPluginManager.readCode(context, plugin.id);
+                o.put("code", code == null ? "" : code);
+                JSONObject storage = new JSONObject();
+                Map<String, ?> storeAll = context.getSharedPreferences(
+                        JsPluginManager.storagePrefsName(plugin.id),
+                        Context.MODE_PRIVATE).getAll();
+                for (Map.Entry<String, ?> entry : storeAll.entrySet()) {
+                    storage.put(entry.getKey(), String.valueOf(entry.getValue()));
+                }
+                o.put("storage", storage);
+                plugins.put(o);
+            }
+            root.put("plugins", plugins);
+        } catch (Exception ignored) {
+        }
+        return root.toString();
+    }
+
+    /** Parses a pack file into its plugin entries (each a
+     *  JSONObject with meta/code/storage), or null when the text
+     *  is not a pack. A full AminGram backup is also accepted —
+     *  its jsplugins array has the same shape. */
+    public static List<JSONObject> parsePack(String json) {
+        try {
+            JSONObject root = new JSONObject(json);
+            JSONArray entries = root.optJSONArray("plugins");
+            if (entries == null) {
+                entries = root.optJSONArray("jsplugins");
+            }
+            if (entries == null) {
+                return null;
+            }
+            List<JSONObject> out = new ArrayList<>();
+            for (int i = 0; i < entries.length(); i++) {
+                JSONObject o = entries.optJSONObject(i);
+                if (o != null && o.optJSONObject("meta") != null
+                        && !o.optString("code", "").isEmpty()) {
+                    out.add(o);
+                }
+            }
+            return out;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Restores one plugin's amin.storage values from a pack or
+     *  backup entry (clear-then-write, like importJson). */
+    public static void restorePluginStorage(Context context, String pluginId, JSONObject storage) {
+        if (storage == null) {
+            return;
+        }
+        try {
+            SharedPreferences.Editor edit = context.getSharedPreferences(
+                    JsPluginManager.storagePrefsName(pluginId),
+                    Context.MODE_PRIVATE).edit();
+            edit.clear();
+            JSONArray names = storage.names();
+            if (names != null) {
+                for (int j = 0; j < names.length(); j++) {
+                    String key = names.optString(j);
+                    edit.putString(key, storage.optString(key, ""));
+                }
+            }
+            edit.apply();
+        } catch (Exception ignored) {
+        }
     }
 
     private static List<String> toStringList(JSONArray arr) {

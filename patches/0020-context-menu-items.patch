@@ -1,0 +1,44 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -798,6 +798,7 @@
+     private MessageObject selectedObjectToEditCaption;
+     private MessageObject selectedObject;
+     private MessageObject.GroupedMessages selectedObjectGroup;
++    private List<org.telegram.messenger.amin.AminHooks.ContextItem> aminContextItems;
+     private boolean forbidForwardingWithDismiss;
+     public MessagePreviewParams messagePreviewParams;
+     public MessageSuggestionParams messageSuggestionParams;
+@@ -33446,6 +33447,16 @@
+                 org.telegram.messenger.amin.AminHooks.showMessageDetails(ChatActivity.this, selectedObject);
+                 break;
+             }
++            case org.telegram.messenger.amin.AminHooks.OPTION_PLUGIN_CONTEXT_BASE:
++            case org.telegram.messenger.amin.AminHooks.OPTION_PLUGIN_CONTEXT_BASE + 1:
++            case org.telegram.messenger.amin.AminHooks.OPTION_PLUGIN_CONTEXT_BASE + 2:
++            case org.telegram.messenger.amin.AminHooks.OPTION_PLUGIN_CONTEXT_BASE + 3: {
++                int aminIndex = option - org.telegram.messenger.amin.AminHooks.OPTION_PLUGIN_CONTEXT_BASE;
++                if (aminContextItems != null && aminIndex >= 0 && aminIndex < aminContextItems.size()) {
++                    org.telegram.messenger.amin.AminHooks.onPluginContextAction(aminContextItems.get(aminIndex).pluginId, getDialogId(), selectedObject.messageOwner);
++                }
++                break;
++            }
+             case OPTION_RETRY: {
+                 final MessageObject object = selectedObject;
+                 final MessageObject.GroupedMessages group = selectedObjectGroup;
+@@ -46547,6 +46558,15 @@
+         }
+ 
+         org.telegram.messenger.amin.AminHooks.addMessageDetailsOption(icons, items, options);
++
++        aminContextItems = org.telegram.messenger.amin.AminHooks.pluginContextItems(getDialogId(), message != null ? message.messageOwner : null);
++        if (aminContextItems != null) {
++            for (int aminI = 0; aminI < aminContextItems.size(); aminI++) {
++                items.add(aminContextItems.get(aminI).label);
++                options.add(org.telegram.messenger.amin.AminHooks.OPTION_PLUGIN_CONTEXT_BASE + aminI);
++                icons.add(R.drawable.msg_info);
++            }
++        }
+     }
+ 
+     private boolean showWelcomeMessageRevertOption(MessageObject messageObject) {

@@ -41,8 +41,8 @@ import java.util.List;
  * settings page generated from the plugin's SETTINGS schema v2
  * (bool / text / number / slider / select / header rows, help
  * subtitles, dependsOn visibility), its log (with an
- * All/Errors/Warnings filter), and delete. Reached from the
- * "Your Plugins" section of the hub.
+ * All/Errors/Warnings filter), in-app code editing (v2.2), and
+ * delete. Reached from the "Your Plugins" section of the hub.
  *
  * Every settings write flows through {@link #writeSetting}: the raw
  * string lands in the same per-plugin storage amin.storage reads
@@ -66,6 +66,31 @@ public class AminJsPluginActivity extends BaseFragment {
     private static final int TYPE_STATUS_ERRORS = 11;
     private static final int TYPE_STATUS_SUSPENDED = 12;
     private static final int TYPE_RESUME = 13;
+    // Platform Phase B (v2.2)
+    private static final int TYPE_SETTING_COLOR = 14;
+    private static final int TYPE_SETTING_FILE = 15;
+    private static final int TYPE_PAGE_INFO = 16;
+    private static final int TYPE_PAGE_ACTION = 17;
+    private static final int TYPE_DEV_STATE = 18;
+    private static final int TYPE_DEV_LOGTAIL = 19;
+    private static final int TYPE_DEV_ACTION = 20;
+
+    private static final int REQUEST_SETTING_FILE = 8802;
+
+    private int reloadRow = -1;
+    private int devStorageRow = -1;
+    private int devEvalRow = -1;
+    private JsPlugin.SettingDef pendingFileSetting;
+    private boolean pageResumed;
+    private final JsPluginManager.LogListener logTailListener = updatedPluginId -> {
+        // Live log tail (§3.5): the manager notifies on the UI
+        // thread; refresh only while this page is in front and
+        // only for this plugin. No polling anywhere.
+        if (pageResumed && plugin != null && plugin.id.equals(updatedPluginId)
+                && AminPluginsActivity.isDeveloperMode()) {
+            refreshPage(getContext());
+        }
+    };
 
     private final String pluginId;
     private JsPlugin plugin;
@@ -77,6 +102,7 @@ public class AminJsPluginActivity extends BaseFragment {
     private final List<Object> rowData = new ArrayList<>();
     private int toggleRow = -1;
     private int logRow = -1;
+    private int editRow = -1;
     private int deleteRow = -1;
     private int errorsRow = -1;
     private int suspendedRow = -1;
@@ -119,15 +145,45 @@ public class AminJsPluginActivity extends BaseFragment {
         return layout;
     }
 
+    /** Re-read the plugin on return (v2.2): the code editor can
+     *  replace the plugin (new version, new settings schema) while
+     *  this page sits underneath it, and the About row / settings
+     *  rows must reflect the new install, not the stale object. */
+    @Override
+    public void onResume() {
+        super.onResume();
+        pageResumed = true;
+        JsPluginManager.addLogListener(logTailListener);
+        Context context = getContext();
+        if (context != null && pluginId != null) {
+            plugin = JsPluginManager.get(context, pluginId);
+            if (plugin != null) {
+                actionBar.setTitle(plugin.name);
+            }
+            refreshPage(context);
+        }
+    }
+
+    @Override
+    public void onPause() {
+        super.onPause();
+        pageResumed = false;
+        JsPluginManager.removeLogListener(logTailListener);
+    }
+
     private void buildRows(Context context) {
         rowTypes.clear();
         rowData.clear();
         toggleRow = -1;
         logRow = -1;
+        editRow = -1;
         deleteRow = -1;
         errorsRow = -1;
         suspendedRow = -1;
         resumeRow = -1;
+        reloadRow = -1;
+        devStorageRow = -1;
+        devEvalRow = -1;
         if (plugin == null) {
             return;
         }
@@ -137,6 +193,14 @@ public class AminJsPluginActivity extends BaseFragment {
         about.append("\n\nVersion ").append(plugin.version)
                 .append(" · by ").append(plugin.author);
         about.append("\nCapabilities: ").append(plugin.capabilitiesText());
+        // Install provenance (Phase B, §2.7): where this copy came
+        // from + its short code fingerprint.
+        if (plugin.installSource != null && !plugin.installSource.isEmpty()) {
+            about.append("\nSource: ").append(plugin.installSource);
+        }
+        if (plugin.fingerprint != null && !plugin.fingerprint.isEmpty()) {
+            about.append("\nFingerprint: ").append(plugin.fingerprint);
+        }
         StringBuilder hooks = new StringBuilder();
         if (plugin.hasMessage) {
             hooks.append("onMessage ");
@@ -146,6 +210,15 @@ public class AminJsPluginActivity extends BaseFragment {
         }
         if (plugin.hasMenu) {
             hooks.append("onMenuAction ");
+        }
+        if (plugin.hasContext) {
+            hooks.append("onContextAction ");
+        }
+        if (plugin.hasEvent) {
+            hooks.append("onEvent ");
+        }
+        if (plugin.hasPluginAction) {
+            hooks.append("onPluginAction ");
         }
         if (hooks.length() > 0) {
             about.append("\nHooks: ").append(hooks.toString().trim());
@@ -189,6 +262,10 @@ public class AminJsPluginActivity extends BaseFragment {
                     type = TYPE_SETTING_SLIDER;
                 } else if ("select".equals(def.type)) {
                     type = TYPE_SETTING_SELECT;
+                } else if ("color".equals(def.type)) {
+                    type = TYPE_SETTING_COLOR;
+                } else if ("file".equals(def.type)) {
+                    type = TYPE_SETTING_FILE;
                 } else {
                     type = TYPE_SETTING_TEXT;
                 }
@@ -198,9 +275,49 @@ public class AminJsPluginActivity extends BaseFragment {
                 }
             }
         }
+        // PLUGIN_PAGE (§1.8a): the plugin's own declared rows —
+        // info text and tappable actions dispatching
+        // onPluginAction(actionId) on the plugin thread.
+        if (!plugin.pageRows.isEmpty()) {
+            addRow(TYPE_HEADER, "Plugin page");
+            for (JsPlugin.PageRow row : plugin.pageRows) {
+                if ("action".equals(row.type)) {
+                    addRow(TYPE_PAGE_ACTION, row);
+                } else {
+                    addRow(TYPE_PAGE_INFO, row.text);
+                }
+            }
+        }
         addRow(TYPE_HEADER, "Plugin");
         logRow = addRow(TYPE_ACTION, "View log");
+        editRow = addRow(TYPE_ACTION, "Edit code");
+        // Hub Reload (§2.2) lives in the Plugin section: it is a
+        // general action, not a dev-only one.
+        reloadRow = addRow(TYPE_ACTION, "Reload plugin");
         deleteRow = addRow(TYPE_ACTION, "Delete plugin");
+
+        // Developer section (§3.5): only while the hub's
+        // Developer-mode toggle is on for this session.
+        if (AminPluginsActivity.isDeveloperMode()) {
+            addRow(TYPE_HEADER, "Developer");
+            String state = JsPluginManager.runtimeState(plugin.id);
+            int errors = JsPluginManager.errorsToday(plugin.id);
+            addRow(TYPE_DEV_STATE, "Runtime: " + state + " · "
+                    + errors + (errors == 1 ? " error" : " errors") + " today");
+            List<String> log = JsPluginManager.log(plugin.id);
+            StringBuilder tail = new StringBuilder();
+            int from = Math.max(0, log.size() - 8);
+            for (int i = from; i < log.size(); i++) {
+                if (tail.length() > 0) {
+                    tail.append("\n");
+                }
+                tail.append(log.get(i));
+            }
+            addRow(TYPE_DEV_LOGTAIL,
+                    tail.length() == 0 ? "(log is empty)" : tail.toString());
+            devStorageRow = addRow(TYPE_DEV_ACTION, "Storage inspector");
+            devEvalRow = addRow(TYPE_DEV_ACTION, "Eval console");
+        }
     }
 
     private int addRow(int type, Object data) {
@@ -276,9 +393,29 @@ public class AminJsPluginActivity extends BaseFragment {
             editNumberSetting(context, (JsPlugin.SettingDef) rowData.get(position));
         } else if (type == TYPE_SETTING_SELECT) {
             pickSelectSetting(context, (JsPlugin.SettingDef) rowData.get(position));
+        } else if (type == TYPE_SETTING_COLOR) {
+            pickColorSetting(context, (JsPlugin.SettingDef) rowData.get(position));
+        } else if (type == TYPE_SETTING_FILE) {
+            pickFileSetting(context, (JsPlugin.SettingDef) rowData.get(position));
+        } else if (type == TYPE_PAGE_ACTION) {
+            JsPlugin.PageRow row = (JsPlugin.PageRow) rowData.get(position);
+            JsPluginManager.dispatchPluginAction(plugin.id, row.id);
+            BulletinFactory.of(AminJsPluginActivity.this)
+                    .createSimpleBulletin(R.raw.contact_check, "Sent to plugin").show();
+        } else if (position == reloadRow) {
+            JsPluginManager.reloadPlugin(context, plugin.id);
+            BulletinFactory.of(AminJsPluginActivity.this)
+                    .createSimpleBulletin(R.raw.contact_check, "Plugin reloaded").show();
+            refreshPage(context);
+        } else if (position == devStorageRow) {
+            presentFragment(new PluginStorageFragment(plugin.id, plugin.name));
+        } else if (position == devEvalRow) {
+            showEvalDialog(context);
         } else if (position == logRow) {
             presentFragment(new PluginLogFragment(plugin.id, plugin.name,
                     PluginLogFragment.FILTER_ALL));
+        } else if (position == editRow) {
+            presentFragment(new AminPluginEditorActivity(plugin.id, plugin.name));
         } else if (position == deleteRow) {
             AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
             builder.setTitle("Delete " + plugin.name + "?");
@@ -509,6 +646,180 @@ public class AminJsPluginActivity extends BaseFragment {
         showDialog(builder.create());
     }
 
+    /** Color setting (§1.5): Telegram's in-tree color picker
+     *  (org.telegram.ui.Components.ColorPicker) in a dialog; the
+     *  stored value is normalised "#RRGGBB" (SettingsSchema). */
+    private void pickColorSetting(final Context context, final JsPlugin.SettingDef def) {
+        if (getParentActivity() == null) {
+            return;
+        }
+        String current = JsPluginManager.storageGetRaw(context, plugin.id, def.key);
+        if (current == null || current.isEmpty()) {
+            current = def.def == null ? "#000000" : def.def;
+        }
+        int initial = 0xFF000000;
+        try {
+            initial = android.graphics.Color.parseColor(
+                    org.telegram.messenger.amin.plugins.js.SettingsSchema.normalizeColor(current));
+        } catch (Throwable ignored) {
+        }
+        final int[] chosen = new int[]{initial};
+        org.telegram.ui.Components.ColorPicker picker =
+                new org.telegram.ui.Components.ColorPicker(context, false,
+                        (color, num, applyNow) -> chosen[0] = color);
+        picker.setColor(initial);
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle(def.title);
+        builder.setView(picker);
+        builder.setPositiveButton("Apply", (dialog, which) -> {
+            String hex = String.format(java.util.Locale.US, "#%06X", chosen[0] & 0xFFFFFF);
+            writeSetting(context, def, hex);
+        });
+        builder.setNegativeButton("Cancel", null);
+        showDialog(builder.create());
+    }
+
+    /** File setting (§1.5): the system document picker; the
+     *  chosen file is durable-copied into
+     *  filesDir/amingram/plugin-settings/<id>/ (the original
+     *  could be deleted or lose access) and the stored value is
+     *  the copy's absolute path. */
+    private void pickFileSetting(Context context, JsPlugin.SettingDef def) {
+        if (getParentActivity() == null) {
+            return;
+        }
+        pendingFileSetting = def;
+        android.content.Intent intent = new android.content.Intent(
+                android.content.Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(android.content.Intent.CATEGORY_OPENABLE);
+        intent.setType(def.accept != null && !def.accept.isEmpty() ? def.accept : "*/*");
+        intent.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                | android.content.Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        try {
+            startActivityForResult(intent, REQUEST_SETTING_FILE);
+        } catch (Throwable t) {
+            BulletinFactory.of(AminJsPluginActivity.this)
+                    .createSimpleBulletin(R.raw.error, "No file picker available").show();
+        }
+    }
+
+    @Override
+    public void onActivityResultFragment(int requestCode, int resultCode, android.content.Intent data) {
+        super.onActivityResultFragment(requestCode, resultCode, data);
+        if (requestCode != REQUEST_SETTING_FILE || pendingFileSetting == null) {
+            return;
+        }
+        final JsPlugin.SettingDef def = pendingFileSetting;
+        pendingFileSetting = null;
+        if (resultCode != android.app.Activity.RESULT_OK || data == null || data.getData() == null) {
+            return;
+        }
+        final android.net.Uri uri = data.getData();
+        final Context context = getContext();
+        if (context == null) {
+            return;
+        }
+        try {
+            context.getContentResolver().takePersistableUriPermission(uri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } catch (Throwable ignored) {
+        }
+        final String pluginIdCopy = plugin.id;
+        new Thread(() -> {
+            String path = null;
+            try {
+                String name = "setting-file";
+                android.database.Cursor cursor = context.getContentResolver()
+                        .query(uri, null, null, null, null);
+                if (cursor != null) {
+                    try {
+                        int nameIndex = cursor.getColumnIndex(
+                                android.provider.OpenableColumns.DISPLAY_NAME);
+                        if (nameIndex >= 0 && cursor.moveToFirst()) {
+                            String display = cursor.getString(nameIndex);
+                            if (display != null) {
+                                name = display.replaceAll("[\\\\/]", "_").trim();
+                                if (name.isEmpty() || name.equals("..") || name.equals(".")) {
+                                    name = "setting-file";
+                                }
+                            }
+                        }
+                    } finally {
+                        cursor.close();
+                    }
+                }
+                java.io.File dir = JsPluginManager.pluginSettingsDir(context, pluginIdCopy);
+                java.io.File dest = new java.io.File(dir, name);
+                try (java.io.InputStream in = context.getContentResolver().openInputStream(uri);
+                     java.io.OutputStream out = new java.io.FileOutputStream(dest)) {
+                    if (in == null) {
+                        throw new java.io.IOException("cannot open picked file");
+                    }
+                    byte[] buffer = new byte[64 * 1024];
+                    int read;
+                    while ((read = in.read(buffer)) != -1) {
+                        out.write(buffer, 0, read);
+                    }
+                }
+                path = dest.getAbsolutePath();
+            } catch (Throwable t) {
+                JsPluginManager.appendLog(pluginIdCopy,
+                        "[error] file setting copy failed: " + t);
+            }
+            final String stored = path;
+            AndroidUtilities.runOnUIThread(() -> {
+                if (stored != null) {
+                    writeSetting(context, def, stored);
+                } else {
+                    BulletinFactory.of(AminJsPluginActivity.this)
+                            .createSimpleBulletin(R.raw.error, "Could not copy the file").show();
+                }
+            });
+        }, "AminSettingFileCopy").start();
+    }
+
+    /** Eval console (§3.5): a plain dialog — one multi-line input
+     *  and the result. Reachable only from the Developer section
+     *  (hub Developer-mode toggle, off by default, per-session);
+     *  the manager logs every evaluation to the plugin's log and
+     *  snippets are never stored. */
+    private void showEvalDialog(final Context context) {
+        if (getParentActivity() == null) {
+            return;
+        }
+        final EditTextBoldCursor input = new EditTextBoldCursor(context);
+        input.setHint("JavaScript — amin and PLUGIN_API are in scope");
+        input.setInputType(InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        input.setMinLines(3);
+        input.setGravity(Gravity.TOP);
+        input.setPadding(AndroidUtilities.dp(16), AndroidUtilities.dp(8),
+                AndroidUtilities.dp(16), AndroidUtilities.dp(8));
+        input.setTextColor(Theme.getColor(Theme.key_dialogTextBlack));
+        input.setHintTextColor(Theme.getColor(Theme.key_dialogTextGray2));
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle("Eval — " + plugin.name);
+        builder.setView(input);
+        builder.setPositiveButton("Run", (dialog, which) -> {
+            String snippet = input.getText() == null ? "" : input.getText().toString();
+            if (snippet.trim().isEmpty()) {
+                return;
+            }
+            JsPluginManager.evaluateInPlugin(plugin.id, snippet, result -> {
+                if (getParentActivity() == null) {
+                    return;
+                }
+                AlertDialog.Builder resultBuilder = new AlertDialog.Builder(getParentActivity());
+                resultBuilder.setTitle("Eval result");
+                resultBuilder.setMessage(result);
+                resultBuilder.setPositiveButton("OK", null);
+                showDialog(resultBuilder.create());
+            });
+        });
+        builder.setNegativeButton("Cancel", null);
+        showDialog(builder.create());
+    }
+
     private String selectLabel(Context context, JsPlugin.SettingDef def) {
         String value = textValue(context, def);
         if (def.optionValues != null) {
@@ -658,7 +969,9 @@ public class AminJsPluginActivity extends BaseFragment {
             int type = rowTypes.get(holder.getAdapterPosition());
             return type != TYPE_HEADER && type != TYPE_INFO
                     && type != TYPE_HELP && type != TYPE_SETTING_HEADER
-                    && type != TYPE_STATUS_SUSPENDED;
+                    && type != TYPE_STATUS_SUSPENDED
+                    && type != TYPE_PAGE_INFO && type != TYPE_DEV_STATE
+                    && type != TYPE_DEV_LOGTAIL;
         }
 
         @Override
@@ -671,6 +984,9 @@ public class AminJsPluginActivity extends BaseFragment {
                     view = new HeaderCell(context);
                     break;
                 case TYPE_INFO:
+                case TYPE_PAGE_INFO:
+                case TYPE_DEV_STATE:
+                case TYPE_DEV_LOGTAIL:
                     view = new TextInfoPrivacyCell(context);
                     break;
                 case TYPE_TOGGLE:
@@ -753,6 +1069,43 @@ public class AminJsPluginActivity extends BaseFragment {
                             def.title, label.isEmpty() ? "Not set" : label, dividerFor(position));
                     break;
                 }
+                case TYPE_SETTING_COLOR: {
+                    JsPlugin.SettingDef def = (JsPlugin.SettingDef) rowData.get(position);
+                    String value = textValue(context, def);
+                    ((TextCell) holder.itemView).setTextAndValue(
+                            def.title, value.isEmpty() ? "Not set" : "■ " + value,
+                            dividerFor(position));
+                    break;
+                }
+                case TYPE_SETTING_FILE: {
+                    JsPlugin.SettingDef def = (JsPlugin.SettingDef) rowData.get(position);
+                    String value = textValue(context, def);
+                    String shown = value.isEmpty() ? "Not set"
+                            : value.substring(value.lastIndexOf('/') + 1);
+                    ((TextCell) holder.itemView).setTextAndValue(
+                            def.title, shown, dividerFor(position));
+                    break;
+                }
+                case TYPE_PAGE_INFO:
+                case TYPE_DEV_STATE:
+                case TYPE_DEV_LOGTAIL:
+                    ((TextInfoPrivacyCell) holder.itemView).setText(
+                            (String) rowData.get(position));
+                    break;
+                case TYPE_PAGE_ACTION: {
+                    JsPlugin.PageRow row = (JsPlugin.PageRow) rowData.get(position);
+                    if (row.subtitle != null && !row.subtitle.isEmpty()) {
+                        ((TextCell) holder.itemView).setTextAndValue(
+                                row.title, row.subtitle, dividerFor(position));
+                    } else {
+                        ((TextCell) holder.itemView).setText(row.title, dividerFor(position));
+                    }
+                    break;
+                }
+                case TYPE_DEV_ACTION:
+                    ((TextCell) holder.itemView).setText(
+                            (String) rowData.get(position), dividerFor(position));
+                    break;
                 case TYPE_SETTING_SLIDER: {
                     JsPlugin.SettingDef def = (JsPlugin.SettingDef) rowData.get(position);
                     ((SliderSettingCell) holder.itemView).bind(def,
@@ -918,6 +1271,180 @@ public class AminJsPluginActivity extends BaseFragment {
                     value = value.substring(0, 300) + "…";
                 }
                 cell.setText(value, position < visibleLines.size() - 1);
+            }
+        }
+    }
+
+    /** Storage inspector (§3.5): the plugin's amin.storage prefs
+     *  (key = value rows, tap to edit/delete) and its amin.db
+     *  namespaces (name + key count, tap to clear that namespace),
+     *  plus a clear-all-data action. Reached only from the plugin
+     *  page's Developer section. Reads happen on page open and
+     *  after each edit — never on a timer. */
+    public static class PluginStorageFragment extends BaseFragment {
+
+        private final String storePluginId;
+        private final String storePluginName;
+        private final List<String> prefKeys = new ArrayList<>();
+        private final List<String> namespaces = new ArrayList<>();
+        private RecyclerListView storeListView;
+        private StoreAdapter storeAdapter;
+        private int clearAllRow = -1;
+
+        public PluginStorageFragment(String pluginId, String pluginName) {
+            super();
+            this.storePluginId = pluginId;
+            this.storePluginName = pluginName;
+        }
+
+        @Override
+        public View createView(Context context) {
+            actionBar.setBackButtonImage(R.drawable.ic_ab_back);
+            actionBar.setAllowOverlayTitle(true);
+            actionBar.setTitle((storePluginName != null ? storePluginName : "Plugin")
+                    + " — storage");
+            actionBar.setActionBarMenuOnItemClick(new ActionBar.ActionBarMenuOnItemClick() {
+                @Override
+                public void onItemClick(int id) {
+                    if (id == -1) {
+                        finishFragment();
+                    }
+                }
+            });
+            FrameLayout layout = new FrameLayout(context);
+            layout.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray));
+            storeListView = new RecyclerListView(context);
+            storeListView.setLayoutManager(new LinearLayoutManager(
+                    context, LinearLayoutManager.VERTICAL, false));
+            storeAdapter = new StoreAdapter();
+            storeListView.setAdapter(storeAdapter);
+            storeListView.setOnItemClickListener((view, position) -> onStoreRowClick(context, position));
+            layout.addView(storeListView, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            reloadRows(context);
+            fragmentView = layout;
+            return layout;
+        }
+
+        private void reloadRows(Context context) {
+            prefKeys.clear();
+            prefKeys.addAll(JsPluginManager.storageGetAll(context, storePluginId).keySet());
+            namespaces.clear();
+            namespaces.addAll(org.telegram.messenger.amin.plugins.js.PluginDb
+                    .namespaces(storePluginId));
+            clearAllRow = 1 + prefKeys.size() + namespaces.size();
+            if (storeAdapter != null) {
+                storeAdapter.notifyDataSetChanged();
+            }
+        }
+
+        private void onStoreRowClick(final Context context, int position) {
+            if (getParentActivity() == null) {
+                return;
+            }
+            if (position == clearAllRow) {
+                AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+                builder.setTitle("Clear all data?");
+                builder.setMessage("Every storage value and every database row "
+                        + "of this plugin is removed. Settings defaults apply again.");
+                builder.setPositiveButton("Clear", (dialog, which) -> {
+                    JsPluginManager.clearPluginData(context, storePluginId);
+                    reloadRows(context);
+                });
+                builder.setNegativeButton("Cancel", null);
+                showDialog(builder.create());
+                return;
+            }
+            if (position >= 1 && position <= prefKeys.size()) {
+                final String key = prefKeys.get(position - 1);
+                final String value = JsPluginManager.storageGetRaw(context, storePluginId, key);
+                final EditTextBoldCursor input = new EditTextBoldCursor(context);
+                input.setText(value == null ? "" : value);
+                input.setPadding(AndroidUtilities.dp(16), AndroidUtilities.dp(8),
+                        AndroidUtilities.dp(16), AndroidUtilities.dp(8));
+                input.setTextColor(Theme.getColor(Theme.key_dialogTextBlack));
+                AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+                builder.setTitle(key);
+                builder.setView(input);
+                builder.setPositiveButton("Save", (dialog, which) -> {
+                    String newValue = input.getText() == null ? "" : input.getText().toString();
+                    JsPluginManager.storageSetRaw(context, storePluginId, key, newValue);
+                    JsPluginManager.onSettingWritten(context, storePluginId, key,
+                            newValue, value == null ? "" : value);
+                    reloadRows(context);
+                });
+                builder.setNeutralButton("Delete", (dialog, which) -> {
+                    JsPluginManager.storageRemoveRaw(context, storePluginId, key);
+                    reloadRows(context);
+                });
+                builder.setNegativeButton("Cancel", null);
+                showDialog(builder.create());
+                return;
+            }
+            int nsIndex = position - 1 - prefKeys.size();
+            if (nsIndex >= 0 && nsIndex < namespaces.size()) {
+                final String ns = namespaces.get(nsIndex);
+                AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+                builder.setTitle("Database namespace \"" + ns + "\"");
+                builder.setMessage("Clear every key in this amin.db namespace?");
+                builder.setPositiveButton("Clear", (dialog, which) -> {
+                    org.telegram.messenger.amin.plugins.js.PluginDb.clear(storePluginId, ns);
+                    reloadRows(context);
+                });
+                builder.setNegativeButton("Cancel", null);
+                showDialog(builder.create());
+            }
+        }
+
+        private class StoreAdapter extends RecyclerListView.SelectionAdapter {
+
+            @Override
+            public int getItemCount() {
+                return clearAllRow + 1;
+            }
+
+            @Override
+            public int getItemViewType(int position) {
+                if (position == 0) {
+                    return 0; // header
+                }
+                return 1; // value/action cell
+            }
+
+            @Override
+            public RecyclerView.ViewHolder onCreateViewHolder(ViewGroup parent, int viewType) {
+                Context context = parent.getContext();
+                View view = viewType == 0 ? new HeaderCell(context) : new TextCell(context);
+                if (viewType != 0) {
+                    view.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite));
+                }
+                view.setLayoutParams(new RecyclerView.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                return new RecyclerListView.Holder(view);
+            }
+
+            @Override
+            public void onBindViewHolder(RecyclerView.ViewHolder holder, int position) {
+                Context context = holder.itemView.getContext();
+                if (position == 0) {
+                    ((HeaderCell) holder.itemView).setText("Storage + database");
+                    return;
+                }
+                TextCell cell = (TextCell) holder.itemView;
+                if (position == clearAllRow) {
+                    cell.setText("Clear all data", false);
+                } else if (position <= prefKeys.size()) {
+                    String key = prefKeys.get(position - 1);
+                    String value = JsPluginManager.storageGetRaw(context, storePluginId, key);
+                    cell.setTextAndValue(key, value == null ? "" : value,
+                            position < getItemCount() - 1);
+                } else {
+                    String ns = namespaces.get(position - 1 - prefKeys.size());
+                    int count = org.telegram.messenger.amin.plugins.js.PluginDb
+                            .keys(storePluginId, ns, "").size();
+                    cell.setTextAndValue("db · " + ns, count + (count == 1 ? " key" : " keys"),
+                            position < getItemCount() - 1);
+                }
             }
         }
     }

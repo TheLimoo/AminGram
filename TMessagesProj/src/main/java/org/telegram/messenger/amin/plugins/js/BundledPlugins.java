@@ -373,7 +373,7 @@ public final class BundledPlugins {
             }
             in.close();
             String source = out.toString("UTF-8");
-            String error = JsPluginManager.install(context, source);
+            String error = JsPluginManager.installWithSource(context, source, "bundled");
             if (error == null) {
                 onInstalled(context, bundled.id);
             }

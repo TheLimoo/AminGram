@@ -21,6 +21,7 @@ import org.telegram.messenger.MessageObject;
 import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.SendMessagesHelper;
 import org.telegram.messenger.amin.google.GoogleAuthManager;
+import org.telegram.messenger.amin.ui.PluginFilePickerActivity;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.TLRPC;
 
@@ -135,6 +136,22 @@ public class AminBridge {
      *  present on EVERY bridge variant, like storage. */
     public final PlatformInfo platform = new PlatformInfo();
 
+    /** Per-plugin KV database (Phase B, §1.4): amin.db — a base
+     *  surface on EVERY variant, like storage (no new capability;
+     *  same trust tier as amin.storage). */
+    public final DbAccess db;
+
+    /** UI surface (Phase B, §1.9): amin.ui — assigned by
+     *  attachCapabilities ONLY when the manifest declares the
+     *  `ui` capability; null otherwise (§2.6's access-object
+     *  pattern on the existing variants). Detect with
+     *  amin.platform.has("ui"). */
+    public UiAccess ui;
+
+    /** Inter-plugin surface (Phase B, §1.10): amin.relay —
+     *  assigned only with the `relay` capability, like ui. */
+    public RelayAccess relay;
+
     /** Chat of the update/command/menu action currently being
      *  dispatched, when JsPluginManager provides one (it sets this
      *  before each hook call — see setCurrentDispatchChatId). Used
@@ -149,6 +166,25 @@ public class AminBridge {
     public AminBridge(String pluginId) {
         this.pluginId = pluginId;
         this.storage = new Storage(pluginId);
+        this.db = new DbAccess(pluginId);
+    }
+
+    /** Assigns the Phase B capability-gated access objects (§2.6
+     *  pattern). Called by JsPluginManager.newScope right after
+     *  construction, with the plugin's declared capabilities.
+     *  Package-private: not reachable from JS (Rhino exposes only
+     *  public members, and this is neither public nor on a
+     *  whitelisted class path from JS's view). */
+    void attachCapabilities(java.util.Collection<String> capabilities) {
+        if (capabilities == null) {
+            return;
+        }
+        if (capabilities.contains("ui")) {
+            this.ui = new UiAccess(pluginId);
+        }
+        if (capabilities.contains("relay")) {
+            this.relay = new RelayAccess(pluginId);
+        }
     }
 
     /** Called by JsPluginManager's dispatchers (same package)
@@ -486,6 +522,128 @@ public class AminBridge {
         }
     }
 
+    /** Deletes one message (Phase B, §1.2). Routes through
+     *  MessagesController.deleteMessages (the 8-arg overload,
+     *  pristine MessagesController.java:9295) — the same entry
+     *  ChatActivity's own delete flow uses, so local storage,
+     *  dialogs and the server request all stay consistent.
+     *  opts.forEveryone is honoured ONLY for the user's own
+     *  messages (verified natively via the resolved
+     *  MessageObject's isOutOwner, exactly like editMessage);
+     *  asking forEveryone on someone else's message degrades to
+     *  a local delete with a log line, never an error the plugin
+     *  could mistake for success. Every call is logged with its
+     *  target ids (§1.2 mitigation). */
+    protected final boolean doDeleteMessage(Object ref, Object optsObject) {
+        try {
+            long[] target = resolveRef(ref);
+            if (target == null) {
+                JsPluginManager.appendLog(pluginId,
+                        "[error] amin.deleteMessage: ref has no usable {chatId, id}");
+                return false;
+            }
+            boolean forEveryone = false;
+            if (optsObject instanceof Scriptable) {
+                Object value = ((Scriptable) optsObject).get("forEveryone", (Scriptable) optsObject);
+                if (value instanceof Boolean) {
+                    forEveryone = (Boolean) value;
+                } else if (value instanceof Number) {
+                    forEveryone = ((Number) value).doubleValue() != 0;
+                }
+            }
+            final int account = JsPluginManager.dispatchAccount();
+            MessageObject obj = resolveMessageObject(account, target[0], target[1]);
+            if (obj == null || obj.messageOwner == null) {
+                JsPluginManager.appendLog(pluginId,
+                        "[error] amin.deleteMessage: message not loaded (chatId=" + target[0] + ", id=" + target[1] + ")");
+                return false;
+            }
+            if (forEveryone && !obj.isOutOwner()) {
+                JsPluginManager.appendLog(pluginId,
+                        "[warn] amin.deleteMessage: forEveryone refused for message " + target[1]
+                                + " in chat " + target[0] + " (not your own) — deleting locally only");
+                forEveryone = false;
+            }
+            JsPluginManager.appendLog(pluginId,
+                    "[act] deleteMessage chatId=" + target[0] + " id=" + target[1]
+                            + " forEveryone=" + forEveryone);
+            ArrayList<Integer> ids = new ArrayList<>();
+            ids.add(obj.getId());
+            MessagesController.getInstance(account).deleteMessages(
+                    ids, null, null, obj.getDialogId(), 0, forEveryone, 0, false);
+            return true;
+        } catch (Throwable t) {
+            JsPluginManager.appendLog(pluginId, "[error] amin.deleteMessage failed: " + t);
+            return false;
+        }
+    }
+
+    /** Pins one message in its chat (Phase B, §1.2). No
+     *  fragment-bound helper exists for pinning either, so this
+     *  builds TL_messages_updatePinnedMessage directly (pristine
+     *  TLRPC.java:54269): silent = !opts.notify, pm_oneside =
+     *  opts.pmOneSide; the response deserialises to Updates and
+     *  is processed like the other act calls. Every call is
+     *  logged with its target ids. */
+    protected final boolean doPinMessage(Object ref, Object optsObject) {
+        try {
+            long[] target = resolveRef(ref);
+            if (target == null) {
+                JsPluginManager.appendLog(pluginId,
+                        "[error] amin.pinMessage: ref has no usable {chatId, id}");
+                return false;
+            }
+            boolean notify = false;
+            boolean pmOneSide = false;
+            if (optsObject instanceof Scriptable) {
+                Scriptable opts = (Scriptable) optsObject;
+                Object notifyValue = opts.get("notify", opts);
+                if (notifyValue instanceof Boolean) {
+                    notify = (Boolean) notifyValue;
+                }
+                Object sideValue = opts.get("pmOneSide", opts);
+                if (sideValue instanceof Boolean) {
+                    pmOneSide = (Boolean) sideValue;
+                }
+            }
+            final int account = JsPluginManager.dispatchAccount();
+            MessageObject obj = resolveMessageObject(account, target[0], target[1]);
+            if (obj == null || obj.messageOwner == null) {
+                JsPluginManager.appendLog(pluginId,
+                        "[error] amin.pinMessage: message not loaded (chatId=" + target[0] + ", id=" + target[1] + ")");
+                return false;
+            }
+            final MessagesController controller = MessagesController.getInstance(account);
+            TLRPC.InputPeer peer = controller.getInputPeer(obj.getDialogId());
+            if (peer == null) {
+                JsPluginManager.appendLog(pluginId,
+                        "[error] amin.pinMessage: no input peer for chat " + target[0]);
+                return false;
+            }
+            JsPluginManager.appendLog(pluginId,
+                    "[act] pinMessage chatId=" + target[0] + " id=" + target[1]
+                            + " notify=" + notify + " pmOneSide=" + pmOneSide);
+            TLRPC.TL_messages_updatePinnedMessage req = new TLRPC.TL_messages_updatePinnedMessage();
+            req.peer = peer;
+            req.id = obj.getId();
+            req.silent = !notify;
+            req.pm_oneside = pmOneSide;
+            req.unpin = false;
+            ConnectionsManager.getInstance(account).sendRequest(req, (response, error) -> {
+                if (response != null && response instanceof TLRPC.Updates) {
+                    controller.processUpdates((TLRPC.Updates) response, false);
+                } else if (error != null) {
+                    JsPluginManager.appendLog(pluginId,
+                            "[error] amin.pinMessage failed: " + error.text);
+                }
+            });
+            return true;
+        } catch (Throwable t) {
+            JsPluginManager.appendLog(pluginId, "[error] amin.pinMessage failed: " + t);
+            return false;
+        }
+    }
+
     // ------------------------------------------------------------------
     // amin.sendFile — implementation (v2.0). PROTECTED on purpose:
     // Rhino exposes only public members, so the plain bridge (and
@@ -501,7 +659,10 @@ public class AminBridge {
      *  chat. Runs entirely on the calling (plugin dispatch)
      *  thread for the download; the Telegram prepare* hand-off is
      *  posted to the UI thread, as those APIs require. NEVER
-     *  throws: any failure is logged and reported as false. */
+     *  throws: any failure is logged and reported as false.
+     *  opts: type / caption / chatId, plus optional headers (a JS
+     *  object of name → value) applied to the download request
+     *  and every redirect hop (v2.2). */
     protected final boolean doSendFile(Object urlObject, Object optsObject) {
         File file = null;
         try {
@@ -515,6 +676,7 @@ public class AminBridge {
             String type = "file";
             String caption = "";
             long chatId = 0;
+            Map<String, String> headers = null;
             if (optsObject instanceof Scriptable) {
                 Scriptable opts = (Scriptable) optsObject;
                 Object typeValue = opts.get("type", opts);
@@ -531,6 +693,11 @@ public class AminBridge {
                 if (chatValue != null && chatValue != Scriptable.NOT_FOUND
                         && !(chatValue instanceof Undefined)) {
                     chatId = toLong(chatValue);
+                }
+                Object headersValue = opts.get("headers", opts);
+                if (headersValue != null && headersValue != Scriptable.NOT_FOUND
+                        && !(headersValue instanceof Undefined)) {
+                    headers = snapshotHeaders(headersValue);
                 }
             }
             if (!"video".equals(type) && !"photo".equals(type)
@@ -571,6 +738,14 @@ public class AminBridge {
                 connection.setRequestProperty("User-Agent",
                         "Mozilla/5.0 (Linux; Android 13) AminGram");
                 connection.setRequestProperty("Accept", "*/*");
+                if (headers != null) {
+                    // Caller headers (v2.2, opts.headers): applied
+                    // after the defaults so a plugin can e.g.
+                    // present a crawler UA to a mirror host. This
+                    // loop rebuilds the connection on every manual
+                    // redirect hop, so the headers ride every hop.
+                    applyHeaders(connection, headers);
+                }
                 int code = connection.getResponseCode();
                 String location = connection.getHeaderField("Location");
                 if ((code == HttpURLConnection.HTTP_MOVED_PERM
@@ -1583,7 +1758,12 @@ public class AminBridge {
         private static final Set<String> FEATURES = new HashSet<>(Arrays.asList(
                 "rich-msg", "lazy-lookup", "act", "http-async", "storage-json",
                 "settings-v2", "lifecycle", "watchdog", "platform",
-                "sendFile", "http-headers", "reply-context"));
+                "sendFile", "http-headers", "reply-context",
+                // Platform Phase B (apiVersion stays 2 — Phase B
+                // completes platform v2).
+                "db", "files", "pickFile", "ui", "relay",
+                "act-delete-pin", "plugin-page", "context-menu",
+                "settings-color-file"));
 
         public boolean has(String name) {
             return name != null && FEATURES.contains(name);
@@ -1707,6 +1887,407 @@ public class AminBridge {
         }
     }
 
+    /** amin.pickFile implementation (Phase B, §1.6). PROTECTED,
+     *  like doSendFile: the public wrappers live only on the
+     *  file-capability variants. ASYNC: fn(pathOrNull) fires later
+     *  (via JsPluginManager.invokePluginCallback, on the plugin
+     *  thread) once the user has picked — or cancelled — in the
+     *  system document picker hosted by PluginFilePickerActivity.
+     *  opts = {accept: "video/*", copy: true}; copy defaults to
+     *  true (durable sandbox copy); copy:false stages in cache. */
+    protected final void doPickFile(Object optsObject, Object callback) {
+        if (!(callback instanceof Function)) {
+            JsPluginManager.appendLog(pluginId,
+                    "[error] amin.pickFile needs a callback function");
+            return;
+        }
+        final Function fn = (Function) callback;
+        String accept = "*/*";
+        boolean copy = true;
+        if (optsObject instanceof Scriptable) {
+            Scriptable opts = (Scriptable) optsObject;
+            Object acceptValue = opts.get("accept", opts);
+            if (acceptValue instanceof String && !((String) acceptValue).isEmpty()) {
+                accept = (String) acceptValue;
+            }
+            Object copyValue = opts.get("copy", opts);
+            if (copyValue instanceof Boolean) {
+                copy = (Boolean) copyValue;
+            } else if (copyValue instanceof Number) {
+                copy = ((Number) copyValue).doubleValue() != 0;
+            }
+        }
+        android.content.Context context = ApplicationLoader.applicationContext;
+        if (context == null) {
+            JsPluginManager.invokePluginCallback(pluginId, fn, null);
+            return;
+        }
+        PluginFilePickerActivity.request(context, accept, copy, pluginId,
+                path -> JsPluginManager.invokePluginCallback(pluginId, fn, path));
+    }
+
+    /** The `amin.db` surface (Phase B, §1.4): per-plugin KV in
+     *  the shared SQLite store (PluginDb). Present on EVERY
+     *  variant — same trust tier as amin.storage. Values cross
+     *  the boundary as JSON only: get returns the parsed value
+     *  (null when absent), put refuses unserialisable values and
+     *  contract violations (> 256 KB, ns/key > 128 chars) with
+     *  false + a log line; nothing throws across the bridge. */
+    public static class DbAccess {
+
+        private final String pluginId;
+
+        public DbAccess(String pluginId) {
+            this.pluginId = pluginId;
+        }
+
+        public Object get(Object ns, Object key) {
+            if (ns == null || key == null) {
+                return null;
+            }
+            String json = PluginDb.get(pluginId, String.valueOf(ns), String.valueOf(key));
+            if (json == null) {
+                return null;
+            }
+            org.mozilla.javascript.Context cx =
+                    org.mozilla.javascript.Context.getCurrentContext();
+            if (cx == null) {
+                return null;
+            }
+            return jsonToJs(json, cx, new NativeObject());
+        }
+
+        public boolean put(Object ns, Object key, Object value) {
+            if (ns == null || key == null || value == null
+                    || value instanceof Undefined || value instanceof Function) {
+                JsPluginManager.appendLog(pluginId,
+                        "[warn] amin.db.put: missing ns/key or unserialisable value; refused");
+                return false;
+            }
+            String json = jsToJson(value);
+            if (json == null) {
+                JsPluginManager.appendLog(pluginId,
+                        "[warn] amin.db.put: value is not JSON-serialisable; refused");
+                return false;
+            }
+            boolean ok = PluginDb.put(pluginId, String.valueOf(ns), String.valueOf(key), json);
+            if (!ok) {
+                JsPluginManager.appendLog(pluginId,
+                        "[warn] amin.db.put refused (ns/key > 128 chars or value > 256 KB)");
+            }
+            return ok;
+        }
+
+        public boolean del(Object ns, Object key) {
+            if (ns == null || key == null) {
+                return false;
+            }
+            return PluginDb.del(pluginId, String.valueOf(ns), String.valueOf(key));
+        }
+
+        public Object keys(Object ns, Object prefix) {
+            java.util.List<String> out = new java.util.ArrayList<>();
+            if (ns != null) {
+                String p = prefix == null || prefix instanceof Undefined
+                        ? "" : String.valueOf(prefix);
+                out = PluginDb.keys(pluginId, String.valueOf(ns), p);
+            }
+            return new NativeArray(out.toArray());
+        }
+
+        public void clear(Object ns) {
+            if (ns != null) {
+                PluginDb.clear(pluginId, String.valueOf(ns));
+            }
+        }
+    }
+
+    /** The `amin.files` surface (Phase B, §1.6): the plugin's
+     *  sandboxed file store (PluginFiles). Present ONLY on the
+     *  file-capability variants, next to sendFile/pickFile.
+     *  Bare names only — separators and ".." are rejected
+     *  natively; failures return false/null, never throw. */
+    public static class FileAccess {
+
+        private final String pluginId;
+
+        public FileAccess(String pluginId) {
+            this.pluginId = pluginId;
+        }
+
+        private android.content.Context context() {
+            return ApplicationLoader.applicationContext;
+        }
+
+        public String readText(Object name) {
+            android.content.Context context = context();
+            if (context == null || name == null) {
+                return null;
+            }
+            return PluginFiles.readText(context, pluginId, String.valueOf(name));
+        }
+
+        public boolean writeText(Object name, Object text) {
+            android.content.Context context = context();
+            if (context == null || name == null || text == null) {
+                return false;
+            }
+            boolean ok = PluginFiles.writeText(context, pluginId,
+                    String.valueOf(name), String.valueOf(text));
+            if (!ok) {
+                JsPluginManager.appendLog(pluginId,
+                        "[warn] amin.files.writeText refused (bad name or 50 MB quota)");
+            }
+            return ok;
+        }
+
+        public Object list() {
+            java.util.List<Object> out = new java.util.ArrayList<>();
+            android.content.Context context = context();
+            if (context != null) {
+                for (PluginFiles.FileInfo info : PluginFiles.list(context, pluginId)) {
+                    NativeObject row = new NativeObject();
+                    row.put("name", row, info.name);
+                    row.put("sizeBytes", row, Double.valueOf(info.sizeBytes));
+                    row.put("modifiedAt", row, Double.valueOf(info.modifiedAt));
+                    out.add(row);
+                }
+            }
+            return new NativeArray(out.toArray());
+        }
+
+        public boolean remove(Object name) {
+            android.content.Context context = context();
+            return context != null && name != null
+                    && PluginFiles.remove(context, pluginId, String.valueOf(name));
+        }
+
+        public boolean exists(Object name) {
+            android.content.Context context = context();
+            return context != null && name != null
+                    && PluginFiles.exists(context, pluginId, String.valueOf(name));
+        }
+    }
+
+    /** The `amin.ui` surface (Phase B, §1.9): clipboard write,
+     *  plugin notifications, and open intents. Assigned ONLY with
+     *  the `ui` capability (see attachCapabilities). notify is
+     *  rate-capped natively at 5/minute/plugin — a sanity cap
+     *  against accidents, excess is logged and returns false. */
+    public static class UiAccess {
+
+        private static final String CHANNEL_ID = "amingram_plugin_notifications";
+        private static final int NOTIFY_CAP_PER_MINUTE = 5;
+        private static final Map<String, java.util.ArrayDeque<Long>> NOTIFY_TIMES =
+                new java.util.HashMap<>();
+
+        private final String pluginId;
+
+        public UiAccess(String pluginId) {
+            this.pluginId = pluginId;
+        }
+
+        public boolean clipboardWrite(Object text) {
+            if (text == null) {
+                return false;
+            }
+            try {
+                AndroidUtilities.addToClipboard(String.valueOf(text));
+                return true;
+            } catch (Throwable t) {
+                JsPluginManager.appendLog(pluginId,
+                        "[error] amin.ui.clipboardWrite failed: " + t);
+                return false;
+            }
+        }
+
+        public boolean notify(Object title, Object body, Object optsObject) {
+            try {
+                android.content.Context context = ApplicationLoader.applicationContext;
+                if (context == null || title == null) {
+                    return false;
+                }
+                synchronized (NOTIFY_TIMES) {
+                    java.util.ArrayDeque<Long> times = NOTIFY_TIMES.get(pluginId);
+                    if (times == null) {
+                        times = new java.util.ArrayDeque<>();
+                        NOTIFY_TIMES.put(pluginId, times);
+                    }
+                    long now = System.currentTimeMillis();
+                    while (!times.isEmpty() && now - times.peekFirst() > 60000L) {
+                        times.pollFirst();
+                    }
+                    if (times.size() >= NOTIFY_CAP_PER_MINUTE) {
+                        JsPluginManager.appendLog(pluginId,
+                                "[warn] amin.ui.notify: over the sanity cap ("
+                                        + NOTIFY_CAP_PER_MINUTE + "/min) — notification dropped");
+                        return false;
+                    }
+                    times.addLast(now);
+                }
+                long chatId = 0;
+                if (optsObject instanceof Scriptable) {
+                    Object value = ((Scriptable) optsObject).get("chatId", (Scriptable) optsObject);
+                    if (value instanceof Number) {
+                        chatId = ((Number) value).longValue();
+                    }
+                }
+                android.app.NotificationManager manager = (android.app.NotificationManager)
+                        context.getSystemService(android.content.Context.NOTIFICATION_SERVICE);
+                if (manager == null) {
+                    return false;
+                }
+                if (android.os.Build.VERSION.SDK_INT >= 26) {
+                    android.app.NotificationChannel channel = new android.app.NotificationChannel(
+                            CHANNEL_ID, "Plugin notifications",
+                            android.app.NotificationManager.IMPORTANCE_DEFAULT);
+                    manager.createNotificationChannel(channel);
+                }
+                android.content.Intent intent = new android.content.Intent(
+                        context, org.telegram.ui.LaunchActivity.class);
+                intent.setAction("org.telegram.amingram.PLUGIN_NOTIFY_" + pluginId);
+                intent.setFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+                        | android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                if (chatId != 0) {
+                    // The extra LaunchActivity itself consumes when a
+                    // notification is tapped (upstream behaviour).
+                    intent.putExtra("dialogId", chatId);
+                }
+                android.app.PendingIntent pending = android.app.PendingIntent.getActivity(
+                        context, pluginId.hashCode(), intent,
+                        android.app.PendingIntent.FLAG_UPDATE_CURRENT
+                                | android.app.PendingIntent.FLAG_IMMUTABLE);
+                android.app.Notification notification =
+                        new android.app.Notification.Builder(context, CHANNEL_ID)
+                                .setContentTitle(String.valueOf(title))
+                                .setContentText(body == null ? "" : String.valueOf(body))
+                                .setSmallIcon(org.telegram.messenger.R.drawable.notification)
+                                .setAutoCancel(true)
+                                .setContentIntent(pending)
+                                .build();
+                manager.notify(pluginId.hashCode(), notification);
+                return true;
+            } catch (Throwable t) {
+                JsPluginManager.appendLog(pluginId, "[error] amin.ui.notify failed: " + t);
+                return false;
+            }
+        }
+
+        public boolean openUrl(Object urlObject) {
+            if (urlObject == null) {
+                return false;
+            }
+            final String url = String.valueOf(urlObject);
+            String scheme = url.contains(":") ? url.substring(0, url.indexOf(':')).toLowerCase(Locale.US) : "";
+            if (!scheme.equals("http") && !scheme.equals("https") && !scheme.equals("tg")) {
+                JsPluginManager.appendLog(pluginId,
+                        "[warn] amin.ui.openUrl refused scheme '" + scheme + "' (http/https/tg only)");
+                return false;
+            }
+            AndroidUtilities.runOnUIThread(() -> {
+                try {
+                    android.content.Context context = ApplicationLoader.applicationContext;
+                    android.content.Intent intent = new android.content.Intent(
+                            android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url));
+                    intent.setFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                    context.startActivity(intent);
+                } catch (Throwable t) {
+                    JsPluginManager.appendLog(pluginId,
+                            "[error] amin.ui.openUrl failed: " + t);
+                }
+            });
+            return true;
+        }
+
+        public boolean openChat(Object chatIdObject) {
+            if (chatIdObject == null) {
+                return false;
+            }
+            return openDialog(toLong(chatIdObject));
+        }
+
+        public boolean openUser(Object userIdObject) {
+            if (userIdObject == null) {
+                return false;
+            }
+            // A user id IS the dialog id of the private chat.
+            return openDialog(toLong(userIdObject));
+        }
+
+        private boolean openDialog(final long dialogId) {
+            if (dialogId == 0) {
+                return false;
+            }
+            AndroidUtilities.runOnUIThread(() -> {
+                try {
+                    android.content.Context context = ApplicationLoader.applicationContext;
+                    android.content.Intent intent = new android.content.Intent(
+                            context, org.telegram.ui.LaunchActivity.class);
+                    intent.setAction("org.telegram.amingram.OPEN_DIALOG_" + dialogId);
+                    intent.setFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+                            | android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                    intent.putExtra("dialogId", dialogId);
+                    context.startActivity(intent);
+                } catch (Throwable t) {
+                    JsPluginManager.appendLog(pluginId,
+                            "[error] amin.ui.openChat/openUser failed: " + t);
+                }
+            });
+            return true;
+        }
+    }
+
+    /** The `amin.relay` surface (Phase B, §1.10): plugin-to-
+     *  plugin calls and event broadcast. Assigned ONLY with the
+     *  `relay` capability. Values cross as JSON (deep copies);
+     *  call() is async via its callback fn(err, result) and never
+     *  throws — every failure arrives as the err string. */
+    public static class RelayAccess {
+
+        private final String pluginId;
+
+        public RelayAccess(String pluginId) {
+            this.pluginId = pluginId;
+        }
+
+        public void call(Object targetId, Object method, Object args, Object callback) {
+            if (targetId == null || method == null) {
+                JsPluginManager.relayCallError(pluginId, callback,
+                        "relay.call needs a target plugin id and a method name");
+                return;
+            }
+            String argsJson;
+            if (args == null || args instanceof Undefined) {
+                argsJson = "[]";
+            } else {
+                argsJson = jsToJson(args);
+                if (argsJson == null) {
+                    JsPluginManager.relayCallError(pluginId, callback,
+                            "relay.call arguments are not JSON-serialisable");
+                    return;
+                }
+                if (!argsJson.startsWith("[")) {
+                    argsJson = "[" + argsJson + "]";
+                }
+            }
+            JsPluginManager.relayCall(pluginId, String.valueOf(targetId),
+                    String.valueOf(method), argsJson, callback);
+        }
+
+        public void emit(Object topic, Object data) {
+            if (topic == null) {
+                return;
+            }
+            String json = data == null || data instanceof Undefined ? "null" : jsToJson(data);
+            if (json == null) {
+                JsPluginManager.appendLog(pluginId,
+                        "[warn] amin.relay.emit: data is not JSON-serialisable; event dropped");
+                return;
+            }
+            JsPluginManager.relayEmit(pluginId, String.valueOf(topic), json);
+        }
+    }
+
     /** The bridge handed to plugins whose manifest declares the
      *  `google` capability: the plain bridge PLUS the amin.google
      *  surface. Every other plugin gets the plain AminBridge, on
@@ -1733,14 +2314,23 @@ public class AminBridge {
      *  and JsPluginManager's ClassShutter whitelists it. */
     public static class WithFile extends AminBridge {
 
+        /** amin.files (Phase B, §1.6): the sandboxed file store. */
+        public final FileAccess files;
+
         public WithFile(String pluginId) {
             super(pluginId);
+            this.files = new FileAccess(pluginId);
         }
 
         /** amin.sendFile(url, opts) -> boolean, synchronous.
          *  See the class javadoc for the full contract. */
         public boolean sendFile(Object url, Object opts) {
             return doSendFile(url, opts);
+        }
+
+        /** amin.pickFile(opts, fn): async file picker (§1.6). */
+        public void pickFile(Object opts, Object callback) {
+            doPickFile(opts, callback);
         }
     }
 
@@ -1752,14 +2342,23 @@ public class AminBridge {
      *  and by JsPluginManager's ClassShutter whitelist. */
     public static class WithGoogleFile extends WithGoogle {
 
+        /** amin.files (Phase B, §1.6): the sandboxed file store. */
+        public final FileAccess files;
+
         public WithGoogleFile(String pluginId) {
             super(pluginId);
+            this.files = new FileAccess(pluginId);
         }
 
         /** amin.sendFile(url, opts) -> boolean, synchronous.
          *  See the class javadoc for the full contract. */
         public boolean sendFile(Object url, Object opts) {
             return doSendFile(url, opts);
+        }
+
+        /** amin.pickFile(opts, fn): async file picker (§1.6). */
+        public void pickFile(Object opts, Object callback) {
+            doPickFile(opts, callback);
         }
     }
 
@@ -1787,6 +2386,18 @@ public class AminBridge {
         public boolean react(Object ref, Object emoji) {
             return doReact(ref, emoji == null ? null : String.valueOf(emoji));
         }
+
+        /** amin.deleteMessage(ref, opts) -> boolean (Phase B).
+         *  See doDeleteMessage. */
+        public boolean deleteMessage(Object ref, Object opts) {
+            return doDeleteMessage(ref, opts);
+        }
+
+        /** amin.pinMessage(ref, opts) -> boolean (Phase B).
+         *  See doPinMessage. */
+        public boolean pinMessage(Object ref, Object opts) {
+            return doPinMessage(ref, opts);
+        }
     }
 
     /** `act` + `google` (v2.1): amin.google (inherited from
@@ -1805,6 +2416,18 @@ public class AminBridge {
         /** amin.react(ref, emoji) -> boolean. See doReact. */
         public boolean react(Object ref, Object emoji) {
             return doReact(ref, emoji == null ? null : String.valueOf(emoji));
+        }
+
+        /** amin.deleteMessage(ref, opts) -> boolean (Phase B).
+         *  See doDeleteMessage. */
+        public boolean deleteMessage(Object ref, Object opts) {
+            return doDeleteMessage(ref, opts);
+        }
+
+        /** amin.pinMessage(ref, opts) -> boolean (Phase B).
+         *  See doPinMessage. */
+        public boolean pinMessage(Object ref, Object opts) {
+            return doPinMessage(ref, opts);
         }
     }
 
@@ -1825,6 +2448,18 @@ public class AminBridge {
         public boolean react(Object ref, Object emoji) {
             return doReact(ref, emoji == null ? null : String.valueOf(emoji));
         }
+
+        /** amin.deleteMessage(ref, opts) -> boolean (Phase B).
+         *  See doDeleteMessage. */
+        public boolean deleteMessage(Object ref, Object opts) {
+            return doDeleteMessage(ref, opts);
+        }
+
+        /** amin.pinMessage(ref, opts) -> boolean (Phase B).
+         *  See doPinMessage. */
+        public boolean pinMessage(Object ref, Object opts) {
+            return doPinMessage(ref, opts);
+        }
     }
 
     /** `act` + `google` + `file` (v2.1): every surface — amin.google,
@@ -1843,6 +2478,18 @@ public class AminBridge {
         /** amin.react(ref, emoji) -> boolean. See doReact. */
         public boolean react(Object ref, Object emoji) {
             return doReact(ref, emoji == null ? null : String.valueOf(emoji));
+        }
+
+        /** amin.deleteMessage(ref, opts) -> boolean (Phase B).
+         *  See doDeleteMessage. */
+        public boolean deleteMessage(Object ref, Object opts) {
+            return doDeleteMessage(ref, opts);
+        }
+
+        /** amin.pinMessage(ref, opts) -> boolean (Phase B).
+         *  See doPinMessage. */
+        public boolean pinMessage(Object ref, Object opts) {
+            return doPinMessage(ref, opts);
         }
     }
 }

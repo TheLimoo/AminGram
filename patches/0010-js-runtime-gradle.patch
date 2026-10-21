@@ -14,7 +14,7 @@ diff --git a/TMessagesProj/proguard-rules.pro b/TMessagesProj/proguard-rules.pro
 index 049c7b7..f3b4b2b 100644
 --- a/TMessagesProj/proguard-rules.pro
 +++ b/TMessagesProj/proguard-rules.pro
-@@ -57,4 +57,24 @@
+@@ -57,4 +57,29 @@
  
  # Use -keep to explicitly keep any other classes shrinking would remove
  #-dontoptimize
@@ -41,3 +41,8 @@ index 049c7b7..f3b4b2b 100644
 +-keep class org.telegram.messenger.amin.plugins.js.AminBridge$WithFileAct { *; }
 +-keep class org.telegram.messenger.amin.plugins.js.AminBridge$WithGoogleFileAct { *; }
 +-keep class org.telegram.messenger.amin.plugins.js.AminBridge$PlatformInfo { *; }
++# AminGram: Phase B (v2.2): the db/files/ui/relay access objects are reached from JS by name (db on every bridge; files on the file variants; ui/relay assigned only with their capability).
++-keep class org.telegram.messenger.amin.plugins.js.AminBridge$DbAccess { *; }
++-keep class org.telegram.messenger.amin.plugins.js.AminBridge$FileAccess { *; }
++-keep class org.telegram.messenger.amin.plugins.js.AminBridge$UiAccess { *; }
++-keep class org.telegram.messenger.amin.plugins.js.AminBridge$RelayAccess { *; }

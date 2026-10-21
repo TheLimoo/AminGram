@@ -94,6 +94,27 @@ public class AminPluginsActivity extends BaseFragment {
     private static final int REQUEST_PLUGIN_FILE = 3918;
     private static final int REQUEST_BACKUP_EXPORT = 3919;
     private static final int REQUEST_BACKUP_IMPORT = 3920;
+    private static final int REQUEST_PACK_EXPORT = 3921;
+    private static final int REQUEST_PACK_IMPORT = 3922;
+
+    /** Developer mode (§3.5): gates the plugin pages' Developer
+     *  sections (eval console, storage inspector, live log tail).
+     *  In-memory ONLY — off by default, and it re-locks every
+     *  session because nothing is persisted: a process restart
+     *  starts with it off again. */
+    private static volatile boolean developerMode;
+
+    public static boolean isDeveloperMode() {
+        return developerMode;
+    }
+
+    public static void setDeveloperMode(boolean on) {
+        developerMode = on;
+    }
+
+    /** Plugin ids chosen in the pack-export picker, waiting for
+     *  the SAF destination (transient UI state only). */
+    private List<String> pendingPackExportIds;
 
     private static final int KIND_HEADER = 0;
     private static final int KIND_MODULE = 1;
@@ -223,6 +244,17 @@ public class AminPluginsActivity extends BaseFragment {
             action("google_account", "Google Account", googleValue);
         }
         addPluginsSection(context);
+        // Developer section (§3.5): the session Developer-mode
+        // toggle. Off by default; turning it on unlocks the
+        // Developer section on every plugin page (eval console,
+        // storage inspector, live log tail) until the app process
+        // restarts.
+        sectionHeader(context, "Developer", "developer", 1);
+        if (!isSectionCollapsed(context, "developer")) {
+            Row devMode = action("dev_mode", "Developer mode",
+                    developerMode ? "On for this session" : "Off");
+            devMode.accent = true;
+        }
         Row footer = new Row();
         footer.kind = KIND_FOOTER;
         footer.title = "AminGram features run on Telegram's own sync — no extra background "
@@ -526,6 +558,18 @@ public class AminPluginsActivity extends BaseFragment {
         addFile.accent = true;
         Row addPaste = action("add_plugin_paste", "Paste plugin code…", null);
         addPaste.accent = true;
+        // Catalog (§3.3): fetched only when its page opens; the
+        // value hint below comes only from a catalog fetched this
+        // session (never fetched from here).
+        int catalogUpdates = AminCatalogActivity.sessionUpdateCount(context);
+        Row catalog = action("plugin_catalog", "Plugin catalog",
+                catalogUpdates > 0 ? catalogUpdates + " update" + (catalogUpdates == 1 ? "" : "s") + " available"
+                        : catalogUpdates == 0 ? "Up to date" : "Browse + install");
+        catalog.accent = true;
+        Row packExport = action("pack_export", "Export plugin pack…", "Share plugins");
+        packExport.accent = true;
+        Row packImport = action("pack_import", "Import plugin pack…", ".json");
+        packImport.accent = true;
     }
 
     // ------------------------------------------------------------------
@@ -745,6 +789,22 @@ public class AminPluginsActivity extends BaseFragment {
             case "add_plugin_paste":
                 pastePlugin(context);
                 break;
+            case "dev_mode":
+                developerMode = !developerMode;
+                bulletin(R.raw.contact_check, developerMode
+                        ? "Developer mode on — plugin pages show the Developer section"
+                        : "Developer mode off");
+                rebuild();
+                break;
+            case "plugin_catalog":
+                presentFragment(new AminCatalogActivity());
+                break;
+            case "pack_export":
+                pickPackExport(context);
+                break;
+            case "pack_import":
+                pickPackImport();
+                break;
             case "bundled": {
                 String error = BundledPlugins.install(context, row.bundled);
                 if (error == null) {
@@ -879,24 +939,138 @@ public class AminPluginsActivity extends BaseFragment {
         AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
         builder.setTitle("Add plugin — paste code");
         builder.setView(fieldContainer(context, field));
-        builder.setPositiveButton("Install", (dialog, which) -> installPluginSource(field.getText().toString()));
+        builder.setPositiveButton("Review", (dialog, which) ->
+                installPluginSource(field.getText().toString(), "paste"));
         builder.setNegativeButton("Cancel", null);
         showDialog(builder.create());
     }
 
-    private void installPluginSource(String source) {
+    /** Paste/file installs go through the permission review
+     *  screen (§3.2) since v2.2: the review shows what the plugin
+     *  can do and installs on confirmation. The hub rebuilds when
+     *  the review reports back. */
+    private void installPluginSource(String source, String sourceTag) {
         if (source == null || source.trim().isEmpty()) {
             showError("Nothing to install — the plugin code is empty.");
             return;
         }
-        Context context = getContext();
-        String error = JsPluginManager.install(context, source);
-        if (error == null) {
-            bulletin(R.raw.contact_check, "Plugin installed");
-        } else {
-            showError(error);
+        presentFragment(PluginReviewActivity.forInstall(source, sourceTag, null,
+                (installed, pluginId, error) -> rebuild()));
+    }
+
+    // ------------------------------------------------------------------
+    // Plugin packs (§3.4)
+    // ------------------------------------------------------------------
+
+    /** Export step 1: multi-select over the installed plugins. */
+    private void pickPackExport(Context context) {
+        List<JsPlugin> installed = JsPluginManager.plugins(context);
+        if (installed.isEmpty()) {
+            bulletin(R.raw.error, "No plugins installed to pack");
+            return;
         }
-        rebuild();
+        CharSequence[] items = new CharSequence[installed.size()];
+        boolean[] checked = new boolean[installed.size()];
+        for (int i = 0; i < installed.size(); i++) {
+            items[i] = installed.get(i).name + "  v" + installed.get(i).version;
+            checked[i] = true;
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle("Export plugin pack");
+        builder.setMultiChoiceItems(items, checked,
+                (dialog, which, isChecked) -> checked[which] = isChecked);
+        builder.setPositiveButton("Export…", (dialog, which) -> {
+            List<String> ids = new ArrayList<>();
+            for (int i = 0; i < installed.size(); i++) {
+                if (checked[i]) {
+                    ids.add(installed.get(i).id);
+                }
+            }
+            if (ids.isEmpty()) {
+                bulletin(R.raw.error, "Nothing selected");
+                return;
+            }
+            pendingPackExportIds = ids;
+            try {
+                Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                intent.setType("application/json");
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.putExtra(Intent.EXTRA_TITLE, "amingram-plugin-pack.json");
+                startActivityForResult(intent, REQUEST_PACK_EXPORT);
+            } catch (Exception e) {
+                FileLog.e(e);
+                bulletin(R.raw.error, "No file picker available");
+            }
+        });
+        builder.setNegativeButton("Cancel", null);
+        showDialog(builder.create());
+    }
+
+    private void pickPackImport() {
+        try {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.setType("*/*");
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            startActivityForResult(intent, REQUEST_PACK_IMPORT);
+        } catch (Exception e) {
+            FileLog.e(e);
+            bulletin(R.raw.error, "No file picker available");
+        }
+    }
+
+    /** Import: parse the pack, then walk its entries through the
+     *  permission review screen one at a time (source "pack").
+     *  Each confirmed entry installs and gets its storage
+     *  restored; the chain ends with a summary. */
+    private void importPack(Context context, String json) {
+        List<org.json.JSONObject> entries = BackupManager.parsePack(json);
+        if (entries == null || entries.isEmpty()) {
+            showError("That file is not an AminGram plugin pack.");
+            return;
+        }
+        List<String> results = new ArrayList<>();
+        advancePackReview(context, entries, 0, results);
+    }
+
+    private void advancePackReview(final Context context,
+                                   final List<org.json.JSONObject> entries,
+                                   final int index,
+                                   final List<String> results) {
+        if (index >= entries.size()) {
+            AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+            builder.setTitle("Pack import finished");
+            builder.setMessage(results.isEmpty()
+                    ? "Nothing was installed."
+                    : String.join("\n", results));
+            builder.setPositiveButton("OK", null);
+            showDialog(builder.create());
+            rebuild();
+            return;
+        }
+        org.json.JSONObject entry = entries.get(index);
+        String code = entry.optString("code", "");
+        org.json.JSONObject storage = entry.optJSONObject("storage");
+        final String storageJson = storage != null ? storage.toString() : null;
+        presentFragment(PluginReviewActivity.forInstall(code, "pack", storageJson,
+                (installed, pluginId, error) -> {
+                    String name = pluginId == null || pluginId.isEmpty() ? "plugin" : pluginId;
+                    if (installed) {
+                        if (storageJson != null) {
+                            try {
+                                BackupManager.restorePluginStorage(context, pluginId,
+                                        new org.json.JSONObject(storageJson));
+                            } catch (Exception ignored) {
+                            }
+                        }
+                        results.add("✓ " + name + " installed");
+                    } else if ("skipped".equals(error) || "cancelled".equals(error)) {
+                        results.add("— " + name + " skipped");
+                    } else {
+                        results.add("✗ " + name + " failed: " + error);
+                    }
+                    AndroidUtilities.runOnUIThread(() ->
+                            advancePackReview(context, entries, index + 1, results));
+                }));
     }
 
     // ------------------------------------------------------------------
@@ -955,7 +1129,7 @@ public class AminPluginsActivity extends BaseFragment {
                 }
                 String source = path != null ? readTextFile(new File(path)) : null;
                 if (source != null) {
-                    installPluginSource(source);
+                    installPluginSource(source, "file");
                 } else {
                     showError("Could not read that file.");
                 }
@@ -967,6 +1141,25 @@ public class AminPluginsActivity extends BaseFragment {
                     bulletin(R.raw.contact_check, "Backup saved");
                 } else {
                     bulletin(R.raw.error, "Could not write the backup file");
+                }
+            } else if (requestCode == REQUEST_PACK_EXPORT) {
+                OutputStream out = context.getContentResolver().openOutputStream(uri);
+                if (out != null && pendingPackExportIds != null) {
+                    out.write(BackupManager.exportPackJson(context, pendingPackExportIds)
+                            .getBytes(StandardCharsets.UTF_8));
+                    out.close();
+                    bulletin(R.raw.contact_check, "Plugin pack saved");
+                } else {
+                    bulletin(R.raw.error, "Could not write the pack file");
+                }
+                pendingPackExportIds = null;
+            } else if (requestCode == REQUEST_PACK_IMPORT) {
+                InputStream in = context.getContentResolver().openInputStream(uri);
+                String json = in != null ? readStream(in) : null;
+                if (json != null) {
+                    importPack(context, json);
+                } else {
+                    showError("Could not read that file.");
                 }
             } else if (requestCode == REQUEST_BACKUP_IMPORT) {
                 InputStream in = context.getContentResolver().openInputStream(uri);
@@ -1596,11 +1789,20 @@ public class AminPluginsActivity extends BaseFragment {
             }
 
             chipsRow.removeAllViews();
-            if (plugin.capabilities == null || plugin.capabilities.isEmpty()) {
+            // Chips: the install-source chip first (§3.3 — where
+            // this copy came from), then one per capability.
+            List<String> chipTexts = new ArrayList<>();
+            if (plugin.installSource != null && !plugin.installSource.isEmpty()) {
+                chipTexts.add("from " + plugin.installSource);
+            }
+            if (plugin.capabilities != null) {
+                chipTexts.addAll(plugin.capabilities);
+            }
+            if (chipTexts.isEmpty()) {
                 chipsRow.setVisibility(GONE);
             } else {
                 chipsRow.setVisibility(VISIBLE);
-                for (String capability : plugin.capabilities) {
+                for (String capability : chipTexts) {
                     TextView chipView = new TextView(getContext());
                     chipView.setText(capability);
                     chipView.setTextSize(11);

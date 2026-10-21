@@ -15,12 +15,20 @@ diff --git a/TMessagesProj/src/main/AndroidManifest.xml b/TMessagesProj/src/main
 index 999f104..f035329 100644
 --- a/TMessagesProj/src/main/AndroidManifest.xml
 +++ b/TMessagesProj/src/main/AndroidManifest.xml
-@@ -368,6 +368,14 @@
+@@ -368,6 +368,22 @@
                  <data android:scheme="tgb" />
              </intent-filter>
          </activity>
 +        <activity
 +            android:name="org.telegram.messenger.amin.google.GoogleAuthActivity"
++            android:configChanges="keyboard|keyboardHidden|orientation|screenSize|uiMode"
++            android:hardwareAccelerated="true"
++            android:windowSoftInputMode="adjustPan"
++            android:excludeFromRecents="true"
++            android:theme="@style/Theme.TMessages.Transparent"
++            android:exported="false"/>
++        <activity
++            android:name="org.telegram.messenger.amin.ui.PluginFilePickerActivity"
 +            android:configChanges="keyboard|keyboardHidden|orientation|screenSize|uiMode"
 +            android:hardwareAccelerated="true"
 +            android:windowSoftInputMode="adjustPan"

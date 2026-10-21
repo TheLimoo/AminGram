@@ -1,9 +1,9 @@
 // ==AminGramPlugin==
 // @id          media-dl
 // @name        Media Downloader
-// @version     2.0
+// @version     2.1
 // @author      Amin
-// @description Sends TikTok, X/Twitter and Reddit media directly into the chat, extracts TikTok MP3s, and falls back to links when a file cannot be sent. Commands: /dl, /mp3 — or tap Download media in the chat attach menu.
+// @description Sends TikTok, X/Twitter, Reddit and Instagram media directly into the chat, extracts TikTok MP3s, and falls back to links when a file cannot be sent. Commands: /dl, /mp3 — or tap Download media in the chat attach menu.
 // @icon        download
 // @menuLabel   Download media
 // @capabilities observe, commands, send, http, settings, menu, file
@@ -93,17 +93,38 @@ function resolveReddit(url) {
   return { title: post.title || "Reddit post", video: video, audio: null };
 }
 
-// Instagram resolver configuration: set this one host value to enable
-// mirror-based direct-media extraction. It is intentionally empty for
-// now; with no mirror configured, /dl posts the original Instagram URL
-// instead of trying to send Instagram's HTML post page as a file.
-var IG_MIRROR_HOST = "";
+// Instagram resolver configuration: the one mirror host used for
+// direct-media downloads. kkinstagram.com (verified 2026-10-21) is a
+// DIRECT-MEDIA mirror: presented with the TelegramBot user-agent it
+// answers with a redirect straight to the media file on Instagram's
+// CDN — there is no HTML page to extract og tags from, so the mirror
+// URL itself is handed to sendFile with that UA in the headers
+// (bridge support: AminGram v2.2+). Any other host is treated as a
+// classic og-tag mirror and scraped first. Set to "" to disable
+// mirror downloads entirely — /dl then posts the original URL.
+var IG_MIRROR_HOST = "kkinstagram.com";
+
+// User-agent the direct-media mirror requires (verified 2026-10-21:
+// browser/facebook/twitter crawler UAs all get an "Open in App" page).
+var IG_MIRROR_UA = "TelegramBot (like TwitterBot)";
+
+// Hosts that serve the media itself (with IG_MIRROR_UA) instead of
+// an HTML page with og tags.
+var IG_DIRECT_MEDIA_HOSTS = { "kkinstagram.com": true };
+
+function mirrorHost() {
+  return String(IG_MIRROR_HOST || "").replace(/^\s+|\s+$/g, "")
+    .replace(/^https?:\/\//i, "").replace(/\/.*$/, "").toLowerCase();
+}
 
 function instagramMirrorUrl(cleanUrl) {
-  var host = String(IG_MIRROR_HOST || "").replace(/^\s+|\s+$/g, "")
-    .replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
+  var host = mirrorHost();
   if (!host) return null;
   return cleanUrl.replace(/^(https?:\/\/)(?:www\.)?instagram\.com/i, "$1" + host);
+}
+
+function isDirectMediaMirror() {
+  return IG_DIRECT_MEDIA_HOSTS[mirrorHost()] === true;
 }
 
 function decodeExtractedMediaUrl(value) {
@@ -163,6 +184,18 @@ function resolveInstagram(url) {
   if (!mirrorUrl) return result;
   result.mirrorUrl = mirrorUrl;
 
+  if (isDirectMediaMirror()) {
+    // Direct-media mirror: with the TelegramBot UA the swapped URL
+    // redirects straight to the media file, so there is nothing to
+    // scrape (httpGet would return binary). Offer the mirror URL as
+    // BOTH candidates — doResolve tries video first, then photo —
+    // with the UA attached for sendFile's download.
+    result.video = mirrorUrl;
+    result.photo = mirrorUrl;
+    result.mirrorHeaders = { "User-Agent": IG_MIRROR_UA };
+    return result;
+  }
+
   var extracted = null;
   try {
     extracted = extractInstagramMirrorMedia(amin.httpGet(mirrorUrl));
@@ -213,10 +246,12 @@ function canSendFile() {
   return typeof amin.sendFile === "function";
 }
 
-function trySendFile(mediaUrl, type, caption, chatId) {
+function trySendFile(mediaUrl, type, caption, chatId, headers) {
   if (!mediaUrl || !canSendFile()) return false;
   try {
-    return amin.sendFile(mediaUrl, { type: type, caption: caption, chatId: chatId }) === true;
+    var opts = { type: type, caption: caption, chatId: chatId };
+    if (headers) opts.headers = headers;
+    return amin.sendFile(mediaUrl, opts) === true;
   } catch (e) {
     amin.log("media-dl sendFile error: " + e);
     return false;
@@ -228,20 +263,20 @@ function positiveSize(value) {
   return isFinite(n) && n > 0 ? n : 0;
 }
 
-function pushMediaCandidate(list, mediaUrl, type) {
+function pushMediaCandidate(list, mediaUrl, type, headers) {
   if (!mediaUrl) return;
   for (var i = 0; i < list.length; i++) {
     if (list[i].url === mediaUrl && list[i].type === type) return;
   }
-  list.push({ url: mediaUrl, type: type });
+  list.push({ url: mediaUrl, type: type, headers: headers || null });
 }
 
 function mediaCandidates(r) {
   var list = [];
   if (!r) return list;
   if (r.instagram) {
-    pushMediaCandidate(list, r.video, "video");
-    pushMediaCandidate(list, r.photo, "photo");
+    pushMediaCandidate(list, r.video, "video", r.mirrorHeaders);
+    pushMediaCandidate(list, r.photo, "photo", r.mirrorHeaders);
     return list;
   }
   if (r.videoHd || r.videoSd) {
@@ -311,7 +346,7 @@ function doResolve(chatId, msg, url) {
     amin.log("media-dl resolved " + url + " -> " + (candidates.length ? candidates[0].url : "no sendable media"));
     for (var i = 0; i < candidates.length; i++) {
       var candidate = candidates[i];
-      if (trySendFile(candidate.url, candidate.type, mediaCaption(r, url, candidate.type), chatId)) {
+      if (trySendFile(candidate.url, candidate.type, mediaCaption(r, url, candidate.type), chatId, candidate.headers)) {
         amin.log("media-dl sent " + candidate.type + " from " + candidate.url);
         amin.toast(candidate.type === "photo" ? "✅ Photo sent" : "✅ Video sent");
         return;

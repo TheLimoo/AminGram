@@ -49,12 +49,37 @@ public final class JsManifest {
     public int dataVersion = 1;
     /** Optional manifest @minPlatform (Platform v2, A9); 1 when unset. */
     public int minPlatform = 1;
+    /** Optional manifest @contextMenu (Platform v2 Phase B, §1.8b):
+     *  the label of this plugin's message long-press menu item;
+     *  "" = no item. Only meaningful with the onContextAction hook. */
+    public String contextMenu = "";
+    /** Optional manifest @exports (Phase B, §1.10): the PLUGIN_API
+     *  method names other plugins may relay-call. */
+    public final List<String> exports = new ArrayList<>();
+    /** Optional manifest @topics (Phase B, §1.10): relay event
+     *  topics this plugin's onEvent wants; "*" = all topics. */
+    public final List<String> topics = new ArrayList<>();
+    /** Optional manifest @depends (Phase B, §2.4): declared
+     *  dependencies, each "id" or "id@>=X.Y[.Z]". */
+    public final List<Depends> depends = new ArrayList<>();
     public final List<String> capabilities = new ArrayList<>();
+
+    /** One @depends entry: a plugin id plus an optional minimum
+     *  version (null = any installed version satisfies). */
+    public static final class Depends {
+        public final String id;
+        public final String minVersion;
+
+        Depends(String id, String minVersion) {
+            this.id = id;
+            this.minVersion = minVersion;
+        }
+    }
 
     private static final Pattern ID_PATTERN = Pattern.compile("^[a-z0-9][a-z0-9-]*$");
     private static final String[] KNOWN_CAPABILITIES = {
             "observe", "commands", "send", "settings", "http", "menu", "google", "file",
-            "act"
+            "act", "ui", "relay"
     };
 
     private JsManifest() {
@@ -120,6 +145,46 @@ public final class JsManifest {
                     break;
                 case "minPlatform":
                     manifest.minPlatform = parsePositiveInt(value, 1);
+                    break;
+                case "contextMenu":
+                    manifest.contextMenu = value;
+                    break;
+                case "exports":
+                    for (String name : value.split(",")) {
+                        String n = name.trim();
+                        if (!n.isEmpty() && !manifest.exports.contains(n)) {
+                            manifest.exports.add(n);
+                        }
+                    }
+                    break;
+                case "topics":
+                    for (String name : value.split(",")) {
+                        String n = name.trim();
+                        if (!n.isEmpty() && !manifest.topics.contains(n)) {
+                            manifest.topics.add(n);
+                        }
+                    }
+                    break;
+                case "depends":
+                    for (String entry : value.split(",")) {
+                        String e = entry.trim();
+                        if (e.isEmpty()) {
+                            continue;
+                        }
+                        String depId = e;
+                        String depMin = null;
+                        int at = e.indexOf("@>=");
+                        if (at > 0) {
+                            depId = e.substring(0, at).trim();
+                            depMin = e.substring(at + 3).trim();
+                            if (depMin.isEmpty()) {
+                                depMin = null;
+                            }
+                        }
+                        if (ID_PATTERN.matcher(depId).matches()) {
+                            manifest.depends.add(new Depends(depId, depMin));
+                        }
+                    }
                     break;
                 case "capabilities":
                     for (String cap : value.split(",")) {

@@ -112,7 +112,8 @@ public final class SettingsSchema {
 
             boolean knownType = "bool".equals(type) || "text".equals(type)
                     || "number".equals(type) || "slider".equals(type)
-                    || "select".equals(type);
+                    || "select".equals(type) || "color".equals(type)
+                    || "file".equals(type);
             if (!knownType) {
                 String msg = "setting '" + key + "': unknown type '" + typeRaw + "'";
                 if (strict) {
@@ -130,6 +131,42 @@ public final class SettingsSchema {
                     warns.add(msg + "; coerced to text");
                 }
                 type = "text";
+            }
+            if ("color".equals(type)) {
+                // Phase B (§1.5): the stored form is canonical
+                // "#RRGGBB"; an invalid declared default is a schema
+                // error in strict mode (warning + neutral default
+                // in loose mode, like the other coercions).
+                Object rawDef = prop(item, "def");
+                String color = rawDef == null ? "" : String.valueOf(rawDef).trim();
+                if (!color.isEmpty() && !isHexColor(color)) {
+                    String msg = "setting '" + key + "': color default '" + color
+                            + "' is not #RRGGBB";
+                    if (strict) {
+                        errors.add(msg);
+                    } else {
+                        warns.add(msg + "; default reset to #000000");
+                    }
+                    color = "#000000";
+                }
+                def.type = "color";
+                def.def = color.isEmpty() ? "#000000" : normalizeColor(color);
+                def.accept = stringPropOrEmpty(item, "accept");
+                seenKeys.add(key);
+                out.add(def);
+                continue;
+            }
+            if ("file".equals(type)) {
+                // Phase B (§1.5): value is a durable-copied path
+                // string ("" = nothing picked yet); accept is the
+                // SAF mime pattern, carried through to the picker.
+                def.type = "file";
+                Object rawDef = prop(item, "def");
+                def.def = rawDef == null ? "" : String.valueOf(rawDef);
+                def.accept = stringPropOrEmpty(item, "accept");
+                seenKeys.add(key);
+                out.add(def);
+                continue;
             }
             def.type = type;
 
@@ -263,6 +300,27 @@ public final class SettingsSchema {
             return tryParseDouble(String.valueOf(value));
         }
         return null;
+    }
+
+    /** Canonical settings-color form check: #RRGGBB (case-free). */
+    public static boolean isHexColor(String value) {
+        if (value == null || value.length() != 7 || value.charAt(0) != '#') {
+            return false;
+        }
+        for (int i = 1; i < 7; i++) {
+            char c = value.charAt(i);
+            boolean hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+                    || (c >= 'A' && c <= 'F');
+            if (!hex) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Normalises a valid #RRGGBB string to upper-case hex. */
+    public static String normalizeColor(String value) {
+        return "#" + value.substring(1).toUpperCase(java.util.Locale.US);
     }
 
     private static Double tryParseDouble(String text) {
