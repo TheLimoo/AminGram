@@ -41,8 +41,8 @@ import java.util.List;
  * settings page generated from the plugin's SETTINGS schema v2
  * (bool / text / number / slider / select / header rows, help
  * subtitles, dependsOn visibility), its log (with an
- * All/Errors/Warnings filter), and delete. Reached from the
- * "Your Plugins" section of the hub.
+ * All/Errors/Warnings filter), in-app code editing (v2.2), and
+ * delete. Reached from the "Your Plugins" section of the hub.
  *
  * Every settings write flows through {@link #writeSetting}: the raw
  * string lands in the same per-plugin storage amin.storage reads
@@ -77,6 +77,7 @@ public class AminJsPluginActivity extends BaseFragment {
     private final List<Object> rowData = new ArrayList<>();
     private int toggleRow = -1;
     private int logRow = -1;
+    private int editRow = -1;
     private int deleteRow = -1;
     private int errorsRow = -1;
     private int suspendedRow = -1;
@@ -119,11 +120,29 @@ public class AminJsPluginActivity extends BaseFragment {
         return layout;
     }
 
+    /** Re-read the plugin on return (v2.2): the code editor can
+     *  replace the plugin (new version, new settings schema) while
+     *  this page sits underneath it, and the About row / settings
+     *  rows must reflect the new install, not the stale object. */
+    @Override
+    public void onResume() {
+        super.onResume();
+        Context context = getContext();
+        if (context != null && pluginId != null) {
+            plugin = JsPluginManager.get(context, pluginId);
+            if (plugin != null) {
+                actionBar.setTitle(plugin.name);
+            }
+            refreshPage(context);
+        }
+    }
+
     private void buildRows(Context context) {
         rowTypes.clear();
         rowData.clear();
         toggleRow = -1;
         logRow = -1;
+        editRow = -1;
         deleteRow = -1;
         errorsRow = -1;
         suspendedRow = -1;
@@ -200,6 +219,7 @@ public class AminJsPluginActivity extends BaseFragment {
         }
         addRow(TYPE_HEADER, "Plugin");
         logRow = addRow(TYPE_ACTION, "View log");
+        editRow = addRow(TYPE_ACTION, "Edit code");
         deleteRow = addRow(TYPE_ACTION, "Delete plugin");
     }
 
@@ -279,6 +299,8 @@ public class AminJsPluginActivity extends BaseFragment {
         } else if (position == logRow) {
             presentFragment(new PluginLogFragment(plugin.id, plugin.name,
                     PluginLogFragment.FILTER_ALL));
+        } else if (position == editRow) {
+            presentFragment(new AminPluginEditorActivity(plugin.id, plugin.name));
         } else if (position == deleteRow) {
             AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
             builder.setTitle("Delete " + plugin.name + "?");

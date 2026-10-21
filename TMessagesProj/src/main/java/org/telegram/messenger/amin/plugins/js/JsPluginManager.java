@@ -742,6 +742,26 @@ public final class JsPluginManager {
             if (parent != null && !parent.exists()) {
                 parent.mkdirs();
             }
+            // Rollback copy (design §2.1): before an EXISTING install's
+            // code is overwritten, keep the old file as <id>.prev.js.
+            // This is what makes in-app code editing fearless — the
+            // editor can restore the previous version in one tap.
+            // Best-effort: a failed backup never blocks the install.
+            if (existing != null && file.exists()) {
+                try {
+                    FileInputStream pin = new FileInputStream(file);
+                    FileOutputStream pout = new FileOutputStream(
+                            prevCodeFile(context, plugin.id), false);
+                    byte[] buf = new byte[8192];
+                    int n;
+                    while ((n = pin.read(buf)) > 0) {
+                        pout.write(buf, 0, n);
+                    }
+                    pout.close();
+                    pin.close();
+                } catch (Exception ignored) {
+                }
+            }
             try {
                 FileOutputStream out = new FileOutputStream(file, false);
                 out.write(source.getBytes("UTF-8"));
@@ -879,6 +899,10 @@ public final class JsPluginManager {
         if (file.exists()) {
             file.delete();
         }
+        File prevFile = prevCodeFile(context, pluginId);
+        if (prevFile.exists()) {
+            prevFile.delete();
+        }
         deleteStoragePrefs(context, pluginId);
         AminMenuConfig.remove(context, pluginId);
         BundledPlugins.markUserDeleted(context, pluginId);
@@ -928,9 +952,23 @@ public final class JsPluginManager {
         return new File(new File(context.getFilesDir(), "jsplugins"), pluginId + ".js");
     }
 
+    private static File prevCodeFile(Context context, String pluginId) {
+        return new File(new File(context.getFilesDir(), "jsplugins"), pluginId + ".prev.js");
+    }
+
     public static String readCode(Context context, String pluginId) {
+        return readCodeFile(codeFile(context, pluginId));
+    }
+
+    /** The rollback copy kept by install() before an update
+     *  overwrites the code file; null when no previous version
+     *  exists (never updated, or the plugin was deleted since). */
+    public static String readPrevCode(Context context, String pluginId) {
+        return readCodeFile(prevCodeFile(context, pluginId));
+    }
+
+    private static String readCodeFile(File file) {
         try {
-            File file = codeFile(context, pluginId);
             FileInputStream in = new FileInputStream(file);
             byte[] data = new byte[(int) file.length()];
             int read = 0;
