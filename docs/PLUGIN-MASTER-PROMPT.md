@@ -1,23 +1,89 @@
-# AminGram Plugin — Master Prompt (v2.1)
+# AminGram Plugin — Master Prompt (v2.2)
 
 Give this whole document to an AI (or paste it at the start of a chat) and then
 describe the plugin you want in one or two sentences. The AI must answer with
 ONE JavaScript file and nothing else. Install it in AminGram:
 **Settings → AminGram → Plugins → ➕ Add plugin** (pick the file, or paste the code).
 
-This is the v2.1 contract (Plugin Platform v2, Phase A). It matches the
-v2.1 runtime exactly. New in v2.1: the rich message object + lazy lookups
-(`amin.getChatInfo` / `getUserInfo` / `getMessage`), the `act` capability
-(`amin.editMessage` / `amin.react`), async HTTP (`amin.httpGetAsync` /
-`amin.httpPostAsync`), storage v2 (JSON + namespaces), settings schema v2
-(number / slider / select / header / dependsOn), lifecycle hooks
-(`onEnable` / `onDisable` / `onSettingsChanged` / `onMigrate`), leveled
-logging, `amin.platform` feature detection, manifest `@minPlatform` /
-`@dataVersion`, and dual-mode Gemini (AI Studio / Vertex AI) for the
-`google` capability. Everything from v2.0 still holds: the `file`
-capability + `amin.sendFile`, HTTP error bodies from `amin.httpPost` (with
-the canonical `extractError` helper), and the attach-menu fields `@icon` /
-`@menuLabel`.
+This is the v2.2 contract (Plugin Platform v2, complete). It matches the
+v2.2 runtime exactly — every signature, return value and failure mode
+below is the shipped behaviour, verified against the runtime sources.
+New in v2.2 (Phase B): `amin.db` (a real per-plugin database),
+`amin.files` + `amin.pickFile` (a sandboxed file store and the system
+file picker), the `ui` capability (`amin.ui` — clipboard, notifications,
+open chats/links — plus long-press menu items via `@contextMenu` /
+`onContextAction`), `amin.deleteMessage` / `amin.pinMessage` under the
+existing `act` capability, a plugin's own page (`PLUGIN_PAGE` /
+`onPluginAction`), plugin-to-plugin calls (`amin.relay`, `@exports` /
+`@topics` / `@depends`), `color` and `file` setting types, the
+permission review screen shown before outside installs, the plugin
+catalog and shareable plugin packs, `amin.sendFile` download headers,
+and the in-app code editor with one-tap rollback. New in v2.1: the rich
+message object + lazy lookups (`amin.getChatInfo` / `getUserInfo` /
+`getMessage`), the `act` capability (`amin.editMessage` / `amin.react`),
+async HTTP (`amin.httpGetAsync` / `amin.httpPostAsync`), storage v2
+(JSON + namespaces), settings schema v2 (number / slider / select /
+header / dependsOn), lifecycle hooks (`onEnable` / `onDisable` /
+`onSettingsChanged` / `onMigrate`), leveled logging, `amin.platform`
+feature detection, manifest `@minPlatform` / `@dataVersion`, and
+dual-mode Gemini (AI Studio / Vertex AI) for the `google` capability.
+Everything from v2.0 still holds: the `file` capability +
+`amin.sendFile`, HTTP error bodies from `amin.httpPost` (with the
+canonical `extractError` helper), and the attach-menu fields `@icon` /
+`@menuLabel`. The platform API version is still **2** — Phase B
+completes v2, it does not replace it.
+
+---
+
+## Golden rules
+
+1. **Declare exactly the capabilities you use.** The install review
+   screen shows the user your capabilities in plain language (the same
+   wording as the capability table below). Declaring a capability you
+   don't use is asking for power you don't need; missing one makes the
+   surface not exist at runtime.
+2. **Gated surfaces do not exist without their capability** — this is
+   structural, not a permission check. `amin.sendFile`, `amin.google`,
+   `amin.editMessage`, `amin.files` … are `undefined` / absent when
+   the capability isn't declared. Feature-detect and degrade.
+3. **Nothing ever throws across the bridge.** Every `amin.*` failure
+   comes back as `false` / `null` / an error string in a callback.
+   Check return values; still wrap risky code in try/catch.
+4. **Event-driven only.** No timers, no polling, no busy loops — the
+   platform forbids them by design (there is no `setTimeout` contract
+   to rely on). React inside hooks and callbacks.
+5. **Messages may not be loaded.** Lookups and message actions only
+   see messages the app has already loaded. A `null` / `false` from a
+   lookup or action is a normal outcome — design for it.
+6. **Pick the right store** (see the decision table): small prefs and
+   settings → `amin.storage`; structured/queryable/bigger data →
+   `amin.db`; actual files → `amin.files`. Putting big blobs in
+   storage is the classic mistake.
+7. **Async beats blocking** on anything user-facing: async HTTP over
+   sync HTTP, callbacks over stalls. All plugins share ONE thread —
+   a slow plugin makes every plugin slow.
+8. **Send as the user, sparingly.** `amin.send` / `amin.reply` /
+   `act` actions post as the account owner. Only act in direct
+   reaction to something the user did or explicitly configured.
+
+## Which surface for which job
+
+| Job | Use | Not |
+|---|---|---|
+| A flag, a counter, a small JSON note | `amin.storage` (`get`/`set`/`getJSON`/`setJSON`) | `amin.db` (overkill) |
+| Many records, key prefixes, up to 256 KB per value | `amin.db` (namespaces + keys) | storage (64 KB design limit) |
+| Downloaded/generated file content | `amin.files` (sandbox, 50 MB) | db values (text-shaped) |
+| Post media into a chat | `amin.sendFile(url, opts)` | downloading it yourself |
+| Let the user pick a file | `amin.pickFile(opts, fn)` | asking them to paste a path |
+| Quick web call inside a command | sync `amin.httpGet`/`httpPost` | — |
+| Web call from `onMessage` or anything user-facing | `amin.httpGetAsync`/`httpPostAsync` | sync HTTP (blocks every plugin) |
+| Answer in the same chat | `amin.reply(msg, text)` | `amin.send` with a guessed id |
+| Edit/react/delete/pin a message | `act` surface (`amin.editMessage` …) | — (no other way exists) |
+| Talk to another plugin | `amin.relay.call` / `emit` | shared storage (there is none) |
+| Show the user something | `amin.toast` (momentary) / `amin.ui.notify` (persistent) | spamming `amin.send` |
+| A row/button on your plugin page | `PLUGIN_PAGE` + `onPluginAction` | a fake settings row |
+
+---
 
 ---
 
@@ -29,13 +95,14 @@ it, no extra files.
 
 The file starts with a manifest comment block. `@id`, `@name`, `@version`,
 `@author`, `@description` and `@capabilities` are required; `@icon`,
-`@menuLabel`, `@minPlatform` and `@dataVersion` are optional:
+`@menuLabel`, `@minPlatform`, `@dataVersion`, `@contextMenu`,
+`@exports`, `@topics` and `@depends` are optional:
 
 ```js
 // ==AminGramPlugin==
 // @id          shout
 // @name        Shout
-// @version     1.0
+// @version     1.0.0
 // @author      Amin
 // @description Turns /shout <text> into a loud uppercase message.
 // @capabilities commands, send
@@ -43,18 +110,57 @@ The file starts with a manifest comment block. `@id`, `@name`, `@version`,
 // @menuLabel   Shout it
 // @minPlatform 2
 // @dataVersion 1
+// @contextMenu Make it loud
+// @exports     shoutText
+// @topics      jokes, *
+// @depends     text-utils@>=1.2
 // ==/AminGramPlugin==
 ```
 
 - `@id`: lowercase letters, digits and `-` only. Unique. Never changes between versions.
-- `@capabilities`: comma list of what the plugin uses, from:
-  `observe` (watch messages), `commands` (react to /commands), `send` (post messages),
-  `settings` (has its own settings), `http` (uses amin.httpGet / amin.httpPost and the async forms),
-  `menu` (appears as a button in the chat attach menu — see onMenuAction),
-  `google` (uses amin.google — the user's connected Google account),
-  `file` (uses amin.sendFile — download a URL and post it as real media, v2.0),
-  `act` (uses amin.editMessage / amin.react — act on messages, v2.1).
-  An unknown capability makes the install invalid — never invent one.
+- `@version`: write it as **semver** — `X.Y` or `X.Y.Z`, numbers only
+  (`1.0` and `1.2.3` are fine; `v1`, `1.0-beta`, `one` are not). A
+  non-semver version still installs, but it draws a warning in the
+  plugin's log and version comparisons (catalog updates, `@depends`)
+  treat its parts as best-effort numbers. Versions compare
+  numerically part by part: `1.10` is newer than `1.9`, and `1.2`
+  equals `1.2.0`.
+- `@capabilities`: comma list of what the plugin uses, from the table
+  below. An unknown capability makes the install invalid — never
+  invent one. The right-hand column is the EXACT plain-language line
+  the install review screen shows the user for that capability —
+  declare a capability only when you'd be comfortable with the user
+  reading that line about your plugin:
+
+  | Capability | Surface it unlocks | Review screen says |
+  |---|---|---|
+  | `observe` | `onMessage` sees messages | "See your incoming messages as they arrive" |
+  | `commands` | `onCommand` | "Run commands you type (like /dl)" |
+  | `send` | `amin.send` / `amin.reply` | "Send messages as you" |
+  | `act` | `amin.editMessage` / `react` / `deleteMessage` / `pinMessage` | "Edit, react to, delete and pin messages as you" |
+  | `file` | `amin.sendFile`, `amin.files`, `amin.pickFile` | "Send and download files, pick files, and keep its own files" |
+  | `http` | `amin.httpGet`/`httpPost` + async forms | "Make internet requests" |
+  | `relay` | `amin.relay` | "Talk to other plugins and hear their events" |
+  | `ui` | `amin.ui` (+ `@contextMenu` items) | "Show notifications, use the clipboard, open chats and links" |
+  | `settings` | the SETTINGS page + `PLUGIN_PAGE` | "Keep its own settings and page here" |
+  | `menu` | attach-menu button (`onMenuAction`) | "Add items to the attach (+) menu" |
+  | `google` | `amin.google` | "Use your Google account sign-in (for Gemini)" |
+
+- `@contextMenu` (optional, v2.2; needs `ui`): a label for ONE item in
+  the message long-press menu. When the user taps it, your
+  `onContextAction(ctx)` runs with `ctx = {chatId, msg}` (msg = the
+  rich message object). At most 4 plugins' items are shown, in hub
+  order. Without the field (or the capability) there is no item.
+- `@exports` (optional, v2.2; pairs with `relay`): comma list of method
+  names other plugins may call on you. You implement them on a global
+  `PLUGIN_API` object (see Relay). A method that isn't listed here
+  cannot be called, even if it exists on `PLUGIN_API`.
+- `@topics` (optional, v2.2; pairs with `relay`): comma list of event
+  topics your `onEvent(topic, data)` wants. `*` means every topic.
+- `@depends` (optional, v2.2): comma list of other plugins you require,
+  each `id` or `id@>=X.Y`. Checked at install: a missing or too-old
+  dependency fails the install with an error naming it. (The catalog
+  offers the missing plugin as a one-tap follow-up install.)
 - `@icon` (optional, only meaningful with `menu`): the attach-menu icon.
   Either a set name — `download`, `mail`, `sparkles`, `dice`, `text`,
   `link`, `music`, `star`, `bolt`, `camera`, `globe`, `gear` — or an
@@ -122,6 +228,23 @@ amin.getUserInfo(userId)
 amin.getMessage(chatId, id)
 amin.editMessage(ref, text)         // `act` capability ONLY — see below
 amin.react(ref, emoji)              // `act` capability ONLY — see below
+amin.deleteMessage(ref, opts)       // `act` ONLY (v2.2) — see Acting
+amin.pinMessage(ref, opts)          // `act` ONLY (v2.2) — see Acting
+amin.db.get(ns, key)                // v2.2 — EVERY plugin — see Database
+amin.db.put(ns, key, value)         //   (false / null on contract
+amin.db.del(ns, key)                //    violations, never a throw)
+amin.db.keys(ns, prefix)
+amin.db.clear(ns)
+amin.files.readText(name)           // `file` ONLY (v2.2) — see File store
+amin.files.writeText(name, text)
+amin.files.list()                   // [{name, sizeBytes, modifiedAt}]
+amin.files.remove(name)
+amin.files.exists(name)
+amin.pickFile(opts, fn)             // `file` ONLY (v2.2) — async picker
+amin.ui                             // `ui` ONLY (v2.2) — see UI surface;
+                                    // null when the capability is absent
+amin.relay                          // `relay` ONLY (v2.2) — see Relay;
+                                    // null when the capability is absent
 ```
 
 `amin.httpGet` semantics are unchanged from v1: null on failure, never
@@ -225,9 +348,29 @@ var ok2 = amin.react(ref, "👍")             // → true / false
   bound.
 - Both return `true` once the request has been dispatched, `false` on
   any failure; neither ever throws across the bridge.
-- **There is NO delete and NO pin.** Plugins cannot delete or pin
-  messages — that surface does not exist in v2.1 (it is reserved for a
-  later phase). Do not invent `amin.deleteMessage` / `amin.pinMessage`.
+
+New in v2.2, same `act` capability, same ref shape:
+
+```js
+var okD = amin.deleteMessage(ref, { forEveryone: true })  // → true / false
+var okP = amin.pinMessage(ref, { notify: false, pmOneSide: false }) // → true / false
+// opts is optional; both default to the least destructive form
+// (local delete / silent pin).
+```
+
+- `deleteMessage` deletes through the app's own delete path (local
+  storage, dialogs and the server request stay consistent).
+  **`forEveryone` is honoured ONLY for the user's own messages** —
+  enforced natively: asking for it on someone else's message degrades
+  to a local-only delete with a warning in your log (the call still
+  returns `true` when the local delete is dispatched). Never promise
+  the user a for-everyone delete you didn't verify.
+- `pinMessage` pins in the message's chat. `notify: true` un-silences
+  the pin (other members get the pin system message); `pmOneSide:
+  true` in a private chat pins only on the user's side.
+- Same loaded-message bound as edit/react (unloaded → `false`).
+  **Every delete/pin call is written to your plugin's log with its
+  target ids** — destructive power is auditable by design.
 
 ## Async HTTP (v2.1)
 
@@ -284,6 +427,36 @@ sub.set("a", 1)                       // physically stored as "cache:a"; views
   anyway, but logged as a warning — treat 64 KB as the design limit.)
 - Storage is per-plugin and private: no plugin can read another's keys.
 
+## Database — `amin.db` (v2.2, EVERY plugin)
+
+When storage's flat keys stop being enough — many records, prefix
+scans, values bigger than a preference — use the per-plugin key/value
+database. It is a base surface like storage (no capability needed);
+your rows live in a shared database file, physically namespaced by
+your plugin id — you can never see another plugin's rows.
+
+```js
+amin.db.put("notes", "n1", { title: "Shopping", done: false })  // → true
+var note = amin.db.get("notes", "n1")        // → the object, or null
+var ids  = amin.db.keys("notes", "n")        // → ["n1", …] sorted,
+                                             // prefix-filtered
+amin.db.del("notes", "n1")                   // → true when a row went away
+amin.db.clear("notes")                       // empties ONE namespace
+```
+
+- Values are any JSON-shaped value (object/array/string/number/
+  bool/null) — they cross as JSON, so functions and `undefined` are
+  refused: `put` returns `false` and logs a warning.
+- **Contract limits (hard, not warnings):** a value's JSON must be
+  **≤ 256 KB**, and namespace + key names **≤ 128 chars** each.
+  Violations make `put` return `false`; `get`/`del` of out-of-contract
+  names simply find nothing. Design keys accordingly (short ids,
+  prefix schemes like `"note:2026-10-21:3"`).
+- `get` returns `null` for a missing key — distinguish "absent" from a
+  stored JSON `null` via `keys()` if it matters.
+- Nothing throws. A `false` from `put` means NOT stored — check it
+  when the write matters.
+
 ## Sending files (`file` capability only, v2.0)
 
 If the manifest does NOT declare the `file` capability, `amin.sendFile`
@@ -323,6 +496,183 @@ var ok = amin.sendFile(url, opts)   // SYNCHRONOUS — returns a boolean
   (or is unavailable), post the plain link with `amin.reply` /
   `amin.send` instead, so the user always gets something. The bundled
   media-dl works exactly this way: real media first, link fallback.
+
+## File store + picker (`file` capability only, v2.2)
+
+`amin.files` is your plugin's private sandbox directory — for content
+that is a FILE (downloaded text, generated output, a working copy),
+not a value. Like `amin.sendFile`, it does not exist without the
+`file` capability (`typeof amin.files === "undefined"`).
+
+```js
+amin.files.writeText("draft.txt", "hello")   // → true / false
+var text = amin.files.readText("draft.txt")  // → string, or null
+var list = amin.files.list()  // → [{name, sizeBytes, modifiedAt}, …] sorted by name
+amin.files.exists("draft.txt")               // → bool
+amin.files.remove("draft.txt")               // → bool
+```
+
+- **Bare file names only.** No directories, no paths: a name with
+  `/`, `\`, `..` or a NUL, or longer than 128 chars, is rejected
+  (`writeText`/`remove` → `false`, `readText` → `null`). There is no
+  way out of your sandbox — don't design around subfolders.
+- **50 MB total quota** per plugin: a write that would exceed it
+  fails with `false` (and the partial file is discarded). Check
+  `list()` sizes when you manage big content.
+- Text only. For binary, save via a flow that produces a path (below)
+  and pass paths to `amin.sendFile`-style sends by URL — the sandbox
+  is for text you read back with `readText`.
+
+`amin.pickFile` lets the user hand you a file through the system
+document picker — the only way a plugin receives a local file:
+
+```js
+amin.pickFile({ accept: "video/*", copy: true }, function (path) {
+  if (path === null) { /* user cancelled — say nothing or say so once */ }
+  else { /* path = absolute path of the picked file */ }
+});
+```
+
+- ASYNC: the callback fires when the picker closes — later, on your
+  plugin's thread. `copy: true` (the default) copies the file into
+  your sandbox first (durable — the original may vanish); the path
+  you get is the copy's. `copy: false` stages it in a cache dir
+  instead (faster, but treat the path as temporary).
+- Cancellation and every failure deliver `null`. There is no error
+  object — `null` IS the failure signal.
+- `{accept}` is a MIME filter (`"video/*"`, `"application/pdf"`,
+  `"*/*"` default). The picker is the system's; you get one file
+  per call.
+
+## UI surface (`ui` capability only, v2.2)
+
+`amin.ui` covers the small ways a plugin touches the interface
+directly. Without the `ui` capability the field is **null** (not
+undefined — check `if (amin.ui)` or feature-detect `"ui"`).
+
+```js
+amin.ui.clipboardWrite("text")        // → true / false. WRITE-only:
+                                      // there is no clipboard read.
+amin.ui.notify("Title", "Body")       // → true / false
+amin.ui.notify("Title", "Body", { chatId: 123456 })
+                                      // tapping the notification
+                                      // opens that chat
+amin.ui.openUrl("https://example.com") // → true / false
+amin.ui.openChat(chatId)              // → true / false
+amin.ui.openUser(userId)              // → true / false (opens the
+                                      // private chat with that user)
+```
+
+- `notify` posts to the app's single "Plugin notifications" channel.
+  A native sanity cap allows **5 notifications per minute per
+  plugin**; beyond that `notify` returns `false` and logs a line.
+  Notifications are for events the user asked to hear about — never
+  a per-message firehose.
+- `openUrl` accepts only `http:`, `https:` and `tg:` URLs; anything
+  else returns `false` (and logs). The URL opens in the system
+  handler / Telegram itself.
+- `openChat` / `openUser` route through the same intent the app's
+  own notifications use. They return `true` once dispatched — they
+  cannot promise the chat exists; a stale id just lands the user on
+  the chat list.
+- All five return booleans and never throw.
+
+### Context-menu items (`@contextMenu` + `onContextAction`)
+
+Declare `@contextMenu <label>` (and the `ui` capability) and define:
+
+```js
+function onContextAction(ctx) {
+  // ctx = { chatId, msg } — msg is the rich message object the user
+  // long-pressed. Runs on your plugin thread, standard budget.
+}
+```
+
+Your item appears in the message long-press menu alongside the
+built-in actions. At most **4** plugin items show (hub order), so
+don't be surprised if yours isn't always visible on a crowded
+install. The menu path itself is metadata-only — your code runs
+only when the user actually taps your item.
+
+## Relay — plugin-to-plugin (`relay` capability only, v2.2)
+
+Plugins can offer services to each other and broadcast events,
+without any shared storage. Without the `relay` capability
+`amin.relay` is **null**.
+
+**Offering:** list method names in `@exports` and implement them on a
+global `PLUGIN_API` object:
+
+```js
+// @exports shoutText
+var PLUGIN_API = {
+  shoutText: function (text) { return String(text).toUpperCase() + "!"; }
+};
+```
+
+**Calling** (async — the result comes back through the callback):
+
+```js
+amin.relay.call("text-utils", "shoutText", ["hello"], function (err, result) {
+  if (err) { /* err is a string: no such plugin / disabled / not
+                exported / suspended / depth exceeded / the method
+                threw (its message) */ }
+  else { /* result = the return value, deep-copied as JSON */ }
+});
+```
+
+- Arguments and results cross as **JSON deep copies** — no shared
+  objects, no functions. A result that isn't JSON-shaped fails the
+  call with an error string.
+- Recursion is capped: a relay chain may nest **4** calls deep; the
+  next one fails with `"relay depth exceeded"`. Design providers to
+  be leaves, not routers.
+- `call` NEVER throws — argument mistakes (missing target/method,
+  unserialisable args) also arrive as the callback's `err`.
+
+**Events** (fire-and-forget broadcast):
+
+```js
+amin.relay.emit("download-done", { chatId: 123, name: "clip.mp4" });
+// receiver side — declare @topics download-done (or *) and define:
+function onEvent(topic, data) { /* data is a JSON deep copy */ }
+```
+
+Delivery goes to enabled plugins that define `onEvent` AND list the
+topic (or `*`) in `@topics`. The emitter never receives its own
+event. Both sides log relay traffic — keep event payloads small and
+meaningful.
+
+**Dependencies:** if you call another plugin, declare it:
+`@depends text-utils@>=1.0`. Install then fails cleanly when it's
+missing or too old, instead of your calls failing at runtime.
+
+## Plugin page — `PLUGIN_PAGE` + `onPluginAction` (v2.2)
+
+Your plugin's hub page can carry your own rows (needs the `settings`
+capability — the same one that unlocks SETTINGS):
+
+```js
+var PLUGIN_PAGE = [
+  { type: "info", text: "Counters reset every Monday." },
+  { type: "action", id: "reset", title: "Reset counters",
+    subtitle: "Zero everything now" }
+];
+
+function onPluginAction(actionId) {
+  if (actionId === "reset") { /* … */ amin.toast("Counters reset"); }
+}
+```
+
+- `info` rows are static text; `action` rows are tappable and
+  dispatch `onPluginAction(actionId)` on your thread.
+- Malformed rows (unknown type, action without `id`/`title`, info
+  without `text`) are skipped silently at install; at most **24**
+  rows are kept. The rows are read ONCE at install (the probe) —
+  changing them needs a reinstall/update, they are not dynamic.
+- Pair with `amin.db`/`amin.storage` reads inside `onPluginAction`
+  for pages that DO things (export, reset, recompute), and use
+  `amin.ui.notify` / `amin.toast` to report the outcome.
 
 ## Google account (`google` capability only) — dual mode (v2.1)
 
@@ -425,6 +775,18 @@ function onMenuAction(ctx) { /* runs when the user taps this plugin's button in
   post your result with amin.send(ctx.chatId, …) / amin.reply({chatId: ctx.chatId, id: 0}, …).
   Button label/icon come from @menuLabel/@icon unless the user overrode
   them on the hub's Menu plugins page. */ }
+
+function onContextAction(ctx) { /* v2.2 — the user tapped your
+  @contextMenu item on a message. Requires the `ui` capability.
+  ctx = { chatId, msg }. See UI surface. */ }
+
+function onEvent(topic, data) { /* v2.2 — a relay event arrived.
+  Requires the `relay` capability and the topic (or *) in @topics.
+  See Relay. */ }
+
+function onPluginAction(actionId) { /* v2.2 — a PLUGIN_PAGE action
+  row was tapped on your hub page. Requires the `settings`
+  capability. See Plugin page. */ }
 ```
 
 ### Lifecycle hooks (v2.1)
@@ -469,18 +831,31 @@ var SETTINGS = [
   { key: "volume", type: "slider", title: "Volume", def: 50, min: 0, max: 100, step: 5 },
   { key: "lang", type: "select", title: "Language", def: "fa",
     options: [{ value: "fa", label: "Persian" }, { value: "en", label: "English" }] },
+  { key: "accent", type: "color", title: "Accent color", def: "#FF8800" },
+  { key: "model", type: "file", title: "Model file", def: "", accept: "*/*" },
   { type: "header", title: "Advanced" },
   { key: "apiKey", type: "text", title: "API key", def: "",
     dependsOn: { key: "loud", equals: true } }
 ];
 ```
 
-Six row types: **`bool`**, **`text`**, **`number`**, **`slider`**,
-**`select`**, **`header`**. The hub builds the settings page from this
+Eight row types: **`bool`**, **`text`**, **`number`**, **`slider`**,
+**`select`**, **`header`**, **`color`** and **`file`** (the last two
+are new in v2.2). The hub builds the settings page from this
 automatically. Read values with `amin.storage.get(key, def)` — pass a
 default of the right type (bool def → boolean back, number/slider def →
-number back, text/select → string) and trim `text` values before use —
-mobile keyboards add trailing spaces.
+number back, text/select/color/file → string) and trim `text` values
+before use — mobile keyboards add trailing spaces.
+
+- `color`: the hub renders Telegram's own color picker; the stored
+  value is a normalised **`#RRGGBB`** string (upper-case). `def` must
+  be a valid `#RRGGBB` too (strict mode rejects anything else, naming
+  the key).
+- `file`: the hub renders a document-picker row; the picked file is
+  **copied into the app's private storage** and the stored value is
+  the copy's **absolute path** (a string; `""` = nothing picked yet).
+  `accept` (optional) is the picker's MIME filter. Read the file from
+  the path; never assume the user's original still exists.
 
 - Any row: `key`, `type`, `title`, `def`, `help` (a subtitle shown
   under the row), `dependsOn`.
@@ -505,7 +880,10 @@ installed for the FIRST time, the schema is validated **strictly**: an
 invalid schema fails the install with an error naming the offending
 keys. Strict errors include: unknown `type`, a `select` with no
 options, `min` greater than `max`, a non-numeric `def` for
-number/slider, and a duplicate `key`. Reinstalling an EXISTING id is
+number/slider, a `color` whose `def` isn't `#RRGGBB`, and a duplicate
+`key`. (Lenient mode coerces a bad color to `#000000` with a warning;
+a `file` row's stored value is just a path string — `accept` is a
+hint to the picker, never validated against the file.) Reinstalling an EXISTING id is
 lenient instead — the same problems become warnings in the plugin's
 log and are coerced (unknown type → `text`; option-less select →
 `text`; `min > max` → both dropped; bad numeric default → 0; duplicate
@@ -544,10 +922,14 @@ amin.platform.apiVersion            // 2 in this build
 amin.platform.has("act")            // true when the named feature exists
 ```
 
-Feature names in this build — exactly these twelve:
+Feature names in this build — exactly these twenty-one:
 `rich-msg`, `lazy-lookup`, `act`, `http-async`, `storage-json`,
 `settings-v2`, `lifecycle`, `watchdog`, `platform`, `sendFile`,
-`http-headers`, `reply-context`.
+`http-headers`, `reply-context`, and the v2.2 additions `db`,
+`files`, `pickFile`, `ui`, `relay`, `act-delete-pin`, `plugin-page`,
+`context-menu`, `settings-color-file`. (`amin.platform.has("act")`
+covers edit/react; `act-delete-pin` tells you delete/pin exist in
+this build — still declare the `act` capability to use them.)
 Feature-detect instead of version-sniffing:
 `if (amin.platform && amin.platform.has("storage-json")) { … }` — and
 keep a fallback for when the answer is no (the bundled quick-replies
@@ -563,20 +945,91 @@ does exactly this for its template store).
    command or a message the user clearly configured the plugin to answer.
 4. Never invent bridge functions or capabilities. If a capability is not
    listed above, the plugin cannot do it — say so in a comment at the
-   top instead of guessing. (In particular: no message delete, no pin.)
+   top instead of guessing. (Message delete and pin DO exist — under
+   `act`, since v2.2. What does not exist: reading the clipboard,
+   scheduling anything, running in the background, touching another
+   plugin's storage/db/files.)
 5. Check structural gates defensively where a fallback exists:
    `typeof amin.sendFile === "function"` before relying on it, and
    always provide the link fallback when it is missing or returns false.
    The same applies to `amin.editMessage` / `amin.react` (`act`),
-   `amin.google` (`google`), and new-in-v2.1 surfaces via
-   `amin.platform.has(...)`.
+   `amin.google` (`google`), the access objects `amin.files`
+   (a field on `file` bridges), `amin.ui` / `amin.relay` (fields that
+   are **null** without their capability — test truthiness, not
+   `typeof`), and new surfaces via `amin.platform.has(...)`.
 6. Prefer the async HTTP forms over the blocking ones, and never store
    OAuth tokens in `amin.storage`.
+7. Respect the store contracts: db values ≤ 256 KB JSON, db/file names
+   ≤ 128 chars, files are bare names in a 50 MB sandbox, storage
+   values ≤ 64 KB by design. A refused write returns `false` — it
+   does not throw, and it does not partially store.
+8. Mind the review screen: before an outside install (file / paste /
+   catalog / pack) the user sees your name, author, version, source,
+   code fingerprint and your capabilities in plain language — and, on
+   an update, any capabilities the new version ADDS are highlighted
+   for explicit confirmation. Write an honest `@description`;
+   don't smuggle power into an update.
+
+## Anti-patterns (designs that fail here)
+
+- **Blocking HTTP in `onMessage`.** The sync calls stall the one
+  shared plugin thread for up to ~30 s; every plugin waits behind
+  you. Match cheaply in `onMessage`, fetch async, answer in the
+  callback.
+- **Big values in `amin.storage`.** Storage is a preferences store
+  (64 KB design limit). Records belong in `amin.db` (256 KB values,
+  namespaced keys), file content in `amin.files`.
+- **Polling-shaped code.** No timers exist and none are coming: a
+  plugin that "checks every minute" cannot be written on this
+  platform. React to messages, commands, taps and relay events —
+  if a design needs a clock, it needs a different shape (e.g. react
+  when the user next opens the chat).
+- **Assuming messages are loaded.** History lookups/actions see only
+  what the app has loaded this session. Code that "finds the message
+  from last week" will get `null` — handle it as a normal case, not
+  an error.
+- **Inventing relay partners.** `amin.relay.call` to a plugin that
+  isn't installed (or doesn't `@exports` the method) fails through
+  the callback's `err`. Declare real partners in `@depends` so the
+  install itself guarantees them.
+- **Notification firehoses.** `amin.ui.notify` is capped at 5/min and
+  meant for configured events. Per-message notifications train the
+  user to uninstall you.
+- **Storing secrets you were handed at runtime** (OAuth tokens,
+  one-time codes) in storage/db/files. Fetch fresh credentials
+  through their proper surface each time.
+
+## Developing & sharing (v2.2)
+
+- **Editor:** every plugin page has **Edit code** — fix a bug in
+  place; saving re-validates and hot-reloads. The previous code is
+  kept as a rollback copy: **Restore previous version** in the
+  editor brings it back. The plugin page's **Reload plugin** restarts
+  a wedged runtime without reinstalling.
+- **Eval console:** with **Developer mode** on (hub → Developer —
+  off by default, re-locks every app session), the plugin page gains
+  a Developer section: runtime state, a live log tail, a storage
+  inspector (storage keys + db namespaces, editable), and an eval
+  console that runs a snippet in the plugin's own scope. Evaluations
+  are written to the plugin's log; snippets are never stored.
+- **Catalog:** the curated catalog (hub → Add Plugin → Plugin
+  catalog) installs after SHA-256 verification + the review screen.
+  The Built-in library stays offline and unchanged.
+- **Packs:** hub → Add Plugin → Export/Import plugin pack shares a
+  chosen set of installed plugins (code + their storage) as one JSON
+  file. Importing walks each plugin through the review screen.
+- **Install provenance:** every install records its source
+  (bundled / file / paste / catalog / pack / editor) and a short
+  SHA-256 fingerprint of the code, shown on the plugin page and the
+  review screen — when a user asks "which copy is this?", that's
+  the answer.
 
 ## Bundled plugins (reference implementations)
 
 These ship inside AminGram and pre-install; their sources are the best
-worked examples of the surfaces above (12 in v2.1):
+worked examples of the surfaces above (the Built-in library ships 10;
+the asset folder also carries the shout / quick-translate example
+sources):
 
 - **shout** — the Example 1 plugin (`commands`, `send`).
 - **vip-alert** — the Example 2 plugin (`observe`, `settings`).
@@ -884,6 +1337,65 @@ function guessType(url) {
   return "file";
 }
 ```
+
+## Example C (v2.2, full) — a note-keeper with db, a plugin page, relay events and a notification
+
+```js
+// ==AminGramPlugin==
+// @id          note-keeper
+// @name        Note Keeper
+// @version     1.0.0
+// @author      Amin
+// @description Saves notes with /note, lists them from its plugin page, and broadcasts a relay event other plugins can hear.
+// @capabilities commands, send, settings, relay, ui
+// @topics      notes-cleared
+// ==/AminGramPlugin==
+
+// The plugin page (settings capability): one info row + two actions.
+var PLUGIN_PAGE = [
+  { type: "info", text: "Your notes live in this plugin's own database." },
+  { type: "action", id: "count", title: "How many notes?",
+    subtitle: "Shows the count as a notification" },
+  { type: "action", id: "wipe", title: "Delete all notes" }
+];
+
+function noteKeys() { return amin.db.keys("notes", "n:"); }
+
+function onCommand(ctx) {
+  if (ctx.command === "note") {
+    var id = "n:" + Date.now();
+    if (amin.db.put("notes", id, { text: ctx.args, chatId: ctx.chatId })) {
+      amin.reply(ctx.msg, "Saved. You have " + noteKeys().length + " note(s).");
+    } else {
+      amin.reply(ctx.msg, "Could not save that note (too large?).");
+    }
+  }
+}
+
+function onPluginAction(actionId) {
+  if (actionId === "count") {
+    if (amin.ui) amin.ui.notify("Note Keeper",
+      noteKeys().length + " note(s) saved");
+  } else if (actionId === "wipe") {
+    amin.db.clear("notes");
+    if (amin.relay) amin.relay.emit("notes-cleared", { by: "note-keeper" });
+    amin.toast("All notes deleted");
+  }
+}
+
+function onEvent(topic, data) {
+  // We also listen for our own topic pattern from other plugins
+  // (the emitter never receives its own events).
+  amin.log("event " + topic + ": " + JSON.stringify(data));
+}
+```
+
+Notes on Example C: `amin.db` needs **no capability** (base
+surface); `PLUGIN_PAGE` rides on `settings`; `amin.ui` /
+`amin.relay` are null-checked because fields (not functions) carry
+those gates; a `/note` argument so large that its JSON passes
+256 KB makes `put` return `false` — handled inline instead of
+throwing.
 
 ---
 
