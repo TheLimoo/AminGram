@@ -1,0 +1,236 @@
+{
+  "catalogVersion": 1,
+  "updatedAt": "2026-10-21",
+  "plugins": [
+    {
+      "id": "shout",
+      "name": "Shout",
+      "version": "1.0",
+      "author": "Amin",
+      "description": "/shout <text> posts the text in uppercase.",
+      "category": "Fun",
+      "capabilities": [
+        "commands",
+        "send"
+      ],
+      "minPlatform": 1,
+      "depends": [],
+      "url": "https://raw.githubusercontent.com/TheLimoo/AminGram/main/TMessagesProj/src/main/assets/amingram_plugins/shout.js",
+      "sha256": "d2bccb64e0f1cd2623beb1280c43916858c12c673c29c6aee85e6a17f2323ec0",
+      "updatedAt": "2026-10-21"
+    },
+    {
+      "id": "vip-alert",
+      "name": "VIP Alert",
+      "version": "1.0",
+      "author": "Amin",
+      "description": "Toasts when a chosen person writes in any chat.",
+      "category": "Utilities",
+      "capabilities": [
+        "observe",
+        "settings"
+      ],
+      "minPlatform": 1,
+      "depends": [],
+      "url": "https://raw.githubusercontent.com/TheLimoo/AminGram/main/TMessagesProj/src/main/assets/amingram_plugins/vip-alert.js",
+      "sha256": "64a45f7dc24f612b87e2d71b66d8e61f7c46c63771ef46453b83b34e2ca1f4e5",
+      "updatedAt": "2026-10-21"
+    },
+    {
+      "id": "media-dl",
+      "name": "Media Downloader",
+      "version": "2.1",
+      "author": "Amin",
+      "description": "Sends TikTok, X/Twitter, Reddit and Instagram media directly into the chat, extracts TikTok MP3s, and falls back to links when a file cannot be sent. Commands: /dl, /mp3 — or tap Download media in the chat attach menu.",
+      "category": "Media",
+      "capabilities": [
+        "observe",
+        "commands",
+        "send",
+        "http",
+        "settings",
+        "menu",
+        "file"
+      ],
+      "minPlatform": 1,
+      "depends": [],
+      "url": "https://raw.githubusercontent.com/TheLimoo/AminGram/main/TMessagesProj/src/main/assets/amingram_plugins/media-dl.js",
+      "sha256": "2608a56803621b82713306fc42d06230c812c639f6dba2b443ad2359bd22dbb0",
+      "updatedAt": "2026-10-21"
+    },
+    {
+      "id": "temp-mail",
+      "name": "Temp Mail",
+      "version": "2.0",
+      "author": "Amin",
+      "description": "Disposable email via mail.tm: /tm new creates a real account, /tm inbox lists mail, /tm read <id> opens one — verification codes and links are extracted and posted in chat. (v2: mail.tm replaced the dead 1secmail.)",
+      "category": "Mail",
+      "capabilities": [
+        "commands",
+        "send",
+        "http",
+        "settings",
+        "menu"
+      ],
+      "minPlatform": 1,
+      "depends": [],
+      "url": "https://raw.githubusercontent.com/TheLimoo/AminGram/main/TMessagesProj/src/main/assets/amingram_plugins/temp-mail.js",
+      "sha256": "ee10d534392ff74a1952e2969ee1f6f053568f0355feededcc92bbe335424e3f",
+      "updatedAt": "2026-10-21"
+    },
+    {
+      "id": "aesthetic-text",
+      "name": "Aesthetic Text",
+      "version": "1.0",
+      "author": "Amin",
+      "description": "Restyle text: /wide makes ｆｕｌｌｗｉｄｔｈ text, /space spreads l e t t e r s out, /fliptext turns text upside down.",
+      "category": "Fun",
+      "capabilities": [
+        "commands",
+        "send",
+        "menu"
+      ],
+      "minPlatform": 1,
+      "depends": [],
+      "url": "https://raw.githubusercontent.com/TheLimoo/AminGram/main/TMessagesProj/src/main/assets/amingram_plugins/aesthetic-text.js",
+      "sha256": "f4d6bccbeada38fe7aa88baf28f821e9f28c671d201e273efd3412180ca6cdc0",
+      "updatedAt": "2026-10-21"
+    },
+    {
+      "id": "quick-translate",
+      "name": "Quick Translate",
+      "version": "1.0",
+      "author": "Amin",
+      "description": "/tr <text> translates text (default target: Persian). /tr en <text> picks another target language.",
+      "category": "Utilities",
+      "capabilities": [
+        "commands",
+        "send",
+        "http",
+        "settings"
+      ],
+      "minPlatform": 1,
+      "depends": [],
+      "url": "https://raw.githubusercontent.com/TheLimoo/AminGram/main/TMessagesProj/src/main/assets/amingram_plugins/quick-translate.js",
+      "sha256": "a8847df287f8222dbdfbdb095ee9a3d60b6569248bc2eb988fa3805b7221b9e8",
+      "updatedAt": "2026-10-21"
+    },
+    {
+      "id": "gemini-chat",
+      "name": "Gemini Chat",
+      "version": "1.0",
+      "author": "Amin",
+      "description": "/ai <question> asks Gemini, using your connected Google account (no API key).",
+      "category": "AI",
+      "capabilities": [
+        "commands",
+        "send",
+        "http",
+        "google",
+        "settings",
+        "menu"
+      ],
+      "minPlatform": 1,
+      "depends": [],
+      "url": "https://raw.githubusercontent.com/TheLimoo/AminGram/main/TMessagesProj/src/main/assets/amingram_plugins/gemini-chat.js",
+      "sha256": "3af90f6530f259e0ea8c73b94ade7afa052e70516a0d37b4a59df394ee219a4a",
+      "updatedAt": "2026-10-21"
+    },
+    {
+      "id": "link-cleaner",
+      "name": "Link Cleaner",
+      "version": "1.0",
+      "author": "Amin",
+      "description": "/clean <url> strips tracking parameters (utm_*, fbclid, gclid, igshid, ref, si, …) and resolves short links. No argument reuses the last link seen in this chat — or tap Link Cleaner in the chat attach menu.",
+      "category": "Utilities",
+      "capabilities": [
+        "commands",
+        "send",
+        "http",
+        "menu"
+      ],
+      "minPlatform": 1,
+      "depends": [],
+      "url": "https://raw.githubusercontent.com/TheLimoo/AminGram/main/TMessagesProj/src/main/assets/amingram_plugins/link-cleaner.js",
+      "sha256": "fbe6e4f789c5dd2cd36f1bdde6bed56cd5d49f7566990e7127a34b2fe14fb567",
+      "updatedAt": "2026-10-21"
+    },
+    {
+      "id": "qr-maker",
+      "name": "QR Maker",
+      "version": "1.0",
+      "author": "Amin",
+      "description": "/qr <text or link> posts a QR code image for it (qrserver.com). If the image cannot be sent, the QR image link is posted instead.",
+      "category": "Utilities",
+      "capabilities": [
+        "commands",
+        "send",
+        "http",
+        "file"
+      ],
+      "minPlatform": 1,
+      "depends": [],
+      "url": "https://raw.githubusercontent.com/TheLimoo/AminGram/main/TMessagesProj/src/main/assets/amingram_plugins/qr-maker.js",
+      "sha256": "9bc5cc4dfacb8e1ba9f247f77284e192efa2ab589ba8109eef392266a2cf5e0b",
+      "updatedAt": "2026-10-21"
+    },
+    {
+      "id": "price-check",
+      "name": "Price Check",
+      "version": "1.0",
+      "author": "Amin",
+      "description": "/price shows live Iran-market prices in tomans (dollar, gold 18k, Emami coin, BTC, ETH). /price btc|eth|usd|gold|coin shows just one. Sources: tgju.org + CoinGecko — the same endpoints as the toolbox bot.",
+      "category": "Money",
+      "capabilities": [
+        "commands",
+        "send",
+        "http"
+      ],
+      "minPlatform": 1,
+      "depends": [],
+      "url": "https://raw.githubusercontent.com/TheLimoo/AminGram/main/TMessagesProj/src/main/assets/amingram_plugins/price-check.js",
+      "sha256": "32f2f9dae25963f9a58de4a5190c1f10b817d4fece6da93699887052d3b5980e",
+      "updatedAt": "2026-10-21"
+    },
+    {
+      "id": "ai-actions",
+      "name": "AI Actions",
+      "version": "1.0",
+      "author": "Amin",
+      "description": "AI on any message: reply to a message with /sum to summarize it, /explain to explain it simply, or /draft to draft a reply to it — or pass text directly (/sum <text>). Uses Gemini via your connected Google account (AI Studio or Vertex AI mode, see Plugins → Google Account).",
+      "category": "AI",
+      "capabilities": [
+        "commands",
+        "send",
+        "http",
+        "google",
+        "menu",
+        "observe",
+        "settings"
+      ],
+      "minPlatform": 1,
+      "depends": [],
+      "url": "https://raw.githubusercontent.com/TheLimoo/AminGram/main/TMessagesProj/src/main/assets/amingram_plugins/ai-actions.js",
+      "sha256": "bb765fea05449c1c4c0b3712619e4aad87df340eb8399cb00ac3ee95338932bf",
+      "updatedAt": "2026-10-21"
+    },
+    {
+      "id": "quick-replies",
+      "name": "Quick Replies",
+      "version": "1.0",
+      "author": "Amin",
+      "description": "Text templates: /tpl set <name> <text> saves one, /tpl <name> posts it, /tpl list shows your templates, /tpl del <name> removes one. Note: the /tpl command message itself also appears in the chat (the platform can't swallow outgoing commands yet).",
+      "category": "Utilities",
+      "capabilities": [
+        "commands",
+        "send",
+        "settings"
+      ],
+      "minPlatform": 1,
+      "depends": [],
+      "url": "https://raw.githubusercontent.com/TheLimoo/AminGram/main/TMessagesProj/src/main/assets/amingram_plugins/quick-replies.js",
+      "sha256": "16946e41b26adc6e945ea71e903ce9d01106789369db22b8f7eab52542890b9c",
+      "updatedAt": "2026-10-21"
+    }
+  ]
+}
