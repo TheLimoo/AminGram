@@ -34,6 +34,20 @@ public final class JsPlugin {
         public final List<String> optionLabels = new ArrayList<>();
         public String dependsOnKey = "";
         public String dependsOnEquals = "";
+        /** Settings schema v2 rest (Phase B, §1.5): for type
+         *  "file", the SAF accept pattern ("" = any). */
+        public String accept = "";
+    }
+
+    /** One PLUGIN_PAGE row (Phase B, §1.8a), probe-parsed at
+     *  install: type is "info" (static text) or "action" (a
+     *  tappable row dispatched to onPluginAction(id)). */
+    public static final class PageRow {
+        public String type = "info";
+        public String id = "";
+        public String title = "";
+        public String subtitle = "";
+        public String text = "";
     }
 
     public String id;
@@ -71,6 +85,24 @@ public final class JsPlugin {
      *  the number of hook errors recorded that day. Persisted. */
     public String errDay = "";
     public int errCount = 0;
+    // Platform Phase B additive fields (§1.8b/§1.10/§2.4/§2.7).
+    /** Manifest @contextMenu label ("" = no menu item). */
+    public String contextMenu = "";
+    /** Manifest @exports method names (relay providers). */
+    public final List<String> exports = new ArrayList<>();
+    /** Manifest @topics relay subscriptions ("*" allowed). */
+    public final List<String> topics = new ArrayList<>();
+    /** Manifest @depends raw entries ("id" or "id@>=X.Y"). */
+    public final List<String> depends = new ArrayList<>();
+    public boolean hasContext;
+    public boolean hasEvent;
+    public boolean hasPluginAction;
+    /** Probe-parsed PLUGIN_PAGE rows (§1.8a). */
+    public final List<PageRow> pageRows = new ArrayList<>();
+    /** Install source (§2.7): bundled|file|paste|catalog|pack|editor. */
+    public String installSource = "";
+    /** SHA-256 short fingerprint of the installed code (§2.7). */
+    public String fingerprint = "";
 
     public boolean hasCapability(String capability) {
         return capabilities.contains(capability);
@@ -149,6 +181,7 @@ public final class JsPlugin {
                 d.put("optionLabels", labels);
                 d.put("dependsOnKey", def.dependsOnKey == null ? "" : def.dependsOnKey);
                 d.put("dependsOnEquals", def.dependsOnEquals == null ? "" : def.dependsOnEquals);
+                d.put("accept", def.accept == null ? "" : def.accept);
                 defs.put(d);
             }
             o.put("settings", defs);
@@ -166,6 +199,39 @@ public final class JsPlugin {
             o.put("minPlatform", minPlatform);
             o.put("errDay", errDay == null ? "" : errDay);
             o.put("errCount", errCount);
+            // Platform Phase B additive keys (§1.8/§1.10/§2.7).
+            o.put("contextMenu", contextMenu == null ? "" : contextMenu);
+            JSONArray ex = new JSONArray();
+            for (String s : exports) {
+                ex.put(s);
+            }
+            o.put("exports", ex);
+            JSONArray tp = new JSONArray();
+            for (String s : topics) {
+                tp.put(s);
+            }
+            o.put("topics", tp);
+            JSONArray dp = new JSONArray();
+            for (String s : depends) {
+                dp.put(s);
+            }
+            o.put("depends", dp);
+            o.put("hasContext", hasContext);
+            o.put("hasEvent", hasEvent);
+            o.put("hasPluginAction", hasPluginAction);
+            JSONArray rows = new JSONArray();
+            for (PageRow row : pageRows) {
+                JSONObject r = new JSONObject();
+                r.put("type", row.type);
+                r.put("id", row.id);
+                r.put("title", row.title);
+                r.put("subtitle", row.subtitle);
+                r.put("text", row.text);
+                rows.put(r);
+            }
+            o.put("pageRows", rows);
+            o.put("installSource", installSource == null ? "" : installSource);
+            o.put("fingerprint", fingerprint == null ? "" : fingerprint);
         } catch (Exception ignored) {
         }
         return o;
@@ -233,6 +299,7 @@ public final class JsPlugin {
                 }
                 def.dependsOnKey = d.optString("dependsOnKey", "");
                 def.dependsOnEquals = d.optString("dependsOnEquals", "");
+                def.accept = d.optString("accept", "");
                 plugin.settings.add(def);
             }
         }
@@ -250,6 +317,47 @@ public final class JsPlugin {
         plugin.minPlatform = o.optInt("minPlatform", 1);
         plugin.errDay = o.optString("errDay", "");
         plugin.errCount = o.optInt("errCount", 0);
+        // Platform Phase B additive keys; absent in pre-B metas.
+        plugin.contextMenu = o.optString("contextMenu", "");
+        JSONArray ex = o.optJSONArray("exports");
+        if (ex != null) {
+            for (int i = 0; i < ex.length(); i++) {
+                plugin.exports.add(ex.optString(i));
+            }
+        }
+        JSONArray tp = o.optJSONArray("topics");
+        if (tp != null) {
+            for (int i = 0; i < tp.length(); i++) {
+                plugin.topics.add(tp.optString(i));
+            }
+        }
+        JSONArray dp = o.optJSONArray("depends");
+        if (dp != null) {
+            for (int i = 0; i < dp.length(); i++) {
+                plugin.depends.add(dp.optString(i));
+            }
+        }
+        plugin.hasContext = o.optBoolean("hasContext");
+        plugin.hasEvent = o.optBoolean("hasEvent");
+        plugin.hasPluginAction = o.optBoolean("hasPluginAction");
+        JSONArray rows = o.optJSONArray("pageRows");
+        if (rows != null) {
+            for (int i = 0; i < rows.length(); i++) {
+                JSONObject r = rows.optJSONObject(i);
+                if (r == null) {
+                    continue;
+                }
+                PageRow row = new PageRow();
+                row.type = r.optString("type", "info");
+                row.id = r.optString("id", "");
+                row.title = r.optString("title", "");
+                row.subtitle = r.optString("subtitle", "");
+                row.text = r.optString("text", "");
+                plugin.pageRows.add(row);
+            }
+        }
+        plugin.installSource = o.optString("installSource", "");
+        plugin.fingerprint = o.optString("fingerprint", "");
         return plugin;
     }
 }

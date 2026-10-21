@@ -142,6 +142,14 @@ public final class JsPluginManager {
                     || fullClassName.equals("org.telegram.messenger.amin.plugins.js.AminBridge$WithFileAct")
                     || fullClassName.equals("org.telegram.messenger.amin.plugins.js.AminBridge$WithGoogleFileAct")
                     || fullClassName.equals("org.telegram.messenger.amin.plugins.js.AminBridge$PlatformInfo")
+                    // Platform Phase B access objects (§1.4/§1.6/
+                    // §1.9/§1.10): nested classes on the bridge,
+                    // assigned only when the gating capability is
+                    // present (db is the base surface, ungated).
+                    || fullClassName.equals("org.telegram.messenger.amin.plugins.js.AminBridge$DbAccess")
+                    || fullClassName.equals("org.telegram.messenger.amin.plugins.js.AminBridge$FileAccess")
+                    || fullClassName.equals("org.telegram.messenger.amin.plugins.js.AminBridge$UiAccess")
+                    || fullClassName.equals("org.telegram.messenger.amin.plugins.js.AminBridge$RelayAccess")
                     || fullClassName.equals("java.lang.Object")
                     || fullClassName.equals("java.lang.String")
                     || fullClassName.equals("java.lang.Boolean")
@@ -638,8 +646,15 @@ public final class JsPluginManager {
      *  probe evaluation (SETTINGS schema + hook detection) → store.
      *  Returns null on success, or a user-readable error. */
     public static String install(Context context, String source) {
+        return installWithSource(context, source, "paste");
+    }
+
+    /** Install with the source recorded in meta (§2.7):
+     *  bundled | file | paste | catalog | pack | editor. */
+    public static String installWithSource(Context context, String source, String sourceTag) {
         try {
-            return installInternal(context, source);
+            return installInternal(context, source,
+                    sourceTag == null || sourceTag.isEmpty() ? "paste" : sourceTag);
         } catch (Throwable t) {
             // Installing a plugin must NEVER take the app down (field
             // report, v1.3: an engine-level Error escaped install() and
@@ -649,12 +664,105 @@ public final class JsPluginManager {
         }
     }
 
-    private static String installInternal(Context context, String source) {
+    /** Semver check (§2.1): X.Y or X.Y.Z, all-numeric parts. */
+    public static boolean isSemver(String version) {
+        if (version == null) {
+            return false;
+        }
+        String[] parts = version.trim().split("\\.");
+        if (parts.length < 2 || parts.length > 3) {
+            return false;
+        }
+        for (String part : parts) {
+            if (part.isEmpty()) {
+                return false;
+            }
+            for (int i = 0; i < part.length(); i++) {
+                if (!Character.isDigit(part.charAt(i))) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    /** Numeric semver compare (§2.1): missing parts count as 0;
+     *  non-numeric parts count as 0 (a malformed version never
+     *  crashes an update check). Returns -1/0/1. */
+    public static int compareVersions(String a, String b) {
+        long[] pa = versionParts(a);
+        long[] pb = versionParts(b);
+        for (int i = 0; i < 3; i++) {
+            if (pa[i] != pb[i]) {
+                return pa[i] < pb[i] ? -1 : 1;
+            }
+        }
+        return 0;
+    }
+
+    private static long[] versionParts(String version) {
+        long[] out = new long[3];
+        if (version == null) {
+            return out;
+        }
+        String[] parts = version.trim().split("\\.");
+        for (int i = 0; i < Math.min(3, parts.length); i++) {
+            try {
+                out[i] = Long.parseLong(parts[i].trim());
+            } catch (Exception e) {
+                out[i] = 0;
+            }
+        }
+        return out;
+    }
+
+    /** Full SHA-256 hex of a source string (UTF-8). */
+    public static String sha256Hex(String source) {
+        try {
+            java.security.MessageDigest digest =
+                    java.security.MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(source.getBytes("UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : hash) {
+                sb.append(String.format("%02x", b));
+            }
+            return sb.toString();
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /** The short fingerprint recorded in meta and shown to the
+     *  user (§2.7): the first 12 hex chars of the SHA-256. */
+    public static String fingerprintOf(String source) {
+        String hex = sha256Hex(source);
+        return hex.length() > 12 ? hex.substring(0, 12) : hex;
+    }
+
+    private static String installInternal(Context context, String source, String sourceTag) {
         JsManifest manifest;
         try {
             manifest = JsManifest.parse(source);
         } catch (IllegalArgumentException e) {
             return e.getMessage();
+        }
+        // Dependency gate (§2.4): declared @depends must be installed
+        // (and new enough) BEFORE this plugin lands — the failure
+        // names the dependency so the user can act on it.
+        for (JsManifest.Depends dep : manifest.depends) {
+            if (dep.id.equals(manifest.id)) {
+                continue;
+            }
+            JsPlugin installed = get(context, dep.id);
+            if (installed == null) {
+                return "Missing dependency: this plugin needs '" + dep.id
+                        + "' — install it first.";
+            }
+            if (dep.minVersion != null
+                    && compareVersions(installed.version, dep.minVersion) < 0) {
+                return "Dependency too old: '" + dep.id + "' v" + installed.version
+                        + " is installed, but this plugin needs >= " + dep.minVersion + ".";
+            }
         }
         org.mozilla.javascript.Context cx = enterContext();
         try {
@@ -705,8 +813,28 @@ public final class JsPluginManager {
                     instanceof Function;
             plugin.hasMigrate = ScriptableObject.getProperty(probe, "onMigrate")
                     instanceof Function;
+            plugin.hasContext = ScriptableObject.getProperty(probe, "onContextAction")
+                    instanceof Function;
+            plugin.hasEvent = ScriptableObject.getProperty(probe, "onEvent")
+                    instanceof Function;
+            plugin.hasPluginAction = ScriptableObject.getProperty(probe, "onPluginAction")
+                    instanceof Function;
+            plugin.contextMenu = manifest.contextMenu;
+            plugin.exports.addAll(manifest.exports);
+            plugin.topics.addAll(manifest.topics);
+            for (JsManifest.Depends dep : manifest.depends) {
+                plugin.depends.add(dep.minVersion != null
+                        ? dep.id + "@>=" + dep.minVersion : dep.id);
+            }
+            readPluginPage(probe, plugin);
             plugin.dataVersion = manifest.dataVersion;
             plugin.minPlatform = manifest.minPlatform;
+            plugin.installSource = sourceTag;
+            plugin.fingerprint = fingerprintOf(source);
+            if (!isSemver(manifest.version)) {
+                appendLog(plugin.id, "[warn] @version '" + manifest.version
+                        + "' is not semver (X.Y or X.Y.Z) — update checks may misbehave");
+            }
             // Data-version bookkeeping (A6): a fresh id (or a legacy
             // meta that never recorded one) adopts the declared
             // version silently; a real reinstall keeps the stored
@@ -903,6 +1031,12 @@ public final class JsPluginManager {
         if (prevFile.exists()) {
             prevFile.delete();
         }
+        // Phase B data tiers die with the plugin too (true delete
+        // stays total): amin.db rows, the amin.files sandbox, and
+        // any durable-copied settings files.
+        PluginDb.deleteAllForPlugin(pluginId);
+        PluginFiles.deleteAllForPlugin(context, pluginId);
+        deletePluginSettingsDir(context, pluginId);
         deleteStoragePrefs(context, pluginId);
         AminMenuConfig.remove(context, pluginId);
         BundledPlugins.markUserDeleted(context, pluginId);
@@ -915,6 +1049,57 @@ public final class JsPluginManager {
         synchronized (stormTrackers) {
             stormTrackers.remove(pluginId);
         }
+    }
+
+    /** The durable-copy directory for `file` settings values
+     *  (§1.5): filesDir/amingram/plugin-settings/<id>/. */
+    public static File pluginSettingsDir(Context context, String pluginId) {
+        File dir = new File(new File(context.getFilesDir(), "amingram/plugin-settings"), pluginId);
+        if (!dir.exists()) {
+            dir.mkdirs();
+        }
+        return dir;
+    }
+
+    private static void deletePluginSettingsDir(Context context, String pluginId) {
+        try {
+            File dir = new File(new File(context.getFilesDir(), "amingram/plugin-settings"), pluginId);
+            File[] files = dir.listFiles();
+            if (files != null) {
+                for (File f : files) {
+                    f.delete();
+                }
+            }
+            dir.delete();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** Hub Reload (§2.2): drop the runtime and re-warm the SAME
+     *  code — restarts a wedged runtime and re-runs onLoad. A tap,
+     *  never a timer. */
+    public static void reloadPlugin(Context context, final String pluginId) {
+        postToPluginThread(() -> runtimes.remove(pluginId));
+        warmUp(pluginId, false);
+        appendLog(pluginId, "[info] reloaded from the hub");
+    }
+
+    /** Runtime state for the Developer section (§3.5):
+     *  "suspended" / "broken" / "loaded" / "not loaded". */
+    public static String runtimeState(String pluginId) {
+        if (suspended.contains(pluginId)) {
+            return "suspended";
+        }
+        if (broken.contains(pluginId)) {
+            return "broken";
+        }
+        synchronized (JsPluginManager.class) {
+            return runtimes.containsKey(pluginId) ? "loaded" : "not loaded";
+        }
+    }
+
+    public static boolean isRuntimeLoaded(String pluginId) {
+        return "loaded".equals(runtimeState(pluginId));
     }
 
     /** Removes a per-plugin storage prefs file completely — values,
@@ -990,6 +1175,45 @@ public final class JsPluginManager {
     // Logs
     // ------------------------------------------------------------------
 
+    /** Live log tail (Phase B, §3.5): registered listeners are
+     *  notified (on the UI thread) whenever a line is appended, so
+     *  an open log view refreshes event-driven — never by polling.
+     *  Listeners must unregister when their page closes. */
+    public interface LogListener {
+        void onPluginLog(String pluginId);
+    }
+
+    private static final List<LogListener> logListeners =
+            Collections.synchronizedList(new ArrayList<>());
+
+    public static void addLogListener(LogListener listener) {
+        if (listener != null && !logListeners.contains(listener)) {
+            logListeners.add(listener);
+        }
+    }
+
+    public static void removeLogListener(LogListener listener) {
+        logListeners.remove(listener);
+    }
+
+    private static void notifyLogListeners(final String pluginId) {
+        if (logListeners.isEmpty()) {
+            return;
+        }
+        final List<LogListener> snapshot;
+        synchronized (logListeners) {
+            snapshot = new ArrayList<>(logListeners);
+        }
+        org.telegram.messenger.AndroidUtilities.runOnUIThread(() -> {
+            for (LogListener listener : snapshot) {
+                try {
+                    listener.onPluginLog(pluginId);
+                } catch (Throwable ignored) {
+                }
+            }
+        });
+    }
+
     public static void appendLog(String pluginId, String text) {
         try {
             Context context = ApplicationLoader.applicationContext;
@@ -1008,6 +1232,7 @@ public final class JsPluginManager {
                 lines.remove(0);
             }
             VaultStore.putAll(context, PREFS, KEY_LOG_PREFIX + pluginId, lines);
+            notifyLogListeners(pluginId);
         } catch (Throwable ignored) {
         }
     }
@@ -1266,6 +1491,7 @@ public final class JsPluginManager {
         } else {
             bridge = new AminBridge(pluginId);
         }
+        bridge.attachCapabilities(capabilities);
         scope.put("amin", scope, org.mozilla.javascript.Context.javaToJS(bridge, scope));
         return scope;
     }
@@ -1382,6 +1608,60 @@ public final class JsPluginManager {
                                              boolean strict, List<String> warnings) {
         Object raw = ScriptableObject.getProperty(scope, "SETTINGS");
         return SettingsSchema.parseAndValidate(raw, plugin.settings, strict, warnings);
+    }
+
+    /** PLUGIN_PAGE probe parse (§1.8a): fills plugin.pageRows from
+     *  the probe scope's PLUGIN_PAGE array. Lenient by design —
+     *  malformed rows are skipped, unknown types dropped; the
+     *  renderer only ever sees clean rows. Caps at 24 rows. */
+    private static void readPluginPage(ScriptableObject scope, JsPlugin plugin) {
+        plugin.pageRows.clear();
+        Object raw = ScriptableObject.getProperty(scope, "PLUGIN_PAGE");
+        if (!(raw instanceof Scriptable)) {
+            return;
+        }
+        Scriptable array = (Scriptable) raw;
+        Object lengthObj = array.get("length", array);
+        if (!(lengthObj instanceof Number)) {
+            return;
+        }
+        int length = Math.min(24, ((Number) lengthObj).intValue());
+        for (int i = 0; i < length; i++) {
+            Object item = array.get(i, array);
+            if (!(item instanceof Scriptable)) {
+                continue;
+            }
+            Scriptable row = (Scriptable) item;
+            String type = pageProp(row, "type");
+            JsPlugin.PageRow out = new JsPlugin.PageRow();
+            if ("action".equals(type)) {
+                out.type = "action";
+                out.id = pageProp(row, "id");
+                out.title = pageProp(row, "title");
+                out.subtitle = pageProp(row, "subtitle");
+                if (out.id.isEmpty() || out.title.isEmpty()) {
+                    continue;
+                }
+            } else if ("info".equals(type)) {
+                out.type = "info";
+                out.text = pageProp(row, "text");
+                if (out.text.isEmpty()) {
+                    continue;
+                }
+            } else {
+                continue;
+            }
+            plugin.pageRows.add(out);
+        }
+    }
+
+    private static String pageProp(Scriptable obj, String key) {
+        Object value = obj.get(key, obj);
+        if (value == null || value == Scriptable.NOT_FOUND
+                || value instanceof org.mozilla.javascript.Undefined) {
+            return "";
+        }
+        return String.valueOf(value);
     }
 
     // ------------------------------------------------------------------
@@ -1756,6 +2036,394 @@ public final class JsPluginManager {
                 }
             }
         });
+    }
+
+    /** Context-menu dispatch (§1.8b): the user long-pressed a
+     *  message and tapped this plugin's item. ctx = {chatId, msg}
+     *  with msg in the standard buildMsg shape. Called from
+     *  AminHooks.onPluginContextAction (patch 0020's click path). */
+    public static void dispatchContextAction(final String pluginId, final int account,
+                                             final TLRPC.Message message) {
+        final Context context = ApplicationLoader.applicationContext;
+        if (context == null || message == null || !isEngineEnabled(context)) {
+            return;
+        }
+        postToPluginThread(() -> {
+            JsPlugin plugin = get(context, pluginId);
+            if (plugin == null || !plugin.enabled || !plugin.hasContext) {
+                return;
+            }
+            if (dispatchBlocked(pluginId)) {
+                return;
+            }
+            dispatchAccount = account;
+            org.mozilla.javascript.Context cx = null;
+            try {
+                cx = enterContext();
+                Runtime runtime = ensureRuntime(cx, context, plugin);
+                if (runtime == null) {
+                    return;
+                }
+                long chatId = MessageObject.getDialogId(message);
+                AminBridge.setCurrentDispatchChatId(chatId);
+                Scriptable msg = buildMsg(cx, runtime.scope, account, message);
+                Scriptable ctx = cx.newObject(runtime.scope);
+                putNum(ctx, "chatId", chatId);
+                ctx.put("msg", ctx, msg);
+                callHook(cx, runtime, "onContextAction", new Object[]{ctx});
+            } catch (Throwable ignored) {
+            } finally {
+                if (cx != null) {
+                    org.mozilla.javascript.Context.exit();
+                }
+            }
+        });
+    }
+
+    /** Plugin-page action dispatch (§1.8a): a PLUGIN_PAGE action
+     *  row was tapped in the hub; onPluginAction(actionId) runs on
+     *  the plugin thread with the standard isolation. */
+    public static void dispatchPluginAction(final String pluginId, final String actionId) {
+        final Context context = ApplicationLoader.applicationContext;
+        if (context == null || !isEngineEnabled(context)) {
+            return;
+        }
+        postToPluginThread(() -> {
+            JsPlugin plugin = get(context, pluginId);
+            if (plugin == null || !plugin.enabled || !plugin.hasPluginAction) {
+                return;
+            }
+            if (dispatchBlocked(pluginId)) {
+                return;
+            }
+            dispatchAccount = UserConfig.selectedAccount;
+            org.mozilla.javascript.Context cx = null;
+            try {
+                cx = enterContext();
+                Runtime runtime = ensureRuntime(cx, context, plugin);
+                if (runtime == null) {
+                    return;
+                }
+                callHook(cx, runtime, "onPluginAction", new Object[]{actionId});
+            } catch (Throwable ignored) {
+            } finally {
+                if (cx != null) {
+                    org.mozilla.javascript.Context.exit();
+                }
+            }
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // Relay (§1.10): plugin-to-plugin calls and event broadcast.
+    // Values cross the boundary ONLY as JSON (deep-copied through
+    // org.json by AminBridge.jsToJson/jsonToJs) — no Rhino object
+    // is ever shared between two plugins' scopes.
+    // ------------------------------------------------------------------
+
+    /** Maximum relay call nesting (§1.10). */
+    public static final int RELAY_MAX_DEPTH = 4;
+
+    /** Depth of the relay dispatch currently executing on the
+     *  plugin thread (0 = not inside a relay call). All relay work
+     *  is confined to the plugin thread, so a plain static is the
+     *  correct scope. */
+    private static int relayDepth = 0;
+
+    /** Delivers an immediate argument error to a relay callback
+     *  (bridge-side validation failures: bad target/method/args). */
+    public static void relayCallError(String callerId, Object callback, String message) {
+        relayCallback(callerId, callback,
+                org.json.JSONObject.quote(message == null ? "relay error" : message), null);
+    }
+
+    /** amin.relay.call, entered from the bridge on the plugin
+     *  thread: validates the target + its @exports, dispatches the
+     *  PLUGIN_API method on the SAME thread (queued, so ordering
+     *  is deterministic), and delivers (err, result) to the
+     *  caller's callback — never throws. argsJson is a JSON array
+     *  string produced by the bridge; callback may be null. */
+    public static void relayCall(final String callerId, final String targetId,
+                                 final String method, final String argsJson,
+                                 final Object callback) {
+        final int depth = relayDepth;
+        if (depth >= RELAY_MAX_DEPTH) {
+            relayCallback(callerId, callback,
+                    "\"relay depth exceeded (max " + RELAY_MAX_DEPTH + ")\"", null);
+            return;
+        }
+        final Context context = ApplicationLoader.applicationContext;
+        if (context == null) {
+            relayCallback(callerId, callback, "\"relay unavailable\"", null);
+            return;
+        }
+        postToPluginThread(() -> {
+            JsPlugin target = get(context, targetId);
+            String err = null;
+            String resultJson = null;
+            if (target == null) {
+                err = "\"no such plugin: " + targetId + "\"";
+            } else if (!target.enabled) {
+                err = "\"plugin is disabled: " + targetId + "\"";
+            } else if (!target.exports.contains(method)) {
+                err = "\"plugin " + targetId + " does not export '" + method + "'\"";
+            } else if (dispatchBlocked(targetId)) {
+                err = "\"plugin is suspended: " + targetId + "\"";
+            }
+            org.mozilla.javascript.Context cx = null;
+            if (err == null) {
+                try {
+                    cx = enterContext();
+                    Runtime runtime = ensureRuntime(cx, context, target);
+                    if (runtime == null) {
+                        err = "\"plugin failed to load: " + targetId + "\"";
+                    } else {
+                        Object api = ScriptableObject.getProperty(runtime.scope, "PLUGIN_API");
+                        Object fn = api instanceof Scriptable
+                                ? ((Scriptable) api).get(method, (Scriptable) api) : null;
+                        if (!(fn instanceof Function)) {
+                            err = "\"plugin " + targetId + " has no PLUGIN_API method '"
+                                    + method + "'\"";
+                        } else {
+                            Object argsValue = AminBridge.jsonToJs(
+                                    argsJson == null ? "[]" : argsJson, cx, runtime.scope);
+                            Object[] callArgs;
+                            if (argsValue instanceof Scriptable) {
+                                Scriptable arr = (Scriptable) argsValue;
+                                Object len = arr.get("length", arr);
+                                int n = len instanceof Number ? ((Number) len).intValue() : 0;
+                                callArgs = new Object[n];
+                                for (int i = 0; i < n; i++) {
+                                    callArgs[i] = arr.get(i, arr);
+                                }
+                            } else {
+                                callArgs = new Object[0];
+                            }
+                            appendLog(targetId, "[relay] call <- " + callerId + "." + method);
+                            appendLog(callerId, "[relay] call -> " + targetId + "." + method);
+                            relayDepth = depth + 1;
+                            AminContextFactory.beginHook(HOOK_BUDGET_MS);
+                            Object result;
+                            try {
+                                result = ((Function) fn).call(cx, runtime.scope,
+                                        (Scriptable) api, callArgs);
+                            } finally {
+                                AminContextFactory.endHook();
+                                relayDepth = depth;
+                            }
+                            resultJson = AminBridge.jsToJson(result);
+                            if (resultJson == null && result != null
+                                    && !(result instanceof org.mozilla.javascript.Undefined)) {
+                                err = "\"relay result is not JSON-serialisable\"";
+                                resultJson = null;
+                            }
+                        }
+                    }
+                } catch (Throwable t) {
+                    noteHookError(targetId, "relay." + method, t);
+                    err = "\"relay call failed: "
+                            + String.valueOf(t.getMessage()).replace("\"", "'") + "\"";
+                    resultJson = null;
+                } finally {
+                    if (cx != null) {
+                        org.mozilla.javascript.Context.exit();
+                    }
+                }
+            }
+            relayCallback(callerId, callback, err, resultJson);
+        });
+    }
+
+    /** Delivers a relay (err, result) pair to the caller's JS
+     *  callback fn(err, result): err is a string or null, result a
+     *  JSON value or null. Both arrive as JSON text and are rebuilt
+     *  inside the caller's own scope. */
+    private static void relayCallback(final String callerId, final Object callback,
+                                      final String errJson, final String resultJson) {
+        if (!(callback instanceof Function)) {
+            return;
+        }
+        final Function fn = (Function) callback;
+        postToPluginThread(() -> {
+            Context context = ApplicationLoader.applicationContext;
+            if (context == null || get(context, callerId) == null
+                    || suspended.contains(callerId)) {
+                return;
+            }
+            org.mozilla.javascript.Context cx = null;
+            try {
+                cx = enterContext();
+                Scriptable scope = fn.getParentScope();
+                if (scope == null) {
+                    return;
+                }
+                Object err = AminBridge.jsonToJs(errJson, cx, scope);
+                Object result = AminBridge.jsonToJs(resultJson, cx, scope);
+                AminContextFactory.beginHook(HOOK_BUDGET_MS);
+                try {
+                    fn.call(cx, scope, scope, new Object[]{err, result});
+                } finally {
+                    AminContextFactory.endHook();
+                }
+            } catch (Throwable t) {
+                noteHookError(callerId, "relay callback", t);
+            } finally {
+                if (cx != null) {
+                    org.mozilla.javascript.Context.exit();
+                }
+            }
+        });
+    }
+
+    /** amin.relay.emit: fire-and-forget broadcast to every enabled
+     *  plugin (other than the emitter) defining onEvent whose
+     *  @topics include the topic or "*". */
+    public static void relayEmit(final String callerId, final String topic,
+                                 final String dataJson) {
+        final Context context = ApplicationLoader.applicationContext;
+        if (context == null || topic == null || topic.isEmpty()) {
+            return;
+        }
+        postToPluginThread(() -> {
+            for (JsPlugin plugin : plugins(context)) {
+                if (plugin.id.equals(callerId) || !plugin.enabled || !plugin.hasEvent) {
+                    continue;
+                }
+                if (!plugin.topics.contains(topic) && !plugin.topics.contains("*")) {
+                    continue;
+                }
+                if (dispatchBlocked(plugin.id)) {
+                    continue;
+                }
+                org.mozilla.javascript.Context cx = null;
+                try {
+                    cx = enterContext();
+                    Runtime runtime = ensureRuntime(cx, context, plugin);
+                    if (runtime == null) {
+                        continue;
+                    }
+                    Object data = AminBridge.jsonToJs(
+                            dataJson == null ? "null" : dataJson, cx, runtime.scope);
+                    appendLog(plugin.id, "[relay] event '" + topic + "' <- " + callerId);
+                    callHook(cx, runtime, "onEvent", new Object[]{topic, data});
+                } catch (Throwable ignored) {
+                } finally {
+                    if (cx != null) {
+                        org.mozilla.javascript.Context.exit();
+                    }
+                }
+            }
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // Developer tools support (§3.5)
+    // ------------------------------------------------------------------
+
+    public interface EvalResult {
+        void onResult(String text);
+    }
+
+    /** Eval console (§3.5): evaluates a snippet in the plugin's
+     *  OWN runtime scope and reports the stringified result. The
+     *  caller (the hub Developer section) owns the mitigations:
+     *  Developer-mode gate, and this method itself writes every
+     *  evaluation to the plugin's log before running it. Snippets
+     *  are never stored anywhere. */
+    public static void evaluateInPlugin(final String pluginId, final String snippet,
+                                        final EvalResult callback) {
+        final Context context = ApplicationLoader.applicationContext;
+        if (context == null) {
+            callback.onResult("Error: no context");
+            return;
+        }
+        String flat = snippet == null ? "" : snippet.replace('\n', ' ');
+        if (flat.length() > 200) {
+            flat = flat.substring(0, 200) + "…";
+        }
+        appendLog(pluginId, "[eval] " + flat);
+        postToPluginThread(() -> {
+            String out;
+            JsPlugin plugin = get(context, pluginId);
+            if (plugin == null) {
+                out = "Error: plugin not installed";
+            } else if (suspended.contains(pluginId)) {
+                out = "Error: plugin is suspended — resume it first";
+            } else {
+                org.mozilla.javascript.Context cx = null;
+                try {
+                    cx = enterContext();
+                    Runtime runtime = ensureRuntime(cx, context, plugin);
+                    if (runtime == null) {
+                        out = "Error: plugin failed to load";
+                    } else {
+                        AminContextFactory.beginHook(HOOK_BUDGET_MS);
+                        try {
+                            Object result = cx.evaluateString(runtime.scope, snippet,
+                                    "<eval>", 1, null);
+                            if (result == null
+                                    || result instanceof org.mozilla.javascript.Undefined) {
+                                out = "undefined";
+                            } else {
+                                String json = AminBridge.jsToJson(result);
+                                out = json != null ? json : String.valueOf(result);
+                            }
+                        } finally {
+                            AminContextFactory.endHook();
+                        }
+                    }
+                } catch (Throwable t) {
+                    noteHookError(pluginId, "eval", t);
+                    out = "Error: " + t.getMessage();
+                } finally {
+                    if (cx != null) {
+                        org.mozilla.javascript.Context.exit();
+                    }
+                }
+            }
+            final String text = out;
+            appendLog(pluginId, "[eval] -> " + (text.length() > 200
+                    ? text.substring(0, 200) + "…" : text));
+            org.telegram.messenger.AndroidUtilities.runOnUIThread(() -> callback.onResult(text));
+        });
+    }
+
+    /** All storage key/value pairs of a plugin (storage inspector):
+     *  the raw prefs strings amin.storage + settings share. */
+    public static java.util.Map<String, String> storageGetAll(Context context, String pluginId) {
+        java.util.Map<String, String> out = new java.util.TreeMap<>();
+        try {
+            java.util.Map<String, ?> all = context
+                    .getSharedPreferences(storagePrefsName(pluginId), Context.MODE_PRIVATE)
+                    .getAll();
+            for (java.util.Map.Entry<String, ?> entry : all.entrySet()) {
+                out.put(entry.getKey(),
+                        entry.getValue() == null ? "" : String.valueOf(entry.getValue()));
+            }
+        } catch (Throwable ignored) {
+        }
+        return out;
+    }
+
+    public static void storageRemoveRaw(Context context, String pluginId, String key) {
+        try {
+            context.getSharedPreferences(storagePrefsName(pluginId), Context.MODE_PRIVATE)
+                    .edit().remove(key).apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** Clears a plugin's data tiers (storage prefs + db rows) —
+     *  the storage inspector's "clear all data". Files and settings
+     *  file copies are NOT touched here; true delete handles those. */
+    public static void clearPluginData(Context context, String pluginId) {
+        try {
+            context.getSharedPreferences(storagePrefsName(pluginId), Context.MODE_PRIVATE)
+                    .edit().clear().apply();
+        } catch (Throwable ignored) {
+        }
+        PluginDb.deleteAllForPlugin(pluginId);
+        appendLog(pluginId, "[info] data cleared from the Developer tools");
     }
 
     private static List<JsPlugin> enabledCommandPlugins(Context context) {
