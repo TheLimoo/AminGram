@@ -294,10 +294,15 @@ is structural, exactly like `amin.google`. With the capability:
 var ok = amin.sendFile(url, opts)   // SYNCHRONOUS — returns a boolean
 // opts = { type: "video" | "photo" | "audio" | "file",
 //          caption: "text shown with the media",   // optional
-//          chatId: 123456 }                        // optional — defaults
+//          chatId: 123456,                         // optional — defaults
 //                                                     // to the chat the
 //                                                     // current hook is
 //                                                     // running in
+//          headers: { "User-Agent": "…" } }       // optional (v2.2) —
+//                                                     // download request
+//                                                     // headers, applied
+//                                                     // after the defaults
+//                                                     // on every redirect hop
 ```
 
 - `sendFile` downloads the URL itself (you never download anything) and
@@ -308,6 +313,10 @@ var ok = amin.sendFile(url, opts)   // SYNCHRONOUS — returns a boolean
   redirects followed. Any failure — bad URL, HTTP error, over the cap,
   no target chat, send hand-off failed — returns `false`; it never
   throws across the bridge (still wrap it in try/catch, belt and braces).
+- `opts.headers` (v2.2): an object of header name → value for the
+  download request — e.g. a crawler `User-Agent` for hosts that only
+  serve media to one (media-dl's Instagram mirror works this way).
+  Headers override the defaults and are re-applied on every redirect.
 - It BLOCKS the plugin thread while downloading. Call it once per user
   action, never from a hot `onMessage` path for every message.
 - **Fallback rule (canonical pattern):** if `sendFile` returns `false`

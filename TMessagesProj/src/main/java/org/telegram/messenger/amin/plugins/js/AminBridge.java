@@ -501,7 +501,10 @@ public class AminBridge {
      *  chat. Runs entirely on the calling (plugin dispatch)
      *  thread for the download; the Telegram prepare* hand-off is
      *  posted to the UI thread, as those APIs require. NEVER
-     *  throws: any failure is logged and reported as false. */
+     *  throws: any failure is logged and reported as false.
+     *  opts: type / caption / chatId, plus optional headers (a JS
+     *  object of name → value) applied to the download request
+     *  and every redirect hop (v2.2). */
     protected final boolean doSendFile(Object urlObject, Object optsObject) {
         File file = null;
         try {
@@ -515,6 +518,7 @@ public class AminBridge {
             String type = "file";
             String caption = "";
             long chatId = 0;
+            Map<String, String> headers = null;
             if (optsObject instanceof Scriptable) {
                 Scriptable opts = (Scriptable) optsObject;
                 Object typeValue = opts.get("type", opts);
@@ -531,6 +535,11 @@ public class AminBridge {
                 if (chatValue != null && chatValue != Scriptable.NOT_FOUND
                         && !(chatValue instanceof Undefined)) {
                     chatId = toLong(chatValue);
+                }
+                Object headersValue = opts.get("headers", opts);
+                if (headersValue != null && headersValue != Scriptable.NOT_FOUND
+                        && !(headersValue instanceof Undefined)) {
+                    headers = snapshotHeaders(headersValue);
                 }
             }
             if (!"video".equals(type) && !"photo".equals(type)
@@ -571,6 +580,14 @@ public class AminBridge {
                 connection.setRequestProperty("User-Agent",
                         "Mozilla/5.0 (Linux; Android 13) AminGram");
                 connection.setRequestProperty("Accept", "*/*");
+                if (headers != null) {
+                    // Caller headers (v2.2, opts.headers): applied
+                    // after the defaults so a plugin can e.g.
+                    // present a crawler UA to a mirror host. This
+                    // loop rebuilds the connection on every manual
+                    // redirect hop, so the headers ride every hop.
+                    applyHeaders(connection, headers);
+                }
                 int code = connection.getResponseCode();
                 String location = connection.getHeaderField("Location");
                 if ((code == HttpURLConnection.HTTP_MOVED_PERM
