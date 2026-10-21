@@ -1027,9 +1027,7 @@ does exactly this for its template store).
 ## Bundled plugins (reference implementations)
 
 These ship inside AminGram and pre-install; their sources are the best
-worked examples of the surfaces above (the Built-in library ships 10;
-the asset folder also carries the shout / quick-translate example
-sources):
+worked examples of the surfaces above (12 in the Built-in library):
 
 - **shout** — the Example 1 plugin (`commands`, `send`).
 - **vip-alert** — the Example 2 plugin (`observe`, `settings`).
