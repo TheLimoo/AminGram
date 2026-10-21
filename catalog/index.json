@@ -3,6 +3,23 @@
   "updatedAt": "2026-10-21",
   "plugins": [
     {
+      "id": "shout",
+      "name": "Shout",
+      "version": "1.0",
+      "author": "Amin",
+      "description": "/shout <text> posts the text in uppercase.",
+      "category": "Fun",
+      "capabilities": [
+        "commands",
+        "send"
+      ],
+      "minPlatform": 1,
+      "depends": [],
+      "url": "https://raw.githubusercontent.com/TheLimoo/AminGram/main/TMessagesProj/src/main/assets/amingram_plugins/shout.js",
+      "sha256": "d2bccb64e0f1cd2623beb1280c43916858c12c673c29c6aee85e6a17f2323ec0",
+      "updatedAt": "2026-10-21"
+    },
+    {
       "id": "vip-alert",
       "name": "VIP Alert",
       "version": "1.0",
@@ -77,6 +94,25 @@
       "depends": [],
       "url": "https://raw.githubusercontent.com/TheLimoo/AminGram/main/TMessagesProj/src/main/assets/amingram_plugins/aesthetic-text.js",
       "sha256": "f4d6bccbeada38fe7aa88baf28f821e9f28c671d201e273efd3412180ca6cdc0",
+      "updatedAt": "2026-10-21"
+    },
+    {
+      "id": "quick-translate",
+      "name": "Quick Translate",
+      "version": "1.0",
+      "author": "Amin",
+      "description": "/tr <text> translates text (default target: Persian). /tr en <text> picks another target language.",
+      "category": "Utilities",
+      "capabilities": [
+        "commands",
+        "send",
+        "http",
+        "settings"
+      ],
+      "minPlatform": 1,
+      "depends": [],
+      "url": "https://raw.githubusercontent.com/TheLimoo/AminGram/main/TMessagesProj/src/main/assets/amingram_plugins/quick-translate.js",
+      "sha256": "a8847df287f8222dbdfbdb095ee9a3d60b6569248bc2eb988fa3805b7221b9e8",
       "updatedAt": "2026-10-21"
     },
     {
