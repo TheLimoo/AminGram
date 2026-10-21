@@ -205,7 +205,18 @@ public class AminCatalogActivity extends BaseFragment {
             List<Entry> fetched = new ArrayList<>();
             try {
                 String json = httpGet(CATALOG_URL);
-                JSONArray array = new JSONArray(json);
+                // Shipped shape: {"catalogVersion": 1, "plugins": […]};
+                // a bare top-level array is also accepted.
+                JSONArray array;
+                String trimmed = json.trim();
+                if (trimmed.startsWith("{")) {
+                    array = new JSONObject(json).optJSONArray("plugins");
+                    if (array == null) {
+                        throw new Exception("catalog has no plugins array");
+                    }
+                } else {
+                    array = new JSONArray(json);
+                }
                 for (int i = 0; i < array.length(); i++) {
                     JSONObject o = array.optJSONObject(i);
                     if (o == null) {
