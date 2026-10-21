@@ -977,8 +977,25 @@ public class AminPluginsActivity extends BaseFragment {
         }
         AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
         builder.setTitle("Export plugin pack");
-        builder.setMultiChoiceItems(items, checked,
-                (dialog, which, isChecked) -> checked[which] = isChecked);
+        // Telegram's AlertDialog.Builder has no setMultiChoiceItems
+        // (run #15's compile error) — the multi-select is a scroll
+        // list of check cells in a custom dialog view instead.
+        android.widget.ScrollView scroll = new android.widget.ScrollView(context);
+        LinearLayout checkList = new LinearLayout(context);
+        checkList.setOrientation(LinearLayout.VERTICAL);
+        scroll.addView(checkList);
+        for (int i = 0; i < installed.size(); i++) {
+            final int idx = i;
+            org.telegram.ui.Cells.TextCheckCell cell =
+                    new org.telegram.ui.Cells.TextCheckCell(context);
+            cell.setTextAndCheck(items[idx], checked[idx], idx < installed.size() - 1);
+            cell.setOnClickListener(v -> {
+                checked[idx] = !checked[idx];
+                cell.setChecked(checked[idx]);
+            });
+            checkList.addView(cell);
+        }
+        builder.setView(scroll);
         builder.setPositiveButton("Export…", (dialog, which) -> {
             List<String> ids = new ArrayList<>();
             for (int i = 0; i < installed.size(); i++) {
