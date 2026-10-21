@@ -202,30 +202,6 @@ public final class PluginDb {
     }
 
     /** Drops ALL of a plugin's rows (true delete). */
-    /** The plugin's namespace names, sorted (storage inspector). */
-    public static synchronized List<String> namespaces(String pluginId) {
-        List<String> out = new ArrayList<>();
-        SQLiteDatabase handle = open();
-        if (handle == null || pluginId == null) {
-            return out;
-        }
-        Cursor cursor = null;
-        try {
-            cursor = handle.rawQuery(
-                    "SELECT DISTINCT ns FROM kv WHERE plugin_id=? ORDER BY ns",
-                    new String[]{pluginId});
-            while (cursor != null && cursor.moveToNext()) {
-                out.add(cursor.getString(0));
-            }
-        } catch (Throwable ignored) {
-        } finally {
-            if (cursor != null) {
-                cursor.close();
-            }
-        }
-        return out;
-    }
-
     public static synchronized void deleteAllForPlugin(String pluginId) {
         SQLiteDatabase handle = open();
         if (handle == null) {

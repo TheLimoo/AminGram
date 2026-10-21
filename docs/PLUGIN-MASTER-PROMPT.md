@@ -445,8 +445,10 @@ amin.db.clear("notes")                       // empties ONE namespace
 ```
 
 - Values are any JSON-shaped value (object/array/string/number/
-  bool/null) — they cross as JSON, so functions and `undefined` are
-  refused: `put` returns `false` and logs a warning.
+  bool) — they cross as JSON, so functions and `undefined` are
+  refused: `put` returns `false` and logs a warning. An explicit
+  `null` value is refused the same way — to remove a key, use
+  `del`; to test for one, use `keys`.
 - **Contract limits (hard, not warnings):** a value's JSON must be
   **≤ 256 KB**, and namespace + key names **≤ 128 chars** each.
   Violations make `put` return `false`; `get`/`del` of out-of-contract

@@ -2177,10 +2177,6 @@ public final class JsPluginManager {
             preview.error = "Manifest error: " + t.getMessage();
             return preview;
         }
-        if (manifest.error != null) {
-            preview.error = manifest.error;
-            return preview;
-        }
         preview.id = manifest.id;
         preview.name = manifest.name;
         preview.author = manifest.author;
