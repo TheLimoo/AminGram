@@ -132,7 +132,7 @@ public class AminPluginEditorActivity extends BaseFragment {
         // Validated update-in-place: install returns null on success
         // or a readable error, and the on-disk code is only replaced
         // after every check has passed.
-        String error = JsPluginManager.install(context, source);
+        String error = JsPluginManager.installWithSource(context, source, "editor");
         if (error != null) {
             AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
             builder.setTitle("Couldn't update the plugin");
@@ -159,7 +159,7 @@ public class AminPluginEditorActivity extends BaseFragment {
                         .createSimpleBulletin(R.raw.info, "No previous version saved").show();
                 return;
             }
-            String error = JsPluginManager.install(context, prev);
+            String error = JsPluginManager.installWithSource(context, prev, "editor");
             if (error != null) {
                 AlertDialog.Builder errorBuilder = new AlertDialog.Builder(getParentActivity());
                 errorBuilder.setTitle("Couldn't restore");

@@ -2137,6 +2137,100 @@ public final class JsPluginManager {
                 org.json.JSONObject.quote(message == null ? "relay error" : message), null);
     }
 
+    /** A manifest-level preview of an install, for the permission
+     *  review screen (§3.2): everything the review shows that can
+     *  be known WITHOUT running the probe — identity, declared
+     *  capabilities/exports/topics/depends, the code fingerprint,
+     *  and problems (bad manifest, @minPlatform, unmet @depends,
+     *  non-semver @version). The real install still validates
+     *  everything again (probe included). */
+    public static class InstallPreview {
+        public String error;
+        public String id = "";
+        public String name = "";
+        public String author = "";
+        public String version = "";
+        public String description = "";
+        public java.util.List<String> capabilities = new java.util.ArrayList<>();
+        public String contextMenu = "";
+        public java.util.List<String> exports = new java.util.ArrayList<>();
+        public java.util.List<String> topics = new java.util.ArrayList<>();
+        /** Raw entries: "id" or "id@>=X.Y". */
+        public java.util.List<String> depends = new java.util.ArrayList<>();
+        public int minPlatform;
+        public String fingerprint = "";
+        public java.util.List<String> problems = new java.util.ArrayList<>();
+        /** Capabilities the installed copy does NOT have yet
+         *  (update diff, §3.2); empty for fresh installs. */
+        public java.util.List<String> addedCapabilities = new java.util.ArrayList<>();
+        public boolean update;
+        public String installedVersion = "";
+    }
+
+    public static InstallPreview previewInstall(Context context, String source) {
+        InstallPreview preview = new InstallPreview();
+        preview.fingerprint = fingerprintOf(source == null ? "" : source);
+        JsManifest manifest;
+        try {
+            manifest = JsManifest.parse(source);
+        } catch (Throwable t) {
+            preview.error = "Manifest error: " + t.getMessage();
+            return preview;
+        }
+        if (manifest.error != null) {
+            preview.error = manifest.error;
+            return preview;
+        }
+        preview.id = manifest.id;
+        preview.name = manifest.name;
+        preview.author = manifest.author;
+        preview.version = manifest.version;
+        preview.description = manifest.description;
+        preview.capabilities.addAll(manifest.capabilities);
+        preview.contextMenu = manifest.contextMenu;
+        preview.exports.addAll(manifest.exports);
+        preview.topics.addAll(manifest.topics);
+        preview.minPlatform = manifest.minPlatform;
+        for (JsManifest.Depends dep : manifest.depends) {
+            preview.depends.add(dep.minVersion != null
+                    ? dep.id + "@>=" + dep.minVersion : dep.id);
+        }
+        if (!isSemver(manifest.version)) {
+            preview.problems.add("@version '" + manifest.version
+                    + "' is not semver (X.Y or X.Y.Z) — update checks may misbehave.");
+        }
+        if (manifest.minPlatform > PLATFORM_API_VERSION) {
+            preview.problems.add("Needs platform v" + manifest.minPlatform
+                    + " — this AminGram provides v" + PLATFORM_API_VERSION + ".");
+        }
+        for (JsManifest.Depends dep : manifest.depends) {
+            if (dep.id.equals(manifest.id)) {
+                continue;
+            }
+            JsPlugin installedDep = get(context, dep.id);
+            if (installedDep == null) {
+                preview.problems.add("Missing dependency: '" + dep.id
+                        + "' is not installed.");
+            } else if (dep.minVersion != null
+                    && compareVersions(installedDep.version, dep.minVersion) < 0) {
+                preview.problems.add("Dependency too old: '" + dep.id + "' v"
+                        + installedDep.version + " is installed, needs >= "
+                        + dep.minVersion + ".");
+            }
+        }
+        JsPlugin existing = get(context, manifest.id);
+        if (existing != null) {
+            preview.update = true;
+            preview.installedVersion = existing.version;
+            for (String cap : manifest.capabilities) {
+                if (!existing.capabilities.contains(cap)) {
+                    preview.addedCapabilities.add(cap);
+                }
+            }
+        }
+        return preview;
+    }
+
     /** amin.relay.call, entered from the bridge on the plugin
      *  thread: validates the target + its @exports, dispatches the
      *  PLUGIN_API method on the SAME thread (queued, so ordering
