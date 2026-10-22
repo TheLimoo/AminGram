@@ -1669,3 +1669,119 @@ wakelocks. Every fix cites the hot spot it removes.
   Rhino full suite 676/676 (baseline held); no patch files
   touched, so the 18/18 patch replay is unaffected;
   overlay == repo byte-identical for every touched file.
+
+
+## DNS Tunnel — Soar + Slipstream (2026-10-22, on top of 9be7e46)
+
+Telegram-over-DNS-tunnel as a built-in module (DNS-BUILD-PLAN.md):
+two lifeline engines behind the local-SOCKS recipe — the engine
+exposes a SOCKS5 endpoint on 127.0.0.1, Telegram's OWN proxy
+setting is pointed at it, and a specialUse foreground service
+keeps the engine alive. NO VpnService (the VPN slot stays free
+for Happ/other VPN apps), NO wakelock (power rule: the module
+never holds anything of its own; screen-off stalliness is
+disclosed in the UI copy).
+
+- NOTHING server-specific is hardcoded (Amin's requirement):
+  everything lives in PROFILES (prefs `amingram_dns`, JSON per
+  engine + an active id per engine). Multiple named profiles per
+  engine, one-tap switching; the two staged limoo profiles ship
+  as editable defaults only (Soar zone +
+  public key in DnsProfiles/DefaultProfiles; Slipstream domain +
+  congestion + the server cert as the bundled asset
+  `assets/amingram_dns/slipstream-default-cert.pem` — client
+  material by design, safe to bundle). Soar profiles:
+  name/zone/server public key/resolvers/discovery on-off +
+  country, plus import of a pasted `soar://` link (the payload is
+  base64url JSON; unknown contents are rejected with a plain
+  "couldn't read" instead of a bad profile). Slipstream profiles:
+  name/domain/resolvers/server cert (paste PEM or pick a file
+  through the existing SAF picker, copy=false staging under the
+  `dns_tunnel` picker id)/congestion (dcubic default, bbr).
+  Resolver lists are fully editable for both engines; presets
+  Auto (system DNS first, then 8.8.8.8/1.1.1.1/9.9.9.9) /
+  System only / Public only / Custom.
+- Soar (PRIMARY, the default engine): client pinned to
+  `getlantern/soar v0.2.2` — the exact version in the go.mod of
+  the WhiteDNS Soar-Server v0.1.3 the server runs (the upstream
+  project is pre-release with no compatibility promises; never
+  track main). A ~200-line pure-Go gomobile shim
+  (`dns-native/soarbridge`, repo-only like `catalog/`) wraps the
+  client: Start(zone, serverKeyB64, resolversCSV, discoveryIR) /
+  Stop / Status / LocalPort; listener on an ephemeral loopback
+  port; SOCKS5 no-auth CONNECT-only with half-close relay. IR
+  discovery ON by default (multipath resolver discovery, prunes
+  dead paths; forged resolver answers fail the server-key
+  signature check by protocol design). TCP stays "auto": a
+  resolver whose UDP path never answers gains a TCP/53 path.
+- Slipstream (speed option, never the default): the stock
+  `Mygod/slipstream-rust` client, pinned commit
+  bc772dd07d9a136dbd7553b0da575526de207847, shipped by Option B —
+  prebuilt ONCE by the manual `dns-artifacts.yml` workflow into
+  `jniLibs/<abi>/libslipstream_client.so` (the one executable
+  location for bundled code) and run as a subprocess of the FGS
+  (the dnstt-xyz embedding pattern). Server certificate STRICTLY
+  pinned via `--cert` (the embedded-app reference omits it; ours
+  does not). No `--gso` (unimplemented upstream), no
+  `--authoritative`. It works as a SOCKS endpoint because the
+  server's fixed target is a microsocks backend. Until the
+  prebuilt binaries are committed, the engine reports "not
+  installed" cleanly in the UI and starting fails with a plain
+  message before anything is touched. Upstream is archived —
+  acceptable because the wire is frozen by our own server; Soar
+  is the default and the maintained path.
+- Proxy apply/restore (AminDnsController): before applying, the
+  user's current proxy state is snapshotted symmetrically
+  (ProxySettings.from/toSharedPreferences against a dedicated
+  prefs file `amingram_dns_snapshot`, plus the previous
+  proxy_enabled flag) and the tunnel flags commit; the tunnel
+  proxy is applied with upstream's own recipe (SharedConfig
+  addProxy dedupe -> currentProxy -> toSharedPreferences +
+  proxy_enabled -> ConnectionsManager.setProxySettings ->
+  proxySettingsChanged). LIVENESS GATE: the proxy is applied
+  only after a full SOCKS CONNECT to a Telegram DC (443) through
+  the fresh listener succeeds (Soar budget 25 s, Slipstream
+  15 s) — a dead tunnel never blackholes the app; failure tears
+  the engine down and restores. Stop restores the snapshot
+  exactly (re-apply the previous ProxyInfo, or the toggle-off
+  branch when there was none); a DIFFERENT proxy the user picked
+  mid-tunnel is respected (bookkeeping only). Restore also runs
+  on service death and — via a stale-flag check — at app start.
+- Patch 0021-dns-tunnel (series 18 -> 19; both CI files' apply
+  lists updated identically): build.gradle .aar line
+  (`implementation files('libs/soarbridge.aar')`),
+  AndroidManifest (FOREGROUND_SERVICE_SPECIAL_USE permission +
+  the specialUse FGS declaration), ProxyListActivity (an
+  "AminGram" section: header + "DNS Tunnel" row with live status
+  opening the module page) — plus ONE deviation from the plan's
+  three-file list: a single call line in
+  ApplicationLoader.postInitApplication
+  (AminDnsController.recoverIfStale). The plan's own §4.5 mandates
+  stale-flag recovery at app start and no earlier amin hook
+  exists; the line is Throwable-isolated and once-per-process.
+- UI: AminDnsTunnelActivity (Proxy settings section + AminGram
+  hub quick-toggle on the active profile + a profiles row) —
+  status card (engine/profile/state/resolver), big toggle,
+  engine chooser, profile lists with one-tap activation,
+  add/edit/delete, resolver editor, honest About copy (no VPN,
+  lifeline speeds, calls may not work, screen-off behavior).
+- CI wiring (files only): build.yml + .gitlab-ci.yml get the
+  0021 apply line, Go 1.25 (setup-go / official tarball into the
+  cached project dir), and the gomobile step producing
+  `upstream/TMessagesProj/libs/soarbridge.aar` before Gradle.
+  `.github/workflows/dns-artifacts.yml` (new, workflow_dispatch)
+  builds the 4-ABI Slipstream binaries and runs both live
+  interop smokes (Soar shim -> default zone -> Telegram DC +
+  HTTPS 200; linux slipstream-client -> default zone with the
+  bundled cert pinned -> CONNECT through to the microsocks
+  target). First-run checks still owed there: the gomobile
+  generated API shape (org.telegram.amingram.soarbridge.
+  Soarbridge static natives) and the cargo-ndk pin — both are
+  exercised for the first time by that workflow / the next main
+  build; this VM has no Go toolchain to pre-verify them.
+- Verified locally: patch replay 19/19 on pristine pinned
+  upstream f32ffee with both CI apply lists byte-identical;
+  JDK 17 parse clean for all new/touched Java (incl. the patched
+  ProxyListActivity/ApplicationLoader from the replay tree);
+  Rhino suite 676/676 (no JS touched); overlay == repo
+  byte-identical for everything touched.
