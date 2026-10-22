@@ -1434,3 +1434,60 @@ unchanged from v2.0):
   `temp-mail`, `aesthetic-text`, `quick-translate`,
   `gemini-chat`, `link-cleaner`, `qr-maker`, `price-check`,
   `ai-actions`, `quick-replies`.
+
+## Stage 1 defect fixes (2026-10-22, on top of 9c6ed80) — audit D1–D6
+
+Approved by Amin 2026-10-22 from AUDIT-2026-10-22.md; five commits
+(fdf3cf6…12770b9), overlay-only + CI config, NO new patches, no
+upstream files touched. (Numbering below is the audit's.)
+
+- **D3 — GitLab CI parity (fdf3cf6)**: `.gitlab-ci.yml` applied only
+  13/18 patches; it now applies 0016–0020 too, byte-identical patch
+  sequence to `.github/workflows/build.yml`. Pin (f32ffee), NDK
+  27.2.12479018, temurin 17 and the google-services generation step
+  were verified identical; remaining differences are the documented
+  platform translations (SDK bootstrap, cache, release mechanics).
+- **D2 + D6 — SendWhenOnline (8f667f0)**: store schema gains
+  `account` (the UserConfig slot that queued the entry; entries
+  written before the field existed default to
+  `UserConfig.selectedAccount` at load). The hub queues under
+  `getCurrentAccount()`; `AminHooks.onUserOnline` flushes only the
+  (account, peer) queue of the account that received the status
+  update, via that account. `markSent` was replaced: it flips
+  exactly the entries whose `sendMessage` hand-off returned without
+  throwing — a failed enqueue stays pending and retries on the next
+  online event. The send→persist window is at-least-once by design
+  (a crash there may duplicate once; the old blanket mark could
+  silently lose a queued message).
+- **D1 — Backup coverage (e4dd5b1)**: `BackupManager` now exports
+  and restores (a) PluginDb — all kv rows, stored JSON text carried
+  verbatim, restore = per-plugin replace in one transaction
+  (`PluginDb.dumpAll`/`restoreAll`); (b) plugin file sandboxes
+  (`amin.files`) as manifest + base64, restored through
+  `PluginFiles.copyInto` so name validation + quota apply
+  (cache-dir data is not plugin state and stays out); (c)
+  WallpaperLibraryStore metadata (items + active_id) via new
+  `exportBackup`/`importBackup` — media files not embedded, same
+  rule as videobg. SWO backup entries round-trip `account`. The
+  Google auth token cache remains EXCLUDED by design.
+- **D4 — DeletedStore batching (79204d8)**: the snapshot list now
+  lives in a synchronized in-memory cache (loaded once from prefs).
+  Live `snapshot()`/`snapshotAll()` mutate memory only — the
+  per-message full-list JSON read+rewrite on the update thread is
+  gone. Persistence is a debounced flush (750 ms quiet window) on
+  `Utilities.stageQueue`; `markDeleted` consumes from the cache and
+  flushes inline before persisting the deleted list;
+  `findSnapshotText`/`updateSnapshotText` read the cache, so edit
+  capture sees unflushed snapshots. Accepted trade-off: a process
+  death inside the debounce window loses the newest snapshots
+  (Anti-Delete's live-controller fallback still covers deletes for
+  messages held in memory). Caps (1000/500/300) and the pipe-record
+  format are unchanged — existing data loads identically.
+- **D5 — AutoSaver durable copies (12770b9)**: `record()` keeps its
+  existing behaviour, then schedules an async copy (stageQueue,
+  never the update thread) of the recorded file into
+  `filesDir/amin_autosaver/` (temp file + length check + rename)
+  and re-points the stored record at the durable copy, so Telegram
+  cache purges can no longer dangle saved view-once/TTL entries.
+  Copy failure leaves the original record untouched. Record format
+  unchanged.
