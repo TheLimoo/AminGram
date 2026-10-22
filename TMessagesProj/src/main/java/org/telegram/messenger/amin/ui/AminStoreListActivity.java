@@ -2,6 +2,7 @@ package org.telegram.messenger.amin.ui;
 
 import android.content.Context;
 import android.graphics.drawable.GradientDrawable;
+import android.os.Bundle;
 import android.text.Editable;
 import android.text.TextUtils;
 import android.text.TextWatcher;
@@ -17,6 +18,7 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import org.telegram.messenger.AndroidUtilities;
+import org.telegram.messenger.DialogObject;
 import org.telegram.messenger.R;
 import org.telegram.messenger.amin.core.DeletedStore;
 import org.telegram.messenger.amin.core.VaultStore;
@@ -25,6 +27,7 @@ import org.telegram.ui.ActionBar.AlertDialog;
 import org.telegram.ui.ActionBar.BaseFragment;
 import org.telegram.ui.ActionBar.Theme;
 import org.telegram.ui.Cells.TextCell;
+import org.telegram.ui.ChatActivity;
 import org.telegram.ui.Components.BulletinFactory;
 import org.telegram.ui.Components.EditTextBoldCursor;
 import org.telegram.ui.Components.RecyclerListView;
@@ -53,10 +56,12 @@ import java.util.Locale;
  *   blocks, not a bare "Nothing here yet" row.
  *
  * - GENERIC mode — every other VaultStore list (Keyword Radar
- *   hits, JS plugin logs, …): the original plain TextCell list,
- *   unchanged. Tap a row to copy it; the last row clears the list.
- *   Newest entries are at the bottom of the store, shown
- *   newest-first here.
+ *   hits, JS plugin logs, …): the original plain TextCell list.
+ *   Tap a row to copy it; the last row clears the list. Stage 2
+ *   exception: a Keyword Radar hit with a valid message id opens
+ *   that chat at the hit message instead of copying. Newest
+ *   entries are at the bottom of the store, shown newest-first
+ *   here.
  *
  * BiDi: the v1.3.4 formatters wrapped titles in LRM + LTR isolates
  * so an RTL (e.g. Persian) title or body cannot flip a row's visual
@@ -76,6 +81,9 @@ public class AminStoreListActivity extends BaseFragment {
 
     // Generic-mode state (legacy path, unchanged semantics).
     private List<String> items;
+    /** Raw Radar records, position-aligned with {@link #items}
+     *  after its display formatting; null for every other list. */
+    private List<String> rawItems;
     private StoreAdapter adapter;
 
     // History-mode state.
@@ -217,13 +225,24 @@ public class AminStoreListActivity extends BaseFragment {
     // Generic mode — the original viewer, behaviour preserved
     // ------------------------------------------------------------------
 
+    private boolean isRadarHits() {
+        return org.telegram.messenger.amin.core.MessagePipeline.RADAR_PREFS.equals(prefsName)
+                && org.telegram.messenger.amin.core.MessagePipeline.RADAR_HITS_KEY.equals(key);
+    }
+
     private void reload(Context context) {
         items = VaultStore.getAll(context, prefsName, key);
-        // reverse: newest first
+        rawItems = isRadarHits() ? new ArrayList<>(items) : null;
+        // reverse: newest first (raw Radar records stay aligned)
         for (int i = 0, j = items.size() - 1; i < j; i++, j--) {
             String tmp = items.get(i);
             items.set(i, items.get(j));
             items.set(j, tmp);
+            if (rawItems != null) {
+                String rawTmp = rawItems.get(i);
+                rawItems.set(i, rawItems.get(j));
+                rawItems.set(j, rawTmp);
+            }
         }
         if (DeletedStore.EDIT_KEY.equals(key)) {
             // Edit records are stored raw (dialogId|msgId|date|old -> new);
@@ -245,6 +264,48 @@ public class AminStoreListActivity extends BaseFragment {
         }
     }
 
+    /** Stage 2 Radar deep-link: open the hit's chat scrolled to
+     *  the hit message, using upstream's own construction —
+     *  {@code ChatActivity.of(dialogId, messageId)} builds a Bundle
+     *  with user_id (dialogId >= 0) or chat_id (-dialogId) plus
+     *  message_id, exactly like upstream's search/shared-media
+     *  jumps; encrypted dialogs mirror DialogsActivity's enc_id
+     *  form. The fragment is pinned to this list's account (the
+     *  account the Radar titles were resolved against). Returns
+     *  false — keeping the legacy copy behaviour — for non-Radar
+     *  rows, malformed records, or a missing/invalid message id. */
+    private boolean openRadarHit(int position) {
+        if (!isRadarHits() || rawItems == null
+                || position < 0 || position >= rawItems.size()) {
+            return false;
+        }
+        try {
+            String[] parts = rawItems.get(position).split("\\|", 5);
+            if (parts.length < 3) {
+                return false;
+            }
+            long dialogId = Long.parseLong(parts[0]);
+            long messageId = Long.parseLong(parts[1]);
+            if (dialogId == 0 || messageId <= 0 || messageId > Integer.MAX_VALUE) {
+                return false;
+            }
+            BaseFragment chat;
+            if (DialogObject.isEncryptedDialog(dialogId)) {
+                Bundle args = new Bundle();
+                args.putInt("enc_id", DialogObject.getEncryptedChatId(dialogId));
+                args.putInt("message_id", (int) messageId);
+                chat = new ChatActivity(args);
+            } else {
+                chat = ChatActivity.of(dialogId, (int) messageId);
+            }
+            chat.setCurrentAccount(currentAccount);
+            presentFragment(chat);
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
     private View createLegacyView(Context context) {
         reload(context);
 
@@ -260,6 +321,9 @@ public class AminStoreListActivity extends BaseFragment {
                 return;
             }
             if (position < items.size()) {
+                if (openRadarHit(position)) {
+                    return;
+                }
                 String value = items.get(position);
                 AndroidUtilities.addToClipboard(value);
                 BulletinFactory.of(AminStoreListActivity.this)
