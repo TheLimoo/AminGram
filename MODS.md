@@ -1491,3 +1491,49 @@ upstream files touched. (Numbering below is the audit's.)
   cache purges can no longer dangle saved view-once/TTL entries.
   Copy failure leaves the original record untouched. Record format
   unchanged.
+
+## Stage 2 enhancements (2026-10-22, on top of d2de0e5)
+
+Approved by Amin 2026-10-22 (after Stage 1): Keyword Radar
+deep-link jump + granular Ghost Mode sub-toggles. Two commits,
+overlay Java + one one-line-per-site patch edit (0003); no new
+patches.
+
+- **Keyword Radar deep-link jump**: `AminStoreListActivity`'s
+  generic mode now keeps the raw Radar records in a parallel
+  `rawItems` list (Radar prefs/key only), position-aligned with
+  the display-formatted rows through the newest-first reversal.
+  Tapping a Radar row parses `dialogId|msgId|keyword|date|snippet`
+  and, when dialogId != 0 and 0 < msgId <= Integer.MAX_VALUE,
+  opens the chat at that message with upstream's own construction
+  — `ChatActivity.of(dialogId, messageId)`, which builds a Bundle
+  with `user_id` (dialogId >= 0) or `chat_id` (-dialogId) plus
+  `message_id`, the same form upstream's search/shared-media
+  jumps use; encrypted dialogs mirror DialogsActivity's
+  `enc_id` + `message_id` Bundle instead. The fragment is pinned
+  via `setCurrentAccount(currentAccount)` — the account this list
+  resolved Radar titles against. Malformed/invalid hits and all
+  non-Radar lists keep the previous copy-to-clipboard behaviour.
+- **Granular Ghost Mode toggles**: the master `ghost_mode` module
+  switch is unchanged. `GhostModeModule` now owns three
+  default-ON sub-toggles in PluginRegistry's existing module
+  prefs store (`amingram_plugins`): `ghost_mode_suppress_read_receipts`,
+  `ghost_mode_suppress_typing`, `ghost_mode_suppress_online`.
+  `AminHooks` gained `ghostRead()` / `ghostTyping()` /
+  `ghostOnline()` — each is master AND its sub-toggle — and patch
+  0003's three MessagesController call sites were switched
+  one-for-one to the matching gate (completeReadTask → ghostRead,
+  sendTyping → ghostTyping, updateStatus → ghostOnline); the
+  preferred no-patch-edit shape was impossible because all three
+  sites called the single `ghostMode()` with no distinguishing
+  context. Hunk counts unchanged (same-line replacements);
+  re-verified by full patch-series replay from pristine. The hub
+  (`AminPluginsActivity`) shows the three toggles as On/Off action
+  rows under Ghost Mode, following the existing action-row
+  pattern; `GhostModeModule.status()` now lists which
+  suppressions are active.
+- Verified: JDK17 JavacTask parse clean (4 touched Java files,
+  UTF-8); patch series replay on a fresh git-archive extraction
+  of pinned upstream f32ffee + overlay → 18/18 clean (repeated
+  from repo sources → 18/18); overlay == repo byte-identical for
+  every touched file. No JS files touched.
