@@ -74,25 +74,32 @@ jobs:
           export PATH="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
           curl -fsSL "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VER/openssl-$OPENSSL_VER.tar.gz" | tar xz -C "$GITHUB_WORKSPACE"
           build_one() {
-            target="$1"; abi="$2"; oarch="$3"
+            target="$1"; abi="$2"; oarch="$3"; clang="$4"
             ssl="$GITHUB_WORKSPACE/openssl-$OPENSSL_VER/out-$abi"
             if [ ! -f "$ssl/lib/libssl.a" ]; then
               ( cd "$GITHUB_WORKSPACE/openssl-$OPENSSL_VER" && \
                 ./Configure "$oarch" -D__ANDROID_API__=23 --prefix="$ssl" no-shared no-tests && \
                 make -j"$(nproc)" build_libs && make install_dev )
             fi
+            # slipstream-ffi compiles its C sources by invoking $CC
+            # with NO target flags — the arch must come from the NDK
+            # per-ABI clang wrapper itself (plain "cc" silently
+            # produced host objects that lld then rejected).
             OPENSSL_DIR="$ssl" OPENSSL_STATIC=1 \
             OPENSSL_ROOT_DIR="$ssl" OPENSSL_INCLUDE_DIR="$ssl/include" \
             OPENSSL_SSL_LIBRARY="$ssl/lib/libssl.a" OPENSSL_CRYPTO_LIBRARY="$ssl/lib/libcrypto.a" \
             ANDROID_ABI="$abi" ANDROID_PLATFORM=23 \
-              cargo ndk -t "$target" --platform 23 build --release --features picoquic-minimal-build
+            CC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/${clang}23-clang" \
+            CXX="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/${clang}23-clang++" \
+            AR="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" \
+              cargo ndk -t "$target" --platform 23 build --release -p slipstream-client --features picoquic-minimal-build
             cp "target/$target/release/slipstream-client" \
                "$GITHUB_WORKSPACE/out/jniLibs/$abi/libslipstream_client.so"
           }
-          build_one aarch64-linux-android arm64-v8a android-arm64
-          build_one armv7-linux-androideabi armeabi-v7a android-arm
-          build_one i686-linux-android x86 android-x86
-          build_one x86_64-linux-android x86_64 android-x86_64
+          build_one aarch64-linux-android arm64-v8a android-arm64 aarch64-linux-android
+          build_one armv7-linux-androideabi armeabi-v7a android-arm armv7a-linux-androideabi
+          build_one i686-linux-android x86 android-x86 i686-linux-android
+          build_one x86_64-linux-android x86_64 android-x86_64 x86_64-linux-android
 
       - name: Upload jniLibs artifact
         uses: actions/upload-artifact@v4
