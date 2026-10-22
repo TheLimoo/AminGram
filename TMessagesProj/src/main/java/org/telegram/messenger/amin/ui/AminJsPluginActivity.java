@@ -82,18 +82,21 @@ public class AminJsPluginActivity extends BaseFragment {
     private int devEvalRow = -1;
     private JsPlugin.SettingDef pendingFileSetting;
     private boolean pageResumed;
+
+    private final String pluginId;
+    private JsPlugin plugin;
+    // Live log tail (§3.5): the manager notifies on the UI
+    // thread; refresh only while this page is in front and
+    // only for this plugin. No polling anywhere. Declared
+    // AFTER `plugin`: the lambda reads it, and Java forbids a
+    // field initializer from referencing a later-declared field
+    // (run #15's "illegal forward reference").
     private final JsPluginManager.LogListener logTailListener = updatedPluginId -> {
-        // Live log tail (§3.5): the manager notifies on the UI
-        // thread; refresh only while this page is in front and
-        // only for this plugin. No polling anywhere.
         if (pageResumed && plugin != null && plugin.id.equals(updatedPluginId)
                 && AminPluginsActivity.isDeveloperMode()) {
             refreshPage(getContext());
         }
     };
-
-    private final String pluginId;
-    private JsPlugin plugin;
     private RecyclerListView listView;
     private PluginPageAdapter adapter;
 
@@ -304,7 +307,7 @@ public class AminJsPluginActivity extends BaseFragment {
             int errors = JsPluginManager.errorsToday(plugin.id);
             addRow(TYPE_DEV_STATE, "Runtime: " + state + " · "
                     + errors + (errors == 1 ? " error" : " errors") + " today");
-            List<String> log = JsPluginManager.log(plugin.id);
+            List<String> log = JsPluginManager.getLog(context, plugin.id);
             StringBuilder tail = new StringBuilder();
             int from = Math.max(0, log.size() - 8);
             for (int i = from; i < log.size(); i++) {
@@ -655,7 +658,7 @@ public class AminJsPluginActivity extends BaseFragment {
         }
         String current = JsPluginManager.storageGetRaw(context, plugin.id, def.key);
         if (current == null || current.isEmpty()) {
-            current = def.def == null ? "#000000" : def.def;
+            current = def.def == null ? "#000000" : String.valueOf(def.def);
         }
         int initial = 0xFF000000;
         try {
@@ -667,7 +670,7 @@ public class AminJsPluginActivity extends BaseFragment {
         org.telegram.ui.Components.ColorPicker picker =
                 new org.telegram.ui.Components.ColorPicker(context, false,
                         (color, num, applyNow) -> chosen[0] = color);
-        picker.setColor(initial);
+        picker.setColor(initial, 0);
         AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
         builder.setTitle(def.title);
         builder.setView(picker);
@@ -1397,6 +1400,11 @@ public class AminJsPluginActivity extends BaseFragment {
         }
 
         private class StoreAdapter extends RecyclerListView.SelectionAdapter {
+
+            @Override
+            public boolean isEnabled(RecyclerView.ViewHolder holder) {
+                return holder.getAdapterPosition() != 0;
+            }
 
             @Override
             public int getItemCount() {

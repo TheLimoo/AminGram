@@ -47,6 +47,61 @@ public final class PluginFiles {
         return new File(dir(context, pluginId), name);
     }
 
+    /** Ids of all plugins that have a sandbox directory (Backup
+     *  export, Stage 1). Sorted; empty when no sandbox exists yet. */
+    public static List<String> pluginIds(Context context) {
+        List<String> out = new ArrayList<>();
+        File root = new File(context.getFilesDir(), "jsplugins-data");
+        File[] dirs = root.listFiles();
+        if (dirs != null) {
+            for (File d : dirs) {
+                if (d.isDirectory()) {
+                    out.add(d.getName());
+                }
+            }
+        }
+        out.sort((a, b) -> a.compareTo(b));
+        return out;
+    }
+
+    /** Raw bytes of a stored file (Backup export), or null. The
+     *  text API above cannot carry binary payloads, hence this
+     *  twin; same sandbox validation applies. */
+    public static byte[] readBytes(Context context, String pluginId, String name) {
+        File file = file(context, pluginId, name);
+        if (file == null || !file.isFile()) {
+            return null;
+        }
+        FileInputStream in = null;
+        try {
+            in = new FileInputStream(file);
+            byte[] data = new byte[(int) Math.min(file.length(), Integer.MAX_VALUE - 8)];
+            int read = 0;
+            while (read < data.length) {
+                int n = in.read(data, read, data.length - read);
+                if (n < 0) {
+                    break;
+                }
+                read += n;
+            }
+            if (read == data.length) {
+                return data;
+            }
+            byte[] trimmed = new byte[read];
+            System.arraycopy(data, 0, trimmed, 0, read);
+            return trimmed;
+        } catch (Throwable t) {
+            return null;
+        } finally {
+            if (in != null) {
+                try {
+                    in.close();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+    }
+
     /** Total bytes currently stored for the plugin. */
     public static long usedBytes(Context context, String pluginId) {
         long total = 0;

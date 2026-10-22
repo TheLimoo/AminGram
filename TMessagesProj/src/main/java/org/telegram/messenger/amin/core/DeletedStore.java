@@ -6,6 +6,7 @@ import androidx.collection.LongSparseArray;
 
 import org.telegram.messenger.MessageObject;
 import org.telegram.messenger.MessagesController;
+import org.telegram.messenger.Utilities;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -24,6 +25,18 @@ import java.util.List;
  * Falls back to the controller's in-memory message maps for messages
  * that were never snapshotted (e.g. received before the module was
  * enabled but still loaded in memory when the delete lands).
+ *
+ * Persistence model (Stage 1, audit D4): the snapshot list lives in
+ * a synchronized in-memory cache, loaded from prefs on first use.
+ * Live snapshot() calls mutate the cache ONLY — no per-message JSON
+ * read/rewrite on the update thread. A debounced flush on
+ * Utilities.stageQueue persists the whole list at most once per
+ * quiet window. All other snapshot readers (delete marking, edit
+ * capture) go through the same cache, so unflushed snapshots are
+ * fully visible. Trade-off, accepted: a process death inside the
+ * debounce window loses the newest snapshots; Anti-Delete's
+ * live-controller fallback still covers deletes for messages the
+ * controller holds in memory.
  */
 public final class DeletedStore {
 
@@ -39,13 +52,49 @@ public final class DeletedStore {
     private DeletedStore() {
     }
 
-    public static void snapshot(Context context, MessageObject obj) {
-        if (context == null || obj == null || obj.messageOwner == null) {
+    // ---- Snapshot cache (Stage 1, audit D4) -------------------------
+
+    private static final long SNAP_FLUSH_DELAY_MS = 750;
+    private static List<String> snapCache;
+    private static boolean snapDirty;
+    private static boolean snapFlushScheduled;
+
+    /** The live snapshot list, loaded from prefs on first use.
+     *  Callers must hold the class lock (all entry points here are
+     *  synchronized) and must NOT retain the list across calls. */
+    private static List<String> snapshotCache(Context context) {
+        if (snapCache == null) {
+            snapCache = VaultStore.getAll(context, PREFS, SNAP_KEY);
+        }
+        return snapCache;
+    }
+
+    private static void markSnapDirty(Context context) {
+        snapDirty = true;
+        if (!snapFlushScheduled) {
+            snapFlushScheduled = true;
+            final Context appContext = context.getApplicationContext();
+            Utilities.stageQueue.postRunnable(() -> flushSnapshots(appContext),
+                    SNAP_FLUSH_DELAY_MS);
+        }
+    }
+
+    /** Persists the cached snapshot list if it changed. Runs on
+     *  stageQueue (debounce) or inline from markDeleted, where the
+     *  snapshots are being consumed and must be durable first. */
+    private static synchronized void flushSnapshots(Context context) {
+        snapFlushScheduled = false;
+        if (!snapDirty || snapCache == null || context == null) {
             return;
         }
+        VaultStore.putAll(context, PREFS, SNAP_KEY, new ArrayList<>(snapCache));
+        snapDirty = false;
+    }
+
+    private static void upsertSnapshot(Context context, MessageObject obj) {
         String record = toRecord(obj);
         String prefix = obj.getDialogId() + "|" + obj.getId() + "|";
-        List<String> items = VaultStore.getAll(context, PREFS, SNAP_KEY);
+        List<String> items = snapshotCache(context);
         for (int i = items.size() - 1; i >= 0; i--) {
             if (items.get(i).startsWith(prefix)) {
                 items.remove(i);
@@ -55,7 +104,14 @@ public final class DeletedStore {
         while (items.size() > SNAP_CAP) {
             items.remove(0);
         }
-        VaultStore.putAll(context, PREFS, SNAP_KEY, items);
+        markSnapDirty(context);
+    }
+
+    public static synchronized void snapshot(Context context, MessageObject obj) {
+        if (context == null || obj == null || obj.messageOwner == null) {
+            return;
+        }
+        upsertSnapshot(context, obj);
     }
 
     /** Batch snapshot (v1.3): one prefs read + one write for a whole
@@ -63,44 +119,31 @@ public final class DeletedStore {
      *  from history when a chat is opened are snapshotted too — this is
      *  what gives Edit History its "before" text for messages that did
      *  not arrive live, and Anti-Delete coverage for scrolled history. */
-    public static void snapshotAll(Context context, List<MessageObject> objects) {
+    public static synchronized void snapshotAll(Context context, List<MessageObject> objects) {
         if (context == null || objects == null || objects.isEmpty()) {
             return;
         }
-        List<String> items = VaultStore.getAll(context, PREFS, SNAP_KEY);
-        boolean changed = false;
         for (MessageObject obj : objects) {
             if (obj == null || obj.messageOwner == null) {
                 continue;
             }
-            String record = toRecord(obj);
-            String prefix = obj.getDialogId() + "|" + obj.getId() + "|";
-            for (int i = items.size() - 1; i >= 0; i--) {
-                if (items.get(i).startsWith(prefix)) {
-                    items.remove(i);
-                }
-            }
-            items.add(record);
-            changed = true;
+            upsertSnapshot(context, obj);
         }
-        if (!changed) {
-            return;
-        }
-        while (items.size() > SNAP_CAP) {
-            items.remove(0);
-        }
-        VaultStore.putAll(context, PREFS, SNAP_KEY, items);
     }
 
     /** Moves snapshots of the deleted messages into the deleted list.
      *  Called from the MessagesController delete hook (FQ) before the
      *  upstream application block is skipped by the v1 guard. */
-    public static void markDeleted(Context context, MessagesController controller,
+    public static synchronized void markDeleted(Context context, MessagesController controller,
                                    LongSparseArray<ArrayList<Integer>> deleted) {
         if (context == null || deleted == null) {
             return;
         }
-        List<String> snaps = VaultStore.getAll(context, PREFS, SNAP_KEY);
+        // Consume from the in-memory cache so snapshots taken inside
+        // the current debounce window are found too; the consumed
+        // list is flushed inline below, before the deleted list is
+        // persisted, so the pair stays consistent.
+        List<String> snaps = snapshotCache(context);
         List<String> recovered = VaultStore.getAll(context, PREFS, DELETED_KEY);
         boolean snapsChanged = false;
         for (int a = 0, size = deleted.size(); a < size; a++) {
@@ -127,10 +170,11 @@ public final class DeletedStore {
         while (recovered.size() > DELETED_CAP) {
             recovered.remove(0);
         }
-        VaultStore.putAll(context, PREFS, DELETED_KEY, recovered);
         if (snapsChanged) {
-            VaultStore.putAll(context, PREFS, SNAP_KEY, snaps);
+            snapDirty = true;
+            flushSnapshots(context);
         }
+        VaultStore.putAll(context, PREFS, DELETED_KEY, recovered);
     }
 
     // ---- Edit History (v1.2): pre-edit snapshots double as the "before"
@@ -455,8 +499,8 @@ public final class DeletedStore {
         }
     }
 
-    public static String findSnapshotText(Context context, long dialogId, int msgId) {
-        List<String> snaps = VaultStore.getAll(context, PREFS, SNAP_KEY);
+    public static synchronized String findSnapshotText(Context context, long dialogId, int msgId) {
+        List<String> snaps = snapshotCache(context);
         String prefix = dialogId + "|" + msgId + "|";
         for (String s : snaps) {
             if (s.startsWith(prefix)) {
@@ -467,13 +511,13 @@ public final class DeletedStore {
         return null;
     }
 
-    private static void updateSnapshotText(Context context, long dialogId, int msgId, int date, String newText) {
-        List<String> snaps = VaultStore.getAll(context, PREFS, SNAP_KEY);
+    private static synchronized void updateSnapshotText(Context context, long dialogId, int msgId, int date, String newText) {
+        List<String> snaps = snapshotCache(context);
         String prefix = dialogId + "|" + msgId + "|";
         for (int i = 0; i < snaps.size(); i++) {
             if (snaps.get(i).startsWith(prefix)) {
                 snaps.set(i, dialogId + "|" + msgId + "|" + date + "|text|" + cap(newText, TEXT_CAP));
-                VaultStore.putAll(context, PREFS, SNAP_KEY, snaps);
+                markSnapDirty(context);
                 return;
             }
         }

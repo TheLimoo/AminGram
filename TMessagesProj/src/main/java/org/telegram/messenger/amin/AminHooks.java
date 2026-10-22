@@ -19,6 +19,7 @@ import org.telegram.messenger.amin.core.DeletedStore;
 import org.telegram.messenger.amin.core.HiddenChatsStore;
 import org.telegram.messenger.amin.core.MessagePipeline;
 import org.telegram.messenger.amin.core.SendWhenOnlineStore;
+import org.telegram.messenger.amin.modules.GhostModeModule;
 import org.telegram.messenger.amin.plugins.PluginRegistry;
 import org.telegram.messenger.amin.plugins.js.JsPlugin;
 import org.telegram.messenger.amin.plugins.js.JsPluginManager;
@@ -67,6 +68,34 @@ public final class AminHooks {
 
     public static boolean ghostMode() {
         return moduleEnabled("ghost_mode");
+    }
+
+    /** Stage 2 granular Ghost gates (patch 0003 call sites). Each
+     *  combines the unchanged master module toggle with one of
+     *  GhostModeModule's default-ON sub-toggles, so a sub-toggle is
+     *  consulted only while Ghost Mode itself is enabled. */
+    public static boolean ghostRead() {
+        if (!ghostMode()) {
+            return false;
+        }
+        Context context = ApplicationLoader.applicationContext;
+        return context != null && GhostModeModule.suppressReadReceipts(context);
+    }
+
+    public static boolean ghostTyping() {
+        if (!ghostMode()) {
+            return false;
+        }
+        Context context = ApplicationLoader.applicationContext;
+        return context != null && GhostModeModule.suppressTyping(context);
+    }
+
+    public static boolean ghostOnline() {
+        if (!ghostMode()) {
+            return false;
+        }
+        Context context = ApplicationLoader.applicationContext;
+        return context != null && GhostModeModule.suppressOnlineStatus(context);
     }
 
     public static boolean ghostStoriesEnabled() {
@@ -349,16 +378,29 @@ public final class AminHooks {
 
     private static void onUserOnline(Context context, int account, long userId) {
         try {
-            List<SendWhenOnlineStore.Entry> pending = SendWhenOnlineStore.pendingFor(context, userId);
+            // Account isolation (Stage 1, audit D2): only entries
+            // queued under THIS account may flush on its status
+            // updates — the same peer on another account stays queued.
+            List<SendWhenOnlineStore.Entry> pending =
+                    SendWhenOnlineStore.pendingFor(context, account, userId);
             if (pending.isEmpty()) {
                 return;
             }
+            List<SendWhenOnlineStore.Entry> dispatched = new ArrayList<>();
             for (SendWhenOnlineStore.Entry entry : pending) {
-                SendMessagesHelper.getInstance(account)
-                        .sendMessage(SendMessagesHelper.SendMessageParams.of(entry.text, entry.peer));
+                try {
+                    SendMessagesHelper.getInstance(account)
+                            .sendMessage(SendMessagesHelper.SendMessageParams.of(entry.text, entry.peer));
+                    dispatched.add(entry);
+                } catch (Throwable ignored) {
+                    // Hand-off failed: the entry is NOT marked sent
+                    // (audit D6) and retries on the next online event.
+                }
             }
-            SendWhenOnlineStore.markSent(context, userId);
-            SendWhenOnlineStore.notifyChanged();
+            if (!dispatched.isEmpty()) {
+                SendWhenOnlineStore.markSent(context, dispatched);
+                SendWhenOnlineStore.notifyChanged();
+            }
         } catch (Throwable ignored) {
         }
     }

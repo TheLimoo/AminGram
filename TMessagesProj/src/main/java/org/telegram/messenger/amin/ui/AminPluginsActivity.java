@@ -36,6 +36,7 @@ import org.telegram.messenger.amin.core.SendWhenOnlineStore;
 import org.telegram.messenger.amin.core.VaultStore;
 import org.telegram.messenger.amin.core.WallpaperLibraryStore;
 import org.telegram.messenger.amin.google.GoogleAuthManager;
+import org.telegram.messenger.amin.modules.GhostModeModule;
 import org.telegram.messenger.amin.plugins.ModModule;
 import org.telegram.messenger.amin.plugins.PluginRegistry;
 import org.telegram.messenger.amin.plugins.js.BundledPlugins;
@@ -427,6 +428,18 @@ public class AminPluginsActivity extends BaseFragment {
 
     private void addModuleActions(Context context, ModModule module) {
         switch (module.id()) {
+            case "ghost_mode": {
+                // Stage 2: granular suppressions under the master
+                // Ghost Mode switch. Each row is an On/Off action in
+                // the hub's existing style; all default to On.
+                action("ghost_suppress_read", "Suppress Read Receipts",
+                        GhostModeModule.suppressReadReceipts(context) ? "On" : "Off");
+                action("ghost_suppress_typing", "Suppress Typing & Recording Action",
+                        GhostModeModule.suppressTyping(context) ? "On" : "Off");
+                action("ghost_suppress_online", "Suppress Online Status",
+                        GhostModeModule.suppressOnlineStatus(context) ? "On" : "Off");
+                break;
+            }
             case "anti_delete": {
                 int count = VaultStore.getAll(context, DeletedStore.PREFS, DeletedStore.DELETED_KEY).size();
                 action("view_deleted", "Deleted messages", String.valueOf(count));
@@ -726,6 +739,21 @@ public class AminPluginsActivity extends BaseFragment {
 
     private void onAction(Context context, Row row) {
         switch (row.action) {
+            case "ghost_suppress_read":
+                GhostModeModule.setSuppressReadReceipts(context,
+                        !GhostModeModule.suppressReadReceipts(context));
+                rebuild();
+                break;
+            case "ghost_suppress_typing":
+                GhostModeModule.setSuppressTyping(context,
+                        !GhostModeModule.suppressTyping(context));
+                rebuild();
+                break;
+            case "ghost_suppress_online":
+                GhostModeModule.setSuppressOnlineStatus(context,
+                        !GhostModeModule.suppressOnlineStatus(context));
+                rebuild();
+                break;
             case "view_deleted":
                 presentFragment(new AminStoreListActivity("Deleted messages",
                         DeletedStore.PREFS, DeletedStore.DELETED_KEY));
@@ -910,7 +938,7 @@ public class AminPluginsActivity extends BaseFragment {
         builder.setPositiveButton("Queue", (dialog, which) -> {
             String text = field.getText().toString().trim();
             if (!text.isEmpty()) {
-                SendWhenOnlineStore.add(context, peer, name, text);
+                SendWhenOnlineStore.add(context, getCurrentAccount(), peer, name, text);
                 bulletin(R.raw.contact_check, "Queued — will send when " + name + " is online");
                 rebuild();
             }
@@ -977,8 +1005,25 @@ public class AminPluginsActivity extends BaseFragment {
         }
         AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
         builder.setTitle("Export plugin pack");
-        builder.setMultiChoiceItems(items, checked,
-                (dialog, which, isChecked) -> checked[which] = isChecked);
+        // Telegram's AlertDialog.Builder has no setMultiChoiceItems
+        // (run #15's compile error) — the multi-select is a scroll
+        // list of check cells in a custom dialog view instead.
+        android.widget.ScrollView scroll = new android.widget.ScrollView(context);
+        LinearLayout checkList = new LinearLayout(context);
+        checkList.setOrientation(LinearLayout.VERTICAL);
+        scroll.addView(checkList);
+        for (int i = 0; i < installed.size(); i++) {
+            final int idx = i;
+            org.telegram.ui.Cells.TextCheckCell cell =
+                    new org.telegram.ui.Cells.TextCheckCell(context);
+            cell.setTextAndCheck(items[idx], checked[idx], idx < installed.size() - 1);
+            cell.setOnClickListener(v -> {
+                checked[idx] = !checked[idx];
+                cell.setChecked(checked[idx]);
+            });
+            checkList.addView(cell);
+        }
+        builder.setView(scroll);
         builder.setPositiveButton("Export…", (dialog, which) -> {
             List<String> ids = new ArrayList<>();
             for (int i = 0; i < installed.size(); i++) {

@@ -9,7 +9,9 @@ import org.telegram.messenger.ApplicationLoader;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Per-plugin KV database (Platform v2 Phase B, blueprint §1.4):
@@ -199,6 +201,84 @@ public final class PluginDb {
             }
         }
         return out;
+    }
+
+    /** Every row in the database as {pluginId, ns, key, valueJson}
+     *  (sorted). Backup export (Stage 1, audit D1) — the value is
+     *  the raw stored JSON text, carried verbatim so a restore is
+     *  lossless for every JSON shape the bridge can produce. */
+    public static synchronized List<String[]> dumpAll() {
+        List<String[]> out = new ArrayList<>();
+        SQLiteDatabase handle = open();
+        if (handle == null) {
+            return out;
+        }
+        Cursor cursor = null;
+        try {
+            cursor = handle.query("kv",
+                    new String[]{"plugin_id", "ns", "key", "value"},
+                    null, null, null, null, "plugin_id ASC, ns ASC, key ASC");
+            while (cursor.moveToNext()) {
+                out.add(new String[]{cursor.getString(0), cursor.getString(1),
+                        cursor.getString(2), cursor.getString(3)});
+            }
+        } catch (Throwable ignored) {
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
+        }
+        return out;
+    }
+
+    /** Restores rows produced by {@link #dumpAll} (BackupManager
+     *  import): for each plugin present in {@code rows}, that
+     *  plugin's existing rows are replaced by the backup's rows;
+     *  plugins absent from the backup are untouched. Rows that
+     *  violate the store contract are skipped, as in put(). One
+     *  transaction — a failure leaves the previous state intact. */
+    public static synchronized void restoreAll(List<String[]> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        SQLiteDatabase handle = open();
+        if (handle == null) {
+            return;
+        }
+        try {
+            Set<String> pluginIds = new HashSet<>();
+            for (String[] row : rows) {
+                if (row != null && row.length == 4 && row[0] != null) {
+                    pluginIds.add(row[0]);
+                }
+            }
+            handle.beginTransaction();
+            try {
+                for (String pluginId : pluginIds) {
+                    handle.delete("kv", "plugin_id = ?", new String[]{pluginId});
+                }
+                long now = System.currentTimeMillis();
+                for (String[] row : rows) {
+                    if (row == null || row.length != 4 || !validName(row[1])
+                            || !validName(row[2]) || row[3] == null
+                            || row[3].length() > MAX_VALUE_CHARS) {
+                        continue;
+                    }
+                    ContentValues values = new ContentValues();
+                    values.put("plugin_id", row[0]);
+                    values.put("ns", row[1]);
+                    values.put("key", row[2]);
+                    values.put("value", row[3]);
+                    values.put("updated_at", now);
+                    handle.insertWithOnConflict("kv", null, values,
+                            SQLiteDatabase.CONFLICT_REPLACE);
+                }
+                handle.setTransactionSuccessful();
+            } finally {
+                handle.endTransaction();
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     /** Drops ALL of a plugin's rows (true delete). */

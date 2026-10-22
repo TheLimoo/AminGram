@@ -7,7 +7,7 @@ index 93bc81c..ef6e87e 100644
              if (!ignoreSetOnline && getConnectionsManager().getPauseTime() == 0 && ApplicationLoader.isScreenOn && !ApplicationLoader.mainInterfacePausedStageQueue) {
                  if (ApplicationLoader.mainInterfacePausedStageQueueTime != 0 && Math.abs(ApplicationLoader.mainInterfacePausedStageQueueTime - System.currentTimeMillis()) > 1000) {
 -                    if (statusSettingState != 1 && (lastStatusUpdateTime == 0 || Math.abs(System.currentTimeMillis() - lastStatusUpdateTime) >= 55000 || offlineSent)) {
-+                    if (statusSettingState != 1 && !org.telegram.messenger.amin.AminHooks.ghostMode() && (lastStatusUpdateTime == 0 || Math.abs(System.currentTimeMillis() - lastStatusUpdateTime) >= 55000 || offlineSent)) {
++                    if (statusSettingState != 1 && !org.telegram.messenger.amin.AminHooks.ghostOnline() && (lastStatusUpdateTime == 0 || Math.abs(System.currentTimeMillis() - lastStatusUpdateTime) >= 55000 || offlineSent)) {
                          statusSettingState = 1;
  
                          if (statusRequest != 0) {
@@ -15,7 +15,7 @@ index 93bc81c..ef6e87e 100644
      }
  
      public boolean sendTyping(long dialogId, long threadMsgId, int action, String emojicon, int classGuid) {
-+        if (org.telegram.messenger.amin.AminHooks.ghostMode()) {
++        if (org.telegram.messenger.amin.AminHooks.ghostTyping()) {
 +            return false;
 +        }
          if (action < 0 || action >= sendingTypings.length || dialogId == 0) {
@@ -25,7 +25,7 @@ index 93bc81c..ef6e87e 100644
      }
  
      private void completeReadTask(ReadTask task) {
-+        if (org.telegram.messenger.amin.AminHooks.ghostMode()) {
++        if (org.telegram.messenger.amin.AminHooks.ghostRead()) {
 +            return;
 +        }
          if (task.replyId != 0 && task.monoForumPeerId == 0) {

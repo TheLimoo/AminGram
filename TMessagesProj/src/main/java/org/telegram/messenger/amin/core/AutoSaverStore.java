@@ -5,8 +5,13 @@ import android.content.Context;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.telegram.messenger.FileLoader;
+import org.telegram.messenger.Utilities;
 
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -22,6 +27,14 @@ import java.util.List;
  * TTL media resolves into the cache directory. resolveFile() also
  * falls back to scanning Telegram's media directories for the attach
  * file name, in case the cache layout moved the file.
+ *
+ * Durable copies (Stage 1, audit D5): a recorded path points into
+ * Telegram's cache, which Telegram may purge at any time. When
+ * record() stores an entry whose file already exists on disk, the
+ * file is copied ASYNCHRONOUSLY (stageQueue — never on the update
+ * thread that called record()) into filesDir/amin_autosaver/ and the
+ * stored record is re-pointed at the durable copy. A failed copy
+ * leaves the original record untouched.
  *
  * Legacy v1/v2 log lines are still readable (path == null) so the hub
  * count and the old log viewer keep working.
@@ -66,6 +79,125 @@ public final class AutoSaverStore {
             entries.remove(0);
         }
         save(context, entries);
+        ensureDurableCopy(context, entry);
+    }
+
+    // ---- Durable copies (Stage 1, audit D5) -------------------------
+
+    private static final String DURABLE_DIR_NAME = "amin_autosaver";
+
+    public static File durableDir(Context context) {
+        return new File(context.getFilesDir(), DURABLE_DIR_NAME);
+    }
+
+    /** If the entry's recorded file exists on disk, copies it into
+     *  filesDir/amin_autosaver/ on stageQueue and re-points the
+     *  stored record at the copy. Runs entirely off the caller's
+     *  thread; any failure leaves the record exactly as recorded. */
+    private static void ensureDurableCopy(Context context, Entry entry) {
+        if (context == null || entry == null
+                || entry.path == null || entry.path.isEmpty()) {
+            return;
+        }
+        final Context appContext = context.getApplicationContext();
+        final long dialogId = entry.dialogId;
+        final int id = entry.id;
+        final String sourcePath = entry.path;
+        Utilities.stageQueue.postRunnable(() -> {
+            try {
+                File source = new File(sourcePath);
+                if (!source.isFile() || source.length() == 0) {
+                    return; // not downloaded yet / already gone
+                }
+                File dir = durableDir(appContext);
+                File parent = source.getParentFile();
+                if (parent != null && dir.getAbsolutePath().equals(parent.getAbsolutePath())) {
+                    return; // already a durable copy
+                }
+                if (!dir.exists() && !dir.mkdirs()) {
+                    return;
+                }
+                String ext = "";
+                String sourceName = source.getName();
+                int dot = sourceName.lastIndexOf('.');
+                if (dot > 0) {
+                    String candidate = sourceName.substring(dot);
+                    if (candidate.length() <= 6 && candidate.matches("\\.[A-Za-z0-9]+")) {
+                        ext = candidate;
+                    }
+                }
+                File target = new File(dir, dialogId + "_" + id + ext);
+                if (!copyFile(source, target)) {
+                    return; // record keeps pointing at the original
+                }
+                List<Entry> entries = getEntries(appContext);
+                boolean changed = false;
+                for (Entry e : entries) {
+                    if (e.dialogId == dialogId && e.id == id
+                            && e.path != null && !e.path.isEmpty()) {
+                        e.path = target.getAbsolutePath();
+                        changed = true;
+                    }
+                }
+                if (changed) {
+                    saveV2Only(appContext, entries);
+                }
+            } catch (Throwable ignored) {
+            }
+        });
+    }
+
+    /** Stream copy via a temp file + rename, so a failed or partial
+     *  copy never leaves a truncated file at the target path. */
+    private static boolean copyFile(File source, File target) {
+        File tmp = new File(target.getParentFile(), target.getName() + ".tmp");
+        InputStream in = null;
+        OutputStream out = null;
+        try {
+            in = new FileInputStream(source);
+            out = new FileOutputStream(tmp);
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = in.read(buffer)) > 0) {
+                out.write(buffer, 0, read);
+            }
+            out.close();
+            out = null;
+            in.close();
+            in = null;
+            if (tmp.length() != source.length()) {
+                tmp.delete();
+                return false;
+            }
+            if (target.exists() && !target.delete()) {
+                tmp.delete();
+                return false;
+            }
+            if (!tmp.renameTo(target)) {
+                tmp.delete();
+                return false;
+            }
+            return true;
+        } catch (Throwable t) {
+            try {
+                tmp.delete();
+            } catch (Throwable ignored) {
+            }
+            return false;
+        } finally {
+            if (in != null) {
+                try {
+                    in.close();
+                } catch (Throwable ignored) {
+                }
+            }
+            if (out != null) {
+                try {
+                    out.close();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
     }
 
     public static List<Entry> getEntries(Context context) {
