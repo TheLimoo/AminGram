@@ -2,14 +2,18 @@ package org.telegram.messenger.amin.core;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.util.Base64;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.telegram.messenger.amin.plugins.PluginRegistry;
 import org.telegram.messenger.amin.plugins.js.JsPlugin;
 import org.telegram.messenger.amin.plugins.js.JsPluginManager;
+import org.telegram.messenger.amin.plugins.js.PluginDb;
+import org.telegram.messenger.amin.plugins.js.PluginFiles;
 import org.telegram.messenger.amin.ui.VideoBackgroundHelper;
 
+import java.io.ByteArrayInputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -28,6 +32,13 @@ import java.util.Map;
  * - Auto-Saver v2 entries + legacy log
  * - installed JS plugins: metadata, full source code, enabled state
  *   and their amin.storage values
+ * - plugin database state (amin.db / PluginDb rows), plugin file
+ *   sandboxes (amin.files, base64 payloads) and the wallpaper
+ *   library metadata (Stage 1, audit D1)
+ *
+ * Deliberately NOT exported: the Google auth token cache
+ * (GoogleAuthManager) — credential material never enters a backup
+ * file; a restored app simply re-runs the account sign-in flow.
  *
  * The hub owns the file picker (SAF); this class is pure
  * build/apply over a JSON string. Import is overwrite-per-section:
@@ -94,6 +105,7 @@ public final class BackupManager {
                 o.put("date", e.date);
                 o.put("state", e.state);
                 o.put("sentDate", e.sentDate);
+                o.put("account", e.account);
                 swo.put(o);
             }
             root.put("swo", swo);
@@ -137,6 +149,47 @@ public final class BackupManager {
                 jsPlugins.put(o);
             }
             root.put("jsplugins", jsPlugins);
+
+            // Plugin database (amin.db): every PluginDb row, with
+            // the stored JSON text carried verbatim in "v" so any
+            // value shape round-trips losslessly (Stage 1, D1).
+            JSONArray pluginDb = new JSONArray();
+            for (String[] row : PluginDb.dumpAll()) {
+                JSONObject o = new JSONObject();
+                o.put("p", row[0]);
+                o.put("ns", row[1]);
+                o.put("k", row[2]);
+                o.put("v", row[3]);
+                pluginDb.put(o);
+            }
+            root.put("plugindb", pluginDb);
+
+            // Plugin file sandboxes (amin.files): manifest + base64
+            // per file. The sandbox holds durable files only
+            // (filesDir/jsplugins-data) — picker caches and other
+            // cache-dir data are not plugin state and stay out.
+            JSONObject pluginFiles = new JSONObject();
+            for (String pluginId : PluginFiles.pluginIds(context)) {
+                JSONArray files = new JSONArray();
+                for (PluginFiles.FileInfo info : PluginFiles.list(context, pluginId)) {
+                    byte[] data = PluginFiles.readBytes(context, pluginId, info.name);
+                    if (data == null) {
+                        continue;
+                    }
+                    JSONObject fo = new JSONObject();
+                    fo.put("name", info.name);
+                    fo.put("data", Base64.encodeToString(data, Base64.NO_WRAP));
+                    files.put(fo);
+                }
+                if (files.length() > 0) {
+                    pluginFiles.put(pluginId, files);
+                }
+            }
+            root.put("pluginfiles", pluginFiles);
+
+            // Wallpaper library metadata (files themselves are not
+            // embedded — same rule as the videobg path above).
+            root.put("wallpapers", WallpaperLibraryStore.exportBackup(context));
         } catch (Exception ignored) {
         }
         return root.toString();
@@ -213,6 +266,10 @@ public final class BackupManager {
                     e.date = o.optInt("date");
                     e.state = o.optString("state", "pending");
                     e.sentDate = o.optInt("sentDate");
+                    // Backups predating the account field leave -1
+                    // here only transiently: the store resolves it
+                    // to UserConfig.selectedAccount on next load.
+                    e.account = o.optInt("account", -1);
                     entries.add(e);
                 }
                 SendWhenOnlineStore.saveAll(context, entries);
@@ -279,6 +336,61 @@ public final class BackupManager {
                         JsPluginManager.setEnabled(context, current, installed.enabled);
                     }
                 }
+            }
+
+            // Plugin database rows (per-plugin replace, Stage 1).
+            JSONArray pluginDb = root.optJSONArray("plugindb");
+            if (pluginDb != null) {
+                List<String[]> rows = new ArrayList<>();
+                for (int i = 0; i < pluginDb.length(); i++) {
+                    JSONObject o = pluginDb.optJSONObject(i);
+                    if (o == null) {
+                        continue;
+                    }
+                    rows.add(new String[]{o.optString("p", ""), o.optString("ns", ""),
+                            o.optString("k", ""), o.optString("v", "")});
+                }
+                PluginDb.restoreAll(rows);
+            }
+
+            // Plugin file sandboxes: each file is written through
+            // the picker's own durable-copy path (sandbox name
+            // validation + per-plugin quota apply, as on device).
+            JSONObject pluginFiles = root.optJSONObject("pluginfiles");
+            if (pluginFiles != null) {
+                JSONArray pluginIds = pluginFiles.names();
+                if (pluginIds != null) {
+                    for (int i = 0; i < pluginIds.length(); i++) {
+                        String pluginId = pluginIds.optString(i);
+                        JSONArray files = pluginFiles.optJSONArray(pluginId);
+                        if (files == null) {
+                            continue;
+                        }
+                        for (int j = 0; j < files.length(); j++) {
+                            JSONObject fo = files.optJSONObject(j);
+                            if (fo == null) {
+                                continue;
+                            }
+                            String name = fo.optString("name", "");
+                            String data = fo.optString("data", "");
+                            if (name.isEmpty() || data.isEmpty()) {
+                                continue;
+                            }
+                            try {
+                                byte[] bytes = Base64.decode(data, Base64.DEFAULT);
+                                PluginFiles.copyInto(context, pluginId, name,
+                                        new ByteArrayInputStream(bytes), bytes.length);
+                            } catch (Exception ignored) {
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Wallpaper library metadata.
+            JSONObject wallpapers = root.optJSONObject("wallpapers");
+            if (wallpapers != null) {
+                WallpaperLibraryStore.importBackup(context, wallpapers);
             }
         } catch (Exception e) {
             return "Import failed: " + e.getMessage();

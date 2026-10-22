@@ -553,6 +553,70 @@ public final class WallpaperLibraryStore {
         return false;
     }
 
+    // ------------------------------------------------------------------
+    // Backup (Stage 1): the library METADATA only — the same
+    // {items, active_id} shape the prefs hold. The wallpaper files
+    // themselves are not embedded (consistent with the backup's
+    // long-standing videobg rule: paths/metadata travel, media
+    // files do not); restored entries whose files are absent
+    // self-heal via getActive()/fileUsable checks.
+    // ------------------------------------------------------------------
+
+    public static synchronized JSONObject exportBackup(Context context) {
+        JSONObject out = new JSONObject();
+        if (context == null) {
+            return out;
+        }
+        ensureMigrated(context);
+        try {
+            JSONArray arr = new JSONArray();
+            for (Entry e : loadItems(context)) {
+                JSONObject o = new JSONObject();
+                o.put("id", e.id);
+                o.put("displayName", e.displayName);
+                o.put("fileName", e.fileName);
+                o.put("addedAt", e.addedAt);
+                arr.put(o);
+            }
+            out.put("items", arr);
+            String activeId = loadActiveId(context);
+            if (activeId != null) {
+                out.put("active_id", activeId);
+            }
+        } catch (Throwable ignored) {
+        }
+        return out;
+    }
+
+    /** Replaces the library index with a backup's metadata (the
+     *  normal save path, so the legacy path pref is re-synced too).
+     *  Malformed entries are skipped exactly as in loadItems. */
+    public static synchronized void importBackup(Context context, JSONObject backup) {
+        if (context == null || backup == null) {
+            return;
+        }
+        ensureMigrated(context);
+        List<Entry> items = new ArrayList<>();
+        JSONArray arr = backup.optJSONArray("items");
+        if (arr != null) {
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject o = arr.optJSONObject(i);
+                if (o == null) {
+                    continue;
+                }
+                String id = o.optString("id", "");
+                String fileName = o.optString("fileName", "");
+                if (id.isEmpty() || fileName.isEmpty()) {
+                    continue;
+                }
+                items.add(new Entry(id, o.optString("displayName", "Wallpaper"),
+                        fileName, o.optLong("addedAt", 0)));
+            }
+        }
+        String activeId = backup.optString("active_id", "");
+        save(context, items, activeId.isEmpty() ? null : activeId);
+    }
+
     /**
      * Compatibility bridge for path-based callers (the old
      * VideoBackgroundHelper.setVideoPath, backup import): if
