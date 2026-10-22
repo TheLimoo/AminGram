@@ -1537,3 +1537,62 @@ patches.
   of pinned upstream f32ffee + overlay → 18/18 clean (repeated
   from repo sources → 18/18); overlay == repo byte-identical for
   every touched file. No JS files touched.
+
+## plugins-v4 promotion (2026-10-22, on top of 1e19829)
+
+The plugins-v4 rewrite set (delivered to Amin as an importable
+.aminpack on 2026-10-22) is promoted into the bundled set: all 12
+bundled plugins' assets are now byte-identical to their
+plugins-v4 sources (media-dl 3.0.1, temp-mail 2.1, gemini-chat
+1.1, ai-actions 1.1, link-cleaner 1.1, price-check 1.1, qr-maker
+1.1, quick-translate 1.1, quick-replies 1.1, aesthetic-text 1.1,
+vip-alert 1.1, shout 1.1). fun-tools and theme-manager exist in
+plugins-v4 but are NOT bundled (unchanged: fun-tools ships only
+in the pack, theme-manager only as a standalone plugin file);
+whether they join the bundled set is Amin's call.
+
+- Check 1 — in-place upgrade behavior (BundledPlugins): BEFORE,
+  ensureInstalled only marked an already-installed bundled id as
+  seen and never re-delivered it, so an APK update left existing
+  users on the old bundled code indefinitely. The install path
+  itself (JsPluginManager.installInternal) was verified
+  data-preserving: it replaces only the code file (old code kept
+  as .prev.js) and the meta, carrying over enabled/installedAt/
+  dataVersionStored; the per-plugin data stores (amin.storage +
+  settings values in the per-plugin prefs file, PluginDb rows,
+  the amin.files sandbox) are removed ONLY by delete() and the
+  Developer-tools clearPluginData action. FIX: ensureInstalled
+  now runs updateIfBundledNewer for installed bundled ids — it
+  parses the bundled asset's @version and, when strictly higher
+  than the installed version (JsPluginManager.compareVersions),
+  updates in place through the standard install path. Same-or-
+  newer installs (e.g. a .aminpack import) are never downgraded
+  or clobbered; onMigrate still runs at warm-up when a plugin's
+  @dataVersion moved (media-dl 1 → 2).
+- Check 2 — three-way metadata sync: BundledPlugins.java
+  descriptors (name + tagline) and catalog/index.json (name,
+  version, author, description, capabilities, minPlatform,
+  sha256, size, updatedAt) were regenerated from the promoted
+  assets' manifests and final asset bytes — media-dl's display
+  name is now its manifest name "Downloader Pro" in all three
+  sources, and every plugin's minPlatform is 2. Verified by
+  ~/workspace/amingram/verify-promotion-sync.py: SYNC OK (12
+  plugins identical on every shared field; catalog sha256+size
+  match asset bytes; assets byte-identical to plugins-v4).
+- Check 3 — deep-link extension: NO code change. Deleted and
+  Edit History records both carry dialogId + msgId (DeletedStore
+  record formats + HistoryEntry parser), and
+  AminHistoryDetailActivity already ships an "Open chat" action
+  (openChat): it validates the peer on the current account and
+  jumps via ChatActivity.of(dialogId, msgId) for edits — the
+  message still exists — and ChatActivity.of(dialogId) for
+  deleted records, whose message is gone by definition. The
+  affordance Stage 2 added for Radar already exists here.
+- Verified: Rhino harness full suite 676/676 against the
+  promoted assets (test-bundled strict-loads all 12; its two
+  media-dl SETTINGS expectations were updated from the old
+  bundled 2.1 shape — 2 defs, first bool — to 3.0.1's actual 8
+  defs, first select); JDK17 JavacTask parse clean for
+  BundledPlugins.java (the only touched Java file); no patch
+  files touched, so the 18/18 patch replay is unaffected;
+  overlay == repo byte-identical for every touched file.
