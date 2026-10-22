@@ -910,7 +910,7 @@ public class AminPluginsActivity extends BaseFragment {
         builder.setPositiveButton("Queue", (dialog, which) -> {
             String text = field.getText().toString().trim();
             if (!text.isEmpty()) {
-                SendWhenOnlineStore.add(context, peer, name, text);
+                SendWhenOnlineStore.add(context, getCurrentAccount(), peer, name, text);
                 bulletin(R.raw.contact_check, "Queued — will send when " + name + " is online");
                 rebuild();
             }

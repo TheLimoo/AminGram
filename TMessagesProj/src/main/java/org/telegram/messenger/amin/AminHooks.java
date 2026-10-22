@@ -349,16 +349,29 @@ public final class AminHooks {
 
     private static void onUserOnline(Context context, int account, long userId) {
         try {
-            List<SendWhenOnlineStore.Entry> pending = SendWhenOnlineStore.pendingFor(context, userId);
+            // Account isolation (Stage 1, audit D2): only entries
+            // queued under THIS account may flush on its status
+            // updates — the same peer on another account stays queued.
+            List<SendWhenOnlineStore.Entry> pending =
+                    SendWhenOnlineStore.pendingFor(context, account, userId);
             if (pending.isEmpty()) {
                 return;
             }
+            List<SendWhenOnlineStore.Entry> dispatched = new ArrayList<>();
             for (SendWhenOnlineStore.Entry entry : pending) {
-                SendMessagesHelper.getInstance(account)
-                        .sendMessage(SendMessagesHelper.SendMessageParams.of(entry.text, entry.peer));
+                try {
+                    SendMessagesHelper.getInstance(account)
+                            .sendMessage(SendMessagesHelper.SendMessageParams.of(entry.text, entry.peer));
+                    dispatched.add(entry);
+                } catch (Throwable ignored) {
+                    // Hand-off failed: the entry is NOT marked sent
+                    // (audit D6) and retries on the next online event.
+                }
             }
-            SendWhenOnlineStore.markSent(context, userId);
-            SendWhenOnlineStore.notifyChanged();
+            if (!dispatched.isEmpty()) {
+                SendWhenOnlineStore.markSent(context, dispatched);
+                SendWhenOnlineStore.notifyChanged();
+            }
         } catch (Throwable ignored) {
         }
     }
