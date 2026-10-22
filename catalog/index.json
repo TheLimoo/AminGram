@@ -194,7 +194,7 @@
     {
       "id": "price-check",
       "name": "Price Check",
-      "version": "1.1",
+      "version": "1.2",
       "author": "Amin",
       "description": "/price shows live Iran-market prices in tomans (dollar, gold 18k, Emami coin, BTC, ETH). /price btc|eth|usd|gold|coin shows just one. Sources: tgju.org + CoinGecko — the same endpoints as the toolbox bot.",
       "category": "Money",
@@ -207,8 +207,8 @@
       "minPlatform": 2,
       "depends": [],
       "url": "https://raw.githubusercontent.com/TheLimoo/AminGram/main/TMessagesProj/src/main/assets/amingram_plugins/price-check.js",
-      "sha256": "77304e1888c1f97daaf0433dd0a437dc3cc16a03a6f1ae74ff4b2e70a742d91a",
-      "size": 10351,
+      "sha256": "d915efcb75fafd9bfc73b7df317c4551cb31e96bf3ecbb4e031860e127bab63f",
+      "size": 11431,
       "updatedAt": "2026-10-22"
     },
     {
