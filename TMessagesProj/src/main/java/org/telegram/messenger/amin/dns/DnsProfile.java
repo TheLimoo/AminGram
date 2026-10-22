@@ -19,7 +19,9 @@ import java.util.List;
  *  - Soar:      zone + serverKey (base64 Ed25519 public key) +
  *               discovery on/off + discovery country.
  *  - Slipstream: domain + cert (PEM text for strict leaf pinning,
- *               empty = legacy no-verify) + congestion control.
+ *               empty = legacy no-verify) + congestion control +
+ *               optional SOCKS username/password (the tunnel's far
+ *               end is a SOCKS5 server that may demand RFC1929 auth).
  * Both carry a resolver mode (auto / system / public / custom) and,
  * for custom mode, an editable resolver list ("host" or "host:port"
  * entries, port defaults to 53).
@@ -54,6 +56,14 @@ public final class DnsProfile {
     public String domain = "";
     public String cert = "";
     public String congestion = CONGESTION_DCUBIC;
+    // Optional RFC1929 credentials for the SOCKS5 server at the
+    // tunnel's far end (the kit's microsocks runs with -u/-P and
+    // answers the greeting with 05 02). Telegram's proxy entry and
+    // the controller's liveness gate both consume these. Empty =
+    // no auth. Soar profiles ignore them — the local Soar shim's
+    // SOCKS listener is auth-free.
+    public String socksUser = "";
+    public String socksPass = "";
 
     // Both engines
     public String resolverMode = RESOLVERS_AUTO;
@@ -81,6 +91,8 @@ public final class DnsProfile {
             o.put("domain", domain);
             o.put("cert", cert);
             o.put("congestion", congestion);
+            o.put("socksUser", socksUser);
+            o.put("socksPass", socksPass);
             o.put("resolverMode", resolverMode);
             JSONArray arr = new JSONArray();
             for (String r : resolvers) {
@@ -107,6 +119,8 @@ public final class DnsProfile {
         p.domain = o.optString("domain", "");
         p.cert = o.optString("cert", "");
         p.congestion = o.optString("congestion", CONGESTION_DCUBIC);
+        p.socksUser = o.optString("socksUser", "");
+        p.socksPass = o.optString("socksPass", "");
         p.resolverMode = o.optString("resolverMode", RESOLVERS_AUTO);
         JSONArray arr = o.optJSONArray("resolvers");
         if (arr != null) {

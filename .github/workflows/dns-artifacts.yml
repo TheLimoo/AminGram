@@ -64,16 +64,54 @@ jobs:
         run: |
           set -e
           mkdir -p "$GITHUB_WORKSPACE/out/jniLibs"
+          # slipstream-ffi's picoquic CMake and openssl-sys both need a
+          # per-ABI OpenSSL up front (vendored races picoquic's
+          # find_package), so build the official tarball once per ABI
+          # with the NDK and hand both consumers the same prefix.
+          OPENSSL_VER=3.5.4
+          NDK="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
+          export ANDROID_NDK_HOME="$NDK" ANDROID_NDK_ROOT="$NDK"
+          export PATH="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+          curl -fsSL "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VER/openssl-$OPENSSL_VER.tar.gz" | tar xz -C "$GITHUB_WORKSPACE"
           build_one() {
-            target="$1"; abi="$2"
-            cargo ndk -t "$target" --platform 23 build --release
+            target="$1"; abi="$2"; oarch="$3"; clang="$4"
+            ssl="$GITHUB_WORKSPACE/openssl-$OPENSSL_VER/out-$abi"
+            if [ ! -f "$ssl/lib/libssl.a" ]; then
+              ( cd "$GITHUB_WORKSPACE/openssl-$OPENSSL_VER" && \
+                ./Configure "$oarch" -D__ANDROID_API__=23 --prefix="$ssl" no-shared no-tests && \
+                make -j"$(nproc)" build_libs && make install_dev )
+            fi
+            # slipstream-ffi compiles its C sources by invoking $CC
+            # with NO target flags — the arch must come from the NDK
+            # per-ABI clang wrapper itself (plain "cc" silently
+            # produced host objects that lld then rejected).
+            # slipstream-ffi compiles ALL its C (own sources AND the
+            # picoquic library) by invoking a compiler with NO target
+            # flags, resolving it as RUST_ANDROID_GRADLE_CC first, then
+            # CC. cargo-ndk's own wiring left those objects
+            # incompatible with the target link in runs 3-4, so build
+            # with plain cargo: per-ABI NDK clang wrappers under the
+            # gradle-plugin variable names + an explicit cargo linker.
+            WRAP="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/${clang}23-clang"
+            LINKER_ENV="CARGO_TARGET_$(echo "$target" | tr 'a-z-' 'A-Z_')_LINKER"
+            OPENSSL_DIR="$ssl" OPENSSL_STATIC=1 \
+            OPENSSL_ROOT_DIR="$ssl" OPENSSL_INCLUDE_DIR="$ssl/include" \
+            OPENSSL_SSL_LIBRARY="$ssl/lib/libssl.a" OPENSSL_CRYPTO_LIBRARY="$ssl/lib/libcrypto.a" \
+            ANDROID_ABI="$abi" ANDROID_PLATFORM=23 \
+            RUST_ANDROID_GRADLE_CC="$WRAP" \
+            RUST_ANDROID_GRADLE_AR="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" \
+            CC="$WRAP" CXX="${WRAP}++" \
+            AR="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" \
+            env "$LINKER_ENV=$WRAP" \
+              cargo build --release --target "$target" -p slipstream-client --features picoquic-minimal-build
+            find "target/$target/release/build" -name "slipstream_server_cc.c.o" -exec file {} \; | head -2 || true
             cp "target/$target/release/slipstream-client" \
                "$GITHUB_WORKSPACE/out/jniLibs/$abi/libslipstream_client.so"
           }
-          build_one aarch64-linux-android arm64-v8a
-          build_one armv7-linux-androideabi armeabi-v7a
-          build_one i686-linux-android x86
-          build_one x86_64-linux-android x86_64
+          build_one aarch64-linux-android arm64-v8a android-arm64 aarch64-linux-android
+          build_one armv7-linux-androideabi armeabi-v7a android-arm armv7a-linux-androideabi
+          build_one i686-linux-android x86 android-x86 i686-linux-android
+          build_one x86_64-linux-android x86_64 android-x86_64 x86_64-linux-android
 
       - name: Upload jniLibs artifact
         uses: actions/upload-artifact@v4
@@ -105,6 +143,7 @@ jobs:
             exit 1
           fi
           cd dns-native/soarbridge
+          go mod tidy
           go build -o /tmp/soar-smoke ./cmd/soar-smoke
           /tmp/soar-smoke
 
@@ -173,9 +212,17 @@ jobs:
               if sock is None:
                   sys.exit("FAIL: client listener never came up")
               sock.settimeout(60)
-              sock.sendall(bytes([5, 1, 0]))
-              if readn(sock, 2) != bytes([5, 0]):
-                  sys.exit("FAIL: SOCKS greeting rejected")
+              sock.sendall(bytes([5, 2, 0, 2]))
+              greet = readn(sock, 2)
+              if greet == bytes([5, 2]):
+                  # The kit's microsocks endpoint requires the tunnel
+                  # username/password (held by the operator, never in
+                  # CI). A 05 02 reply proves the whole chain: client,
+                  # pinned cert, DNS tunnel, server, SOCKS endpoint.
+                  print("SLIPSTREAM SMOKE PASS (chain) - tunnel + pinned cert OK; SOCKS endpoint asks username/password auth as configured")
+                  sys.exit(0)
+              if greet != bytes([5, 0]):
+                  sys.exit(f"FAIL: SOCKS greeting rejected (got {greet.hex()})")
               # CONNECT 91.108.56.130:443 (a Telegram DC; server-side the
               # tunnel's fixed target is the microsocks backend).
               sock.sendall(bytes([5, 1, 0, 1, 91, 108, 56, 130, 0x01, 0xBB]))

@@ -1,7 +1,7 @@
 // ==AminGramPlugin==
 // @id          price-check
 // @name        Price Check
-// @version     1.1
+// @version     1.2
 // @author      Amin
 // @description /price shows live Iran-market prices in tomans (dollar, gold 18k, Emami coin, BTC, ETH). /price btc|eth|usd|gold|coin shows just one. Sources: tgju.org + CoinGecko — the same endpoints as the toolbox bot.
 // @icon        bolt
@@ -16,14 +16,23 @@ var PLUGIN_PAGE = [
   { type: "action", id: "clear-stats", title: "Clear statistics", subtitle: "Zero the lookup counters" }
 ];
 
-// Endpoints reused verbatim from the proven toolbox bot
-// (~/workspace/awminai tgcloud/lib/tools/prices.js):
-// - tgju summary table: https://api.tgju.org/v1/market/indicator/summary-table-data/<slug>
-//   slugs price_dollar_rl (USD), geram18 (gold 18k gram), sekee (Emami coin);
-//   the price is data[0][0], a comma-grouped string in RIALS (÷10 = tomans).
+// Endpoints (tgju.org — the same feed the tgju site itself renders):
+// - LIVE price: https://api.tgju.org/v1/market/indicator/today-table-data/<slug>
+//   — today's intraday ticks, newest first; ?start=0&length=1 returns just
+//   the latest tick (a few hundred bytes instead of ~1 MB of ticks).
+//   data[0][0] is the price, a comma-grouped string in RIALS (÷10 = tomans);
+//   data[0][1] is the tick time ("16:59:57").
+// - FALLBACK: summary-table-data/<slug> is the DAILY HISTORY table — its
+//   newest row is the last completed day's close. v1.1 and earlier used
+//   it as the primary source, which showed yesterday's close as "live"
+//   (on 2026-10-22: 264,565 vs the real 271,905 tomans). It is kept only
+//   as a fallback for days with no ticks yet (market holidays), where
+//   the last close IS the latest price.
+//   slugs: price_dollar_rl (USD), geram18 (gold 18k gram), sekee (Emami coin).
 // - CoinGecko simple price for BTC/ETH in USD; tomans are derived
 //   with the tgju dollar rate, exactly like the bot.
-var TGJU = "https://api.tgju.org/v1/market/indicator/summary-table-data/";
+var TGJU_TODAY = "https://api.tgju.org/v1/market/indicator/today-table-data/";
+var TGJU_SUMMARY = "https://api.tgju.org/v1/market/indicator/summary-table-data/";
 var COINGECKO = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd";
 
 var statsCache = null;
@@ -143,18 +152,28 @@ function fetchJsonAsync(url, done) {
   }
 }
 
-// One tgju slug → price in tomans via done(valueOrNull); null on
-// ANY failure (network, bad JSON, unexpected shape).
-function tgjuTomanAsync(slug, done) {
-  fetchJsonAsync(TGJU + slug, function (j) {
+// One tgju table URL → price in tomans via done(valueOrNull);
+// null on ANY failure (network, bad JSON, unexpected shape, no rows).
+function tgjuTableTomanAsync(url, done) {
+  fetchJsonAsync(url, function (j) {
     try {
       var first = j && j.data && j.data[0] && j.data[0][0];
       var rial = parseFloat(String(first == null ? "" : first).replace(/,/g, ""));
       done(isFinite(rial) ? rial / 10 : null);
     } catch (e) {
-      amin.log("price-check tgju " + slug + " error: " + e);
+      amin.log("price-check tgju fetch error: " + e);
       done(null);
     }
+  });
+}
+
+// One tgju slug → LIVE price in tomans via done(valueOrNull).
+// Primary: today's latest tick. Fallback (no ticks yet today, or the
+// live feed failed): the summary table's newest row = last close.
+function tgjuTomanAsync(slug, done) {
+  tgjuTableTomanAsync(TGJU_TODAY + slug + "?lang=fa&start=0&length=1", function (live) {
+    if (live != null) { done(live); return; }
+    tgjuTableTomanAsync(TGJU_SUMMARY + slug, done);
   });
 }
 

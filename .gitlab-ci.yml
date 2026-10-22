@@ -218,6 +218,8 @@ build:
       export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/$NDK_VERSION"
       go install golang.org/x/mobile/cmd/gomobile@latest
       cd dns-native/soarbridge
+      go get -tool golang.org/x/mobile/cmd/gobind@latest
+      gomobile init
       gomobile bind -target=android -androidapi 23 -javapkg org.telegram.amingram -o soarbridge.aar .
       mkdir -p ../../upstream/TMessagesProj/libs
       cp soarbridge.aar ../../upstream/TMessagesProj/libs/

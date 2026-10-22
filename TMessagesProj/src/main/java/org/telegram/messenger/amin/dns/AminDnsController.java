@@ -87,6 +87,8 @@ public final class AminDnsController {
 
     private volatile State state = State.OFF;
     private volatile String error = "";
+    /** Specific, non-retryable liveness failure (e.g. SOCKS auth) for the status line. */
+    private volatile String livenessFailure = "";
     private volatile int localPort;
     private volatile String activeResolver = "";
     private volatile long connectedSinceElapsed;
@@ -239,6 +241,7 @@ public final class AminDnsController {
         }
         cancelStart = false;
         error = "";
+        livenessFailure = "";
         setState(State.STARTING);
         startService(context);
 
@@ -273,7 +276,7 @@ public final class AminDnsController {
         // Readiness gate (plan §4.4): the proxy is applied only
         // after a full SOCKS round-trip THROUGH the tunnel succeeds.
         long budget = slip ? SLIPSTREAM_LIVENESS_MS : SOAR_LIVENESS_MS;
-        boolean live = awaitLiveness(port, budget);
+        boolean live = awaitLiveness(profile, port, budget);
         if (!live || cancelStart) {
             String slipError = slip && slipstream != null ? slipstream.lastError() : "";
             stopEngines();
@@ -281,6 +284,8 @@ public final class AminDnsController {
             stopService(context);
             if (cancelStart) {
                 setState(State.OFF);
+            } else if (!livenessFailure.isEmpty()) {
+                fail(livenessFailure);
             } else {
                 fail(!slipError.isEmpty()
                         ? "Tunnel did not answer: " + slipError
@@ -289,7 +294,7 @@ public final class AminDnsController {
             return;
         }
 
-        applyProxy(port);
+        applyProxy(port, profile);
         proxyApplied = true;
         connectedSinceElapsed = SystemClock.elapsedRealtime();
         setState(State.CONNECTED);
@@ -403,14 +408,36 @@ public final class AminDnsController {
     // Liveness — a real SOCKS5 round-trip through the tunnel
     // ---------------------------------------------------------------
 
-    private boolean awaitLiveness(int port, long budgetMs) {
+    // Liveness probe outcomes. Only PROBE_OK applies the proxy;
+    // PROBE_AUTH_* are non-retryable within a start attempt (the
+    // credentials cannot change between retries), so the gate fails
+    // fast with a specific status message instead of burning the
+    // whole budget.
+    private static final int PROBE_OK = 0;
+    private static final int PROBE_RETRY = 1;
+    private static final int PROBE_AUTH_REQUIRED = 2;
+    private static final int PROBE_AUTH_FAILED = 3;
+
+    private boolean awaitLiveness(DnsProfile profile, int port, long budgetMs) {
+        String user = profile.socksUser == null ? "" : profile.socksUser;
+        String pass = profile.socksPass == null ? "" : profile.socksPass;
         long deadline = SystemClock.elapsedRealtime() + budgetMs;
         while (SystemClock.elapsedRealtime() < deadline) {
             if (cancelStart) {
                 return false;
             }
-            if (socksConnect(port, PROBE_HOST, PROBE_PORT, 4_000)) {
+            int probe = socksConnect(port, PROBE_HOST, PROBE_PORT, 4_000, user, pass);
+            if (probe == PROBE_OK) {
                 return true;
+            }
+            if (probe == PROBE_AUTH_REQUIRED) {
+                livenessFailure = "Server requires SOCKS authentication — set the profile's "
+                        + "SOCKS username and password (DNS Tunnel settings)";
+                return false;
+            }
+            if (probe == PROBE_AUTH_FAILED) {
+                livenessFailure = "Server rejected the profile's SOCKS username/password";
+                return false;
             }
             if (slipstream != null && !slipstream.isAlive()) {
                 return false;
@@ -424,19 +451,50 @@ public final class AminDnsController {
         return false;
     }
 
-    /** Minimal SOCKS5 client: greeting + CONNECT; true only on a success reply. */
-    static boolean socksConnect(int localPort, String targetHost, int targetPort, int timeoutMs) {
+    /**
+     * Minimal SOCKS5 client: greeting (offering no-auth AND
+     * username/password), the RFC1929 subnegotiation when the far
+     * end demands it (05 02 — the kit's microsocks runs with
+     * -u/-P), then CONNECT. Returns a PROBE_* code.
+     */
+    static int socksConnect(int localPort, String targetHost, int targetPort, int timeoutMs,
+                            String user, String pass) {
         Socket socket = new Socket();
         try {
             socket.connect(new InetSocketAddress("127.0.0.1", localPort), timeoutMs);
             socket.setSoTimeout(timeoutMs);
             OutputStream out = socket.getOutputStream();
             InputStream in = socket.getInputStream();
-            out.write(new byte[]{5, 1, 0});
+            out.write(new byte[]{5, 2, 0, 2});
             out.flush();
             byte[] greeting = readFully(in, 2);
-            if (greeting == null || greeting[0] != 5 || greeting[1] != 0) {
-                return false;
+            if (greeting == null || greeting[0] != 5) {
+                return PROBE_RETRY;
+            }
+            if (greeting[1] == 2) {
+                // Username/password auth demanded (RFC1929).
+                if (user == null || user.isEmpty()) {
+                    return PROBE_AUTH_REQUIRED;
+                }
+                byte[] userBytes = user.getBytes("UTF-8");
+                byte[] passBytes = (pass == null ? "" : pass).getBytes("UTF-8");
+                if (userBytes.length > 255 || passBytes.length > 255) {
+                    return PROBE_AUTH_FAILED;
+                }
+                byte[] auth = new byte[3 + userBytes.length + passBytes.length];
+                auth[0] = 1; // RFC1929 version
+                auth[1] = (byte) userBytes.length;
+                System.arraycopy(userBytes, 0, auth, 2, userBytes.length);
+                auth[2 + userBytes.length] = (byte) passBytes.length;
+                System.arraycopy(passBytes, 0, auth, 3 + userBytes.length, passBytes.length);
+                out.write(auth);
+                out.flush();
+                byte[] authReply = readFully(in, 2);
+                if (authReply == null || authReply[0] != 1 || authReply[1] != 0) {
+                    return PROBE_AUTH_FAILED;
+                }
+            } else if (greeting[1] != 0) {
+                return PROBE_RETRY;
             }
             byte[] host = targetHost.getBytes("UTF-8");
             byte[] request = new byte[7 + host.length];
@@ -452,22 +510,22 @@ public final class AminDnsController {
             out.flush();
             byte[] head = readFully(in, 4);
             if (head == null || head[0] != 5 || head[1] != 0) {
-                return false;
+                return PROBE_RETRY;
             }
             int atyp = head[3];
             int rest = atyp == 1 ? 4 : atyp == 4 ? 16 : atyp == 3 ? -1 : 0;
             if (rest == -1) {
                 byte[] len = readFully(in, 1);
                 if (len == null) {
-                    return false;
+                    return PROBE_RETRY;
                 }
                 rest = (len[0] & 0xff) + 2;
             } else {
                 rest += 2;
             }
-            return readFully(in, rest) != null;
+            return readFully(in, rest) != null ? PROBE_OK : PROBE_RETRY;
         } catch (Throwable t) {
-            return false;
+            return PROBE_RETRY;
         } finally {
             try {
                 socket.close();
@@ -516,14 +574,22 @@ public final class AminDnsController {
         });
     }
 
-    private void applyProxy(int port) {
+    private void applyProxy(int port, DnsProfile profile) {
         runOnUiSync(() -> {
             try {
+                // The far end of a Slipstream tunnel is a SOCKS5
+                // server that may demand RFC1929 auth (the kit's
+                // microsocks) — Telegram's proxy entry must carry
+                // the profile's credentials or its own connections
+                // get 05 02 rejections. Empty for no-auth servers
+                // and for Soar (its local shim is auth-free).
+                String user = profile.socksUser == null ? "" : profile.socksUser;
+                String pass = profile.socksPass == null ? "" : profile.socksPass;
                 ProxySettings settings = ProxySettings.builder()
                         .setAddress("127.0.0.1")
                         .setPort(port)
-                        .setUser("")
-                        .setPassword("")
+                        .setUser(user)
+                        .setPassword(pass)
                         .setSecret("")
                         .setType(ProxySettings.Type.SOCKS5)
                         .build();

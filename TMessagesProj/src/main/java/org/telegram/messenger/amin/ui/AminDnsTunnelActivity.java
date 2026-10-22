@@ -174,6 +174,13 @@ public class AminDnsTunnelActivity extends BaseFragment implements AminDnsContro
                 setting("Certificate (pinning)", active.cert == null || active.cert.isEmpty()
                         ? "Not set — no verification" : "Set — pinned", "edit_cert");
                 setting("Congestion control", active.congestion, "edit_congestion");
+                setting("SOCKS username", active.socksUser == null || active.socksUser.isEmpty()
+                        ? "Not set" : active.socksUser, "edit_socks_user");
+                setting("SOCKS password", active.socksPass == null || active.socksPass.isEmpty()
+                        ? "Not set" : "Set", "edit_socks_pass");
+                info("Kit tunnels end at a password-protected SOCKS server — enter the tunnel "
+                        + "username/password from the operator's client pack, or the tunnel "
+                        + "will be rejected.");
             }
             setting("Resolver mode", resolverModeLabel(active.resolverMode), "edit_resolver_mode");
             setting("Custom resolvers", active.resolvers.isEmpty()
@@ -399,6 +406,22 @@ public class AminDnsTunnelActivity extends BaseFragment implements AminDnsContro
                         });
                 break;
             }
+            case "edit_socks_user":
+                if (active != null) {
+                    promptText("SOCKS username", "Tunnel username", active.socksUser, false, text -> {
+                        active.socksUser = text.trim();
+                        saveAndMaybeRestart(context, active);
+                    });
+                }
+                break;
+            case "edit_socks_pass":
+                if (active != null) {
+                    promptSecret("SOCKS password", "Tunnel password", active.socksPass, text -> {
+                        active.socksPass = text;
+                        saveAndMaybeRestart(context, active);
+                    });
+                }
+                break;
             case "edit_resolver_mode": {
                 if (active == null) {
                     break;
@@ -681,11 +704,25 @@ public class AminDnsTunnelActivity extends BaseFragment implements AminDnsContro
     }
 
     private void promptText(String title, String hint, String initial, boolean multiline, TextCallback callback) {
+        promptText(title, hint, initial, multiline, false, callback);
+    }
+
+    /** Masked-input variant for secrets (the profile's SOCKS password). */
+    private void promptSecret(String title, String hint, String initial, TextCallback callback) {
+        promptText(title, hint, initial, false, true, callback);
+    }
+
+    private void promptText(String title, String hint, String initial, boolean multiline,
+                            boolean masked, TextCallback callback) {
         Context context = getContext();
         if (context == null || getParentActivity() == null) {
             return;
         }
         EditTextBoldCursor field = textField(context, hint, multiline);
+        if (masked) {
+            field.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                    | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        }
         field.setText(initial == null ? "" : initial);
         field.setSelection(field.getText() == null ? 0 : field.getText().length());
         AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
@@ -746,7 +783,9 @@ public class AminDnsTunnelActivity extends BaseFragment implements AminDnsContro
         }
         AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
         builder.setTitle(title);
-        builder.setSingleChoiceItems(labels, current, (dialog, which) -> {
+        // Telegram's AlertDialog.Builder has no setSingleChoiceItems;
+        // setItems is its list-picker API (tap = choose + dismiss).
+        builder.setItems(labels, (dialog, which) -> {
             callback.onChoice(which);
             dialog.dismiss();
         });
