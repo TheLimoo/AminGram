@@ -42,7 +42,7 @@
     {
       "id": "media-dl",
       "name": "Downloader Pro",
-      "version": "3.0.1",
+      "version": "3.0.2",
       "author": "Amin",
       "description": "Downloads public media into the chat from TikTok, Instagram, X/Twitter, Reddit, Pinterest, Threads and direct media links. Supports albums, quality choices, TikTok MP3, replied-to links, a long-press download action, download history and link fallback.",
       "category": "Media",
@@ -59,8 +59,8 @@
       "minPlatform": 2,
       "depends": [],
       "url": "https://raw.githubusercontent.com/TheLimoo/AminGram/main/TMessagesProj/src/main/assets/amingram_plugins/media-dl.js",
-      "sha256": "13731ed2c0dce1fc0c36645f45d580bee3a47d980cdf51ed7127079239145dd0",
-      "size": 55021,
+      "sha256": "6dcbcae83b56be605102d8790eda8347b418b4d2a308b3348914c374149dfdd1",
+      "size": 53986,
       "updatedAt": "2026-10-22"
     },
     {

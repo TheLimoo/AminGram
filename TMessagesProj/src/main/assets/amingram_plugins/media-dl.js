@@ -1,7 +1,7 @@
 // ==AminGramPlugin==
 // @id          media-dl
 // @name        Downloader Pro
-// @version     3.0.1
+// @version     3.0.2
 // @author      Amin
 // @description Downloads public media into the chat from TikTok, Instagram, X/Twitter, Reddit, Pinterest, Threads and direct media links. Supports albums, quality choices, TikTok MP3, replied-to links, a long-press download action, download history and link fallback.
 // @icon        download
@@ -31,8 +31,6 @@ var SETTINGS = [
   { key: "includeAudio", type: "bool", title: "Include TikTok MP3 link when available", def: true },
   { key: "redditAudioTrack", type: "bool", title: "Also send Reddit's separate audio track", def: false,
     help: "Many Reddit videos are hosted as a silent video file plus a separate audio file." },
-  { key: "autoDownload", type: "bool", title: "Auto-download supported links posted in chats", def: false,
-    help: "Off by default. When on, supported links sent by other people are downloaded into the same chat." },
   { key: "autoToastLinks", type: "bool", title: "Toast when a supported link is seen", def: false },
   { key: "igMirrorHost", type: "text", title: "Instagram mirror host", def: "kkinstagram.com", maxLength: 80,
     help: "Used only for public Instagram posts and reels. Change it if the current mirror stops working." }
@@ -47,7 +45,6 @@ var PLUGIN_PAGE = [
 
 var FILE_CAP_BYTES = 200 * 1024 * 1024;
 var MAX_FALLBACK_CHARS = 3500;
-var AUTO_COOLDOWN_MS = 30000;
 var DIRECT_IG_HOSTS = { "kkinstagram.com": true };
 var IG_UA = "TelegramBot (like TwitterBot)";
 var BROWSER_HEADERS = {
@@ -1229,7 +1226,6 @@ function startDownload(chatId, msg, source, options) {
   return true;
 }
 
-var autoLastFallback = {};
 
 function parseCommandFlags(args) {
   var options = { linksOnly: false, all: false, quality: null };
@@ -1282,24 +1278,6 @@ function usageText() {
     + "Supported: TikTok, Instagram public posts/reels, X/Twitter, Reddit, Pinterest, Threads/Facebook pages that expose public media, direct media files, and web pages with public OpenGraph media.";
 }
 
-function autoCooldownReady(chatId) {
-  var key = str(chatId);
-  var now = nowMs();
-  var last = 0;
-  if (dbAvailable()) {
-    try {
-      var rec = amin.db.get("state", "auto:" + key);
-      if (rec && rec.at) last = Number(rec.at) || 0;
-    } catch (e) {}
-  }
-  if (!last) last = Number(autoLastFallback[key] || 0) || 0;
-  if (now - last < AUTO_COOLDOWN_MS) return false;
-  autoLastFallback[key] = now;
-  if (dbAvailable()) {
-    try { amin.db.put("state", "auto:" + key, { at: now }); } catch (e2) {}
-  }
-  return true;
-}
 
 function onLoad() {
   amin.debug("Downloader Pro v3 loaded");
@@ -1319,13 +1297,6 @@ function onMessage(msg) {
     rememberUrl(msg.chatId, url);
 
     if (msg.channel) return;
-
-    if (settingBool("autoDownload", false) && !msg.outgoing && !msg.senderIsBot) {
-      if (autoCooldownReady(msg.chatId)) {
-        startDownload(msg.chatId, msg, url, { quietStart: true, via: "auto" });
-      }
-      return;
-    }
 
     if (settingBool("autoToastLinks", false) && !msg.outgoing) {
       resolveUrl(url, {}, function (result) {
