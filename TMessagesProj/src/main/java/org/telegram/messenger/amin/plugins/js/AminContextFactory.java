@@ -36,8 +36,13 @@ public class AminContextFactory extends ContextFactory {
 
     /** Instruction ticks between observer callbacks. Small enough
      *  to react promptly past the deadline, large enough that the
-     *  observer overhead is negligible for normal hooks. */
-    private static final int OBSERVER_THRESHOLD = 1000;
+     *  observer overhead is negligible for normal hooks. 10k ticks
+     *  execute in well under a millisecond of interpreted JS, so
+     *  the 5 s wall-clock deadline stays authoritative while the
+     *  observer callback (ThreadLocal read + clock read) runs 10x
+     *  less often on every plugin code path (2026-10-22 opt pass:
+     *  was 1000, which taxed ALL plugin JS continuously). */
+    private static final int OBSERVER_THRESHOLD = 10000;
 
     private static final ThreadLocal<Long> DEADLINE_MS = new ThreadLocal<>();
 
