@@ -19,6 +19,7 @@ import org.telegram.messenger.amin.core.DeletedStore;
 import org.telegram.messenger.amin.core.HiddenChatsStore;
 import org.telegram.messenger.amin.core.MessagePipeline;
 import org.telegram.messenger.amin.core.SendWhenOnlineStore;
+import org.telegram.messenger.amin.modules.GhostModeModule;
 import org.telegram.messenger.amin.plugins.PluginRegistry;
 import org.telegram.messenger.amin.plugins.js.JsPlugin;
 import org.telegram.messenger.amin.plugins.js.JsPluginManager;
@@ -67,6 +68,34 @@ public final class AminHooks {
 
     public static boolean ghostMode() {
         return moduleEnabled("ghost_mode");
+    }
+
+    /** Stage 2 granular Ghost gates (patch 0003 call sites). Each
+     *  combines the unchanged master module toggle with one of
+     *  GhostModeModule's default-ON sub-toggles, so a sub-toggle is
+     *  consulted only while Ghost Mode itself is enabled. */
+    public static boolean ghostRead() {
+        if (!ghostMode()) {
+            return false;
+        }
+        Context context = ApplicationLoader.applicationContext;
+        return context != null && GhostModeModule.suppressReadReceipts(context);
+    }
+
+    public static boolean ghostTyping() {
+        if (!ghostMode()) {
+            return false;
+        }
+        Context context = ApplicationLoader.applicationContext;
+        return context != null && GhostModeModule.suppressTyping(context);
+    }
+
+    public static boolean ghostOnline() {
+        if (!ghostMode()) {
+            return false;
+        }
+        Context context = ApplicationLoader.applicationContext;
+        return context != null && GhostModeModule.suppressOnlineStatus(context);
     }
 
     public static boolean ghostStoriesEnabled() {

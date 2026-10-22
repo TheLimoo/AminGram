@@ -36,6 +36,7 @@ import org.telegram.messenger.amin.core.SendWhenOnlineStore;
 import org.telegram.messenger.amin.core.VaultStore;
 import org.telegram.messenger.amin.core.WallpaperLibraryStore;
 import org.telegram.messenger.amin.google.GoogleAuthManager;
+import org.telegram.messenger.amin.modules.GhostModeModule;
 import org.telegram.messenger.amin.plugins.ModModule;
 import org.telegram.messenger.amin.plugins.PluginRegistry;
 import org.telegram.messenger.amin.plugins.js.BundledPlugins;
@@ -427,6 +428,18 @@ public class AminPluginsActivity extends BaseFragment {
 
     private void addModuleActions(Context context, ModModule module) {
         switch (module.id()) {
+            case "ghost_mode": {
+                // Stage 2: granular suppressions under the master
+                // Ghost Mode switch. Each row is an On/Off action in
+                // the hub's existing style; all default to On.
+                action("ghost_suppress_read", "Suppress Read Receipts",
+                        GhostModeModule.suppressReadReceipts(context) ? "On" : "Off");
+                action("ghost_suppress_typing", "Suppress Typing & Recording Action",
+                        GhostModeModule.suppressTyping(context) ? "On" : "Off");
+                action("ghost_suppress_online", "Suppress Online Status",
+                        GhostModeModule.suppressOnlineStatus(context) ? "On" : "Off");
+                break;
+            }
             case "anti_delete": {
                 int count = VaultStore.getAll(context, DeletedStore.PREFS, DeletedStore.DELETED_KEY).size();
                 action("view_deleted", "Deleted messages", String.valueOf(count));
@@ -726,6 +739,21 @@ public class AminPluginsActivity extends BaseFragment {
 
     private void onAction(Context context, Row row) {
         switch (row.action) {
+            case "ghost_suppress_read":
+                GhostModeModule.setSuppressReadReceipts(context,
+                        !GhostModeModule.suppressReadReceipts(context));
+                rebuild();
+                break;
+            case "ghost_suppress_typing":
+                GhostModeModule.setSuppressTyping(context,
+                        !GhostModeModule.suppressTyping(context));
+                rebuild();
+                break;
+            case "ghost_suppress_online":
+                GhostModeModule.setSuppressOnlineStatus(context,
+                        !GhostModeModule.suppressOnlineStatus(context));
+                rebuild();
+                break;
             case "view_deleted":
                 presentFragment(new AminStoreListActivity("Deleted messages",
                         DeletedStore.PREFS, DeletedStore.DELETED_KEY));
