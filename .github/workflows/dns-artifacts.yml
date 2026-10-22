@@ -85,14 +85,26 @@ jobs:
             # with NO target flags — the arch must come from the NDK
             # per-ABI clang wrapper itself (plain "cc" silently
             # produced host objects that lld then rejected).
+            # slipstream-ffi compiles ALL its C (own sources AND the
+            # picoquic library) by invoking a compiler with NO target
+            # flags, resolving it as RUST_ANDROID_GRADLE_CC first, then
+            # CC. cargo-ndk's own wiring left those objects
+            # incompatible with the target link in runs 3-4, so build
+            # with plain cargo: per-ABI NDK clang wrappers under the
+            # gradle-plugin variable names + an explicit cargo linker.
+            WRAP="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/${clang}23-clang"
+            LINKER_ENV="CARGO_TARGET_$(echo "$target" | tr 'a-z-' 'A-Z_')_LINKER"
             OPENSSL_DIR="$ssl" OPENSSL_STATIC=1 \
             OPENSSL_ROOT_DIR="$ssl" OPENSSL_INCLUDE_DIR="$ssl/include" \
             OPENSSL_SSL_LIBRARY="$ssl/lib/libssl.a" OPENSSL_CRYPTO_LIBRARY="$ssl/lib/libcrypto.a" \
             ANDROID_ABI="$abi" ANDROID_PLATFORM=23 \
-            CC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/${clang}23-clang" \
-            CXX="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/${clang}23-clang++" \
+            RUST_ANDROID_GRADLE_CC="$WRAP" \
+            RUST_ANDROID_GRADLE_AR="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" \
+            CC="$WRAP" CXX="${WRAP}++" \
             AR="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" \
-              cargo ndk -t "$target" --platform 23 build --release -p slipstream-client --features picoquic-minimal-build
+            env "$LINKER_ENV=$WRAP" \
+              cargo build --release --target "$target" -p slipstream-client --features picoquic-minimal-build
+            find "target/$target/release/build" -name "slipstream_server_cc.c.o" -exec file {} \; | head -2 || true
             cp "target/$target/release/slipstream-client" \
                "$GITHUB_WORKSPACE/out/jniLibs/$abi/libslipstream_client.so"
           }

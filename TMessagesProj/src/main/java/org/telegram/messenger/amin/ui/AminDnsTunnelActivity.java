@@ -783,7 +783,9 @@ public class AminDnsTunnelActivity extends BaseFragment implements AminDnsContro
         }
         AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
         builder.setTitle(title);
-        builder.setSingleChoiceItems(labels, current, (dialog, which) -> {
+        // Telegram's AlertDialog.Builder has no setSingleChoiceItems;
+        // setItems is its list-picker API (tap = choose + dismiss).
+        builder.setItems(labels, (dialog, which) -> {
             callback.onChoice(which);
             dialog.dismiss();
         });
