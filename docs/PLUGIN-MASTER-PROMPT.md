@@ -1,4 +1,4 @@
-# AminGram Plugin — Master Prompt (v2.2)
+# AminGram Plugin — Master Prompt (v2.2 + Bot Bridge)
 
 Give this whole document to an AI (or paste it at the start of a chat) and then
 describe the plugin you want in one or two sentences. The AI must answer with
@@ -33,6 +33,18 @@ canonical `extractError` helper), and the attach-menu fields `@icon` /
 `@menuLabel`. The platform API version is still **2** — Phase B
 completes v2, it does not replace it.
 
+New since v2.2 — the **Bot Bridge** (see the dedicated section
+below): a plugin can offload work to the **@awminai** bot — rich
+button cards, server-side media resolving, a cloud state store,
+translation, bot-side file downloads. It is NOT a new bridge surface
+and needs NO new capability: it is a message protocol plus an
+embeddable client (`bridge-client.js`) riding on the existing
+`observe` + `send` capabilities, and it required no AminGram update.
+There is still no native `amin.bot` — the helper + protocol are the
+whole interface. The two halves complement each other: the plugin
+owns in-chat delivery and account actions; the bot owns heavy,
+multi-request, server-side work.
+
 ---
 
 ## Golden rules
@@ -65,6 +77,11 @@ completes v2, it does not replace it.
 8. **Send as the user, sparingly.** `amin.send` / `amin.reply` /
    `act` actions post as the account owner. Only act in direct
    reaction to something the user did or explicitly configured.
+9. **Offload, don't grind.** If a job needs many sequential web
+   requests, a rich button UI, or state that must survive a
+   reinstall, hand it to the @awminai bot through the Bot Bridge
+   (below) instead of burning your 5 s hook budget — the bot has
+   no hook budget and a server-side network.
 
 ## Which surface for which job
 
@@ -82,6 +99,11 @@ completes v2, it does not replace it.
 | Talk to another plugin | `amin.relay.call` / `emit` | shared storage (there is none) |
 | Show the user something | `amin.toast` (momentary) / `amin.ui.notify` (persistent) | spamming `amin.send` |
 | A row/button on your plugin page | `PLUGIN_PAGE` + `onPluginAction` | a fake settings row |
+| Rich button UI inside a chat | Bot Bridge `card` action | fake buttons drawn as text |
+| Multi-request link/media discovery | Bot Bridge `resolve` (one round trip) | chaining sync HTTP inside a hook |
+| State that survives reinstall / syncs devices | Bot Bridge `store` | `amin.db` (device-local only) |
+| Translation via the bot's fallback chain | Bot Bridge `translate` | hand-rolling three endpoints |
+| The bot downloads a file into the DM | Bot Bridge `fetch` | `sendFile` (that's for posting into a chat yourself) |
 
 ---
 
@@ -390,9 +412,10 @@ amin.httpPostAsync(url, body, headers, function (res) { /* res = {status, body} 
   HTTP error statuses (the status still tells you what happened); async
   POST delivers the **error body** on a non-2xx status, like sync POST.
 - The network work runs OFF the plugin thread; the callback itself runs
-  back ON the plugin thread, inside the usual per-hook isolation and
-  budget. Headers may be `null`. Same 15 s timeouts and 1 MB body cap
-  as the sync forms.
+  back ON the plugin thread, inside the usual per-hook isolation —
+  and with its OWN fresh 5 s budget window (see Reliability), so a
+  chain of async steps never shares one window. Headers may be
+  `null`. Same 15 s timeouts and 1 MB body cap as the sync forms.
 
 ## Storage v2 (v2.1)
 
@@ -492,8 +515,18 @@ var ok = amin.sendFile(url, opts)   // SYNCHRONOUS — returns a boolean
   download request — e.g. a crawler `User-Agent` for hosts that only
   serve media to one (media-dl's Instagram mirror works this way).
   Headers override the defaults and are re-applied on every redirect.
-- It BLOCKS the plugin thread while downloading. Call it once per user
-  action, never from a hot `onMessage` path for every message.
+- It BLOCKS the plugin thread while downloading — inside your
+  current hook's 5 s wall-clock window (see Reliability). Call it
+  once per user action, never from a hot `onMessage` path for every
+  message. **Budget discipline (Downloader Pro's rule):** compute
+  the caption and every follow-up BEFORE calling `sendFile`, and
+  never do meaningful JS after it in the same invocation — if the
+  download was slow, the deadline kills whatever comes next. For
+  multi-file jobs, use a job queue: persist the remaining work
+  (`amin.db` / storage), send ONE file per invocation, and chain to
+  the next step from a fresh budgeted callback (Downloader Pro
+  3.0.1 re-enters through an async-GET completion tick), so the
+  reporting/finish step always runs in a fresh window.
 - **Fallback rule (canonical pattern):** if `sendFile` returns `false`
   (or is unavailable), post the plain link with `amin.reply` /
   `amin.send` instead, so the user always gets something. The bundled
@@ -648,6 +681,201 @@ meaningful.
 **Dependencies:** if you call another plugin, declare it:
 `@depends text-utils@>=1.0`. Install then fails cleanly when it's
 missing or too old, instead of your calls failing at runtime.
+
+## The Bot Bridge — @awminai as your server side
+
+Plugins are fast but constrained: a 5 s wall-clock hook budget,
+multi-request discovery that eats it, and state that dies with the
+device. The **@awminai** bot is the complement: no hook budget, a
+server-side network, durable per-user storage, and the ability to
+render real inline-button cards — which no plugin surface can do
+inside a chat. The bridge generalises the pattern the Theme
+Changer has shipped since v4.0. It is **not** a native surface:
+there is no `amin.bot`, no new capability and no feature name for
+it. It is a message protocol plus a client you embed.
+
+**Requirements:** declare `observe` (to see the bot's replies in
+`onMessage`) and `send` (to post requests). You also need the chat
+id of the user's DM with @awminai: learn it from any incoming bot
+message (`msg.chatId` in that DM) and remember it in storage, the
+way theme-manager does — or let the user paste it into a setting.
+
+### The client — embed `bridge-client.js`
+
+The canonical client ships with the plugin sources
+(`bridge-client.js`, protocol v1). Paste it **verbatim** above your
+hooks — do not rewrite the codec; both sides must match byte-for-byte.
+Wire-up is three lines:
+
+```js
+var bridge = AminBridge.create({
+  ns: "my-plugin",                 // your @id — it namespaces ALL bot-side state
+  getBotChatId: function () { return Number(amin.storage.get("botChat", 0)) || 0; },
+  timeout: 30000,                  // optional, ms (default 30000)
+  onAction: function (action, arg, env) { /* card button taps land here */ }
+});
+
+function onMessage(msg) {
+  if (bridge.handleMessage(msg)) return;  // true = a bridge reply/action; consumed
+  // …your normal message handling…
+}
+```
+
+Wrappers (all take a Node-style callback `fn(err, data)`):
+
+```js
+bridge.card(cardData, fn)                    // rich button card in the bot DM
+bridge.resolve(url, fn)                      // server-side media resolution
+bridge.storeSet(value, fn)                   // cloud state: write your blob
+bridge.storeGet(fn)                          // cloud state: read it back
+bridge.storeDelete(fn)                       // cloud state: delete it
+bridge.translate(text, to, fn)               // to optional — the bot's chain
+bridge.fetchFile(url, { as, name, caption }, fn) // bot downloads into the DM
+bridge.request(action, data, fn)             // the raw form, for anything new
+bridge.poll()                                // enforce timeouts from any hook
+```
+
+- Callback `err` is **null on success**, otherwise an OBJECT
+  `{code, message}` (unlike relay, whose `err` is a string — don't
+  confuse the two). No reply within the timeout arrives as
+  `{code: "timeout"}`; a failed send as `{code: "send_failed"}`.
+- Callbacks fire from your `onMessage` — inside a fresh hook
+  window, on your thread. Keep them light: the heavy work already
+  happened on the bot.
+- **Timeouts are LAZY** (plugins have no timers): a pending request
+  only times out when the next message arrives or you call
+  `bridge.poll()` from some hook. Design for late answers.
+- The bot answers every request it actually receives (a malformed
+  one gets a `bad_payload` reply) — so silence means your request
+  never arrived. **Always keep a local fallback** for the timeout
+  case (bot down / bridge not deployed): a local attempt, a plain
+  link, device-local state. A bridge failure must never dead-end
+  the user.
+
+### The five actions — when to use which
+
+**`card`** — a rich inline-button card in the bot DM. Use it for
+choices, pagers and confirmations (quality pickers, theme grids):
+the ONLY way a plugin gets real buttons. Data:
+`{title (≤120), text (≤3500, HTML — escape user content yourself),
+preview (bool, default off), buttons}` — buttons are ≤8 rows × ≤4
+of `{label, action, arg}`. **One tracked card per plugin**: a new
+`card` edits the open one in place. Reply data:
+`{messageId, edited}`. Button taps come back as action messages
+routed to your `onAction(action, arg, env)` — react by doing the
+work and/or posting a fresh `card` (the bot never edits the card
+on a tap; you own the flow). Telegram caps `callback_data` at 64
+bytes: keep `arg` a short token or index, never a URL — one long
+button rejects the whole card with `button_too_long`.
+
+**`resolve`** — server-side media resolution in ONE round trip:
+send `{url}`, get
+`{source, title, video, images[], audio, linkOnly, note}`. The bot
+runs its resolver stack (TikTok via tikwm; X via VxTwitter →
+FxTwitter; Reddit via its `.json` API; Instagram via the
+kkinstagram mirror with the crawler user-agent; direct file URLs
+pass through; anything else falls back to an OpenGraph scrape).
+Use it instead of chaining discovery requests inside a hook —
+then post the returned URL with `amin.sendFile` yourself
+(caption precomputed, per the budget rule). Failures:
+`bad_url` / `resolve_failed`; a `linkOnly` answer means "no direct
+media — here is the mirror link", which is your cue for the plain
+link fallback.
+
+**`store`** — ONE JSON blob per (user, plugin) in the bot's
+durable store: backup/restore and cross-device sync for state
+that should survive a reinstall. Ops: `storeSet(value)` →
+`{stored, size}`; `storeGet` → `{exists, value}`;
+`storeDelete` → `{deleted}`. **Cap: 32 KB** of serialized JSON
+(`too_large` above it) — settings, lists, counters; it is a state
+blob, not a file store. `amin.db` stays your local workhorse;
+`store` is its cloud mirror, not its replacement (sync at moments
+that matter — after a settings change, on enable — not per event).
+The user can wipe all bridge cloud data from the bot's Plugin
+Bridge card, so treat the blob as a mirror that can disappear —
+never the only copy of anything precious.
+
+**`translate`** — `{text, to}` through the bot's exact 3-stage
+fallback chain (gtx on translate.googleapis.com → gtx on
+translate.google.com → MyMemory); reply `{text, to}`; failure
+`translate_failed`. Use it when you don't want to hand-roll the
+endpoints and their fallbacks yourself.
+
+**`fetch`** — the bot downloads a URL itself and posts the file
+into the DM as a real upload; reply
+`{messageId, fileId, kind, size, name}` — reference or forward
+that message afterwards. **Cap: 20 MB** (failures: `bad_url` /
+`fetch_failed` / `send_failed`). Use it when the file belongs in
+the DM; to post media into an arbitrary chat AS THE USER,
+`amin.sendFile` is still the tool.
+
+Generic error codes on any action: `bad_payload`, `bad_ns`,
+`unknown_action`, `internal`. Errors are data, never exceptions.
+
+### The wire protocol (for debugging / hand-rolling)
+
+Requests are DM texts `🔗BRIDGE <base64url(JSON)>` (🔗 = U+1F517);
+replies are `⚡BRIDGE <base64url(JSON)>` (⚡ = U+26A1). Request
+envelope: `{v: 1, ns, action, id, data}` — `ns` is your `@id`,
+`id` a correlation id the reply echoes verbatim. Response
+envelope: `{v: 1, id, ns, ok, data}` or
+`{…, ok: false, error: {code, message}}`. Replies longer than one
+message arrive **chunked** (~3000-char base64 parts in
+`{chunk: {i, n}, part}` envelopes, same `id`) — the embedded
+client reassembles them; requests are never chunked, so a
+request must fit in ONE message: keep `data` compact (send a
+URL, not content). Card buttons carry
+`callback_data = "b:<ns>:<action>:<arg>"`; a tap makes the bot
+post an action message whose `data` is
+`{kind: "action", action, arg}` with the callback-query id as
+`id`. Full spec: `PLUGIN-BRIDGE.md` in the AminGram sources.
+
+### Hard limits — design around them, don't discover them
+
+- **Payload messages stay visible** in the bot DM — yours and the
+  bot's replies. Bots cannot delete user messages in a DM. It's
+  cosmetic, shipped since Theme Changer v4.0 — but it means:
+- **Payloads are NOT encrypted.** base64url is an encoding anyone
+  can decode. NEVER send secrets through the bridge — no API keys,
+  no OAuth tokens, no passwords, no one-time codes. (Same rule as
+  for storage, twice as important here: payloads leave the app.)
+- **Request/response only.** The bot can never initiate: no
+  pushes, no reminders, no self-refreshing cards. Every ⚡ message
+  answers a request or a button tap. The bridge does not give a
+  plugin background execution — nothing here runs while the user
+  isn't interacting.
+- **One tracked card per plugin** (keyed by user + `ns`). Need
+  several live cards? That's not this tool — each new `card`
+  replaces the old by design.
+- **Latency is two Telegram messages** plus the bot waking up:
+  right for menus, resolving and fetching; wrong for anything
+  keystroke-by-keystroke.
+- **`ns` is a namespace, not a credential** — any plugin can speak
+  for any `ns`. Fine for a personal toolbox; don't build secrecy
+  between plugins on top of it.
+
+### Worked shape — resolve via the bot, deliver yourself
+
+```js
+function onCommand(ctx) {
+  if (ctx.command !== "dlx") return;
+  var url = (ctx.args || "").trim();
+  if (!url) { amin.reply(ctx.msg, "Usage: /dlx <link>"); return; }
+  bridge.resolve(url, function (err, data) {
+    if (err || !data || (!data.video && !data.linkOnly)) {
+      amin.reply(ctx.msg, "🔗 " + url);   // local fallback: the link
+      return;
+    }
+    if (data.video) {
+      // Caption computed BEFORE the blocking send; nothing after it.
+      var caption = (data.title || "").substring(0, 200);
+      amin.sendFile(data.video, { type: "video", caption: caption, chatId: ctx.chatId });
+    } else {
+      amin.reply(ctx.msg, "🔗 " + data.linkOnly);
+    }
+  });
+}
+```
 
 ## Plugin page — `PLUGIN_PAGE` + `onPluginAction` (v2.2)
 
@@ -908,14 +1136,22 @@ mode anyway: your users' first install is the strict one.
   clears the counters), and reinstalling the plugin also clears a
   suspension. A steady plugin that does not throw is **never**
   throttled — there is no rate limit on well-behaved hooks.
-- **Per-hook budget:** each hook invocation gets about **5 seconds of
-  JS execution**. A runaway loop (or pathological regex) that exceeds
-  it is killed mid-hook — that hook invocation dies with a "hook
-  budget exceeded" log line; the plugin itself keeps running and the
-  next hook gets a fresh budget. Time spent inside a blocking native
-  bridge call (e.g. a sync `httpGet`) is not JS execution; the budget
-  trips at the next JS instruction after the deadline. Keep hooks
-  fast regardless: `onMessage` runs for every message.
+- **Per-hook budget:** each hook invocation gets a **5-second
+  WALL-CLOCK deadline**, counted from the moment the hook starts —
+  not 5 s of CPU. The clock keeps running while you sit inside a
+  BLOCKING native call: a sync `httpGet` or a `sendFile` download
+  eats the same window, and when the call returns past the deadline
+  the very next JS instruction kills the hook ("hook budget
+  exceeded" in the log; the plugin itself keeps running). Practical
+  consequence, learned the hard way by the bundled downloader:
+  **code placed after a long blocking call may never run** —
+  precompute everything (captions, follow-up text, bookkeeping)
+  BEFORE the blocking call, and move post-work into a fresh
+  callback. Every new dispatch — a hook, an async HTTP callback, a
+  relay callback, a picker callback — starts its own fresh window,
+  which is why chaining async steps is the budget-safe shape for
+  multi-step work. Keep hooks fast regardless: `onMessage` runs for
+  every message.
 
 ## Feature detection — `amin.platform` (v2.1)
 
@@ -950,7 +1186,9 @@ does exactly this for its template store).
    top instead of guessing. (Message delete and pin DO exist — under
    `act`, since v2.2. What does not exist: reading the clipboard,
    scheduling anything, running in the background, touching another
-   plugin's storage/db/files.)
+   plugin's storage/db/files. The Bot Bridge is not an exception to
+   any of that: it is message-based offload — the bot answers, it
+   never pushes, and nothing runs while the user isn't interacting.)
 5. Check structural gates defensively where a fallback exists:
    `typeof amin.sendFile === "function"` before relying on it, and
    always provide the link fallback when it is missing or returns false.
@@ -977,7 +1215,15 @@ does exactly this for its template store).
 - **Blocking HTTP in `onMessage`.** The sync calls stall the one
   shared plugin thread for up to ~30 s; every plugin waits behind
   you. Match cheaply in `onMessage`, fetch async, answer in the
-  callback.
+  callback. A chain of dependent discovery requests is the same
+  sin in instalments — offload it to the bot (bridge `resolve`)
+  or chain async callbacks, each in its own budget window.
+- **Meaningful JS after `amin.sendFile` in the same hook.** If the
+  download ate the 5 s wall-clock window, everything after the
+  call — toasts, history writes, the next file — is dead code that
+  dies with "hook budget exceeded". Precompute before the send;
+  hand the rest to a fresh callback (the downloader's job-queue
+  pattern, see Sending files).
 - **Big values in `amin.storage`.** Storage is a preferences store
   (64 KB design limit). Records belong in `amin.db` (256 KB values,
   namespaced keys), file content in `amin.files`.
@@ -1016,7 +1262,10 @@ does exactly this for its template store).
   are written to the plugin's log; snippets are never stored.
 - **Catalog:** the curated catalog (hub → Add Plugin → Plugin
   catalog) installs after SHA-256 verification + the review screen.
-  The Built-in library stays offline and unchanged.
+  Each entry carries the plugin's id, version, capabilities,
+  `sha256` + `size` of the code, and a `minPlatform` — every entry
+  in the current catalog declares `minPlatform` **2**. The Built-in
+  library stays offline and unchanged.
 - **Packs:** hub → Add Plugin → Export/Import plugin pack shares a
   chosen set of installed plugins (code + their storage) as one JSON
   file. Importing walks each plugin through the review screen.
@@ -1025,26 +1274,41 @@ does exactly this for its template store).
   SHA-256 fingerprint of the code, shown on the plugin page and the
   review screen — when a user asks "which copy is this?", that's
   the answer.
+- **Bundled updates:** when an app update ships a NEWER bundled
+  copy of a plugin, the installed plugin updates in place on first
+  launch — code and manifest are replaced, while the user's
+  settings, storage, db rows, files and enabled state all survive
+  (and `@dataVersion` migration runs as usual). An installed copy
+  at the same or a newer version (e.g. from a pack import) is
+  never downgraded or clobbered, and a plugin the user deleted is
+  never resurrected.
 
 ## Bundled plugins (reference implementations)
 
 These ship inside AminGram and pre-install; their sources are the best
 worked examples of the surfaces above (12 in the Built-in library):
 
-- **shout** — the Example 1 plugin (`commands`, `send`).
+- **shout** — the Example 1 plugin, plus a repeat setting
+  (`commands`, `send`, `settings`).
 - **vip-alert** — the Example 2 plugin (`observe`, `settings`).
-- **media-dl** — TikTok / X / Reddit / Instagram downloader; real media
-  via `sendFile` first, link fallback (`observe`, `commands`, `send`,
-  `http`, `menu`, `file`).
+- **media-dl** — **Downloader Pro** 3.0.1: TikTok / Instagram / X /
+  Reddit / Pinterest / Threads + direct links; albums, quality
+  choices, TikTok MP3, a long-press "Download media" action
+  (`@contextMenu`), download history in `amin.db`; real media via
+  `sendFile` first (job-queue pattern — never JS after a blocking
+  send in the same window), link fallback (`observe`, `commands`,
+  `send`, `http`, `settings`, `menu`, `file`, `ui`).
 - **temp-mail** — disposable mailboxes on **mail.tm** (rewritten in
   v2.0; the old 1secmail backend is dead): `/tm new` creates a real
   account + bearer token kept in plugin storage, `/tm inbox` /
   `/tm read <id>` use authenticated GETs via the
   `amin.httpGet(url, headers)` overload, re-authenticating once and
   retrying once on failure.
-- **aesthetic-text** — /wide, /space, /fliptext (`commands`, `send`, `menu`).
-- **quick-translate** — /tr via the keyless gtx endpoint
-  (`commands`, `send`, `http`, `settings`).
+- **aesthetic-text** — /wide, /space, /fliptext, /mono, /bubble,
+  /bold (`commands`, `send`, `menu`, `settings`).
+- **quick-translate** — /tr via the keyless gtx endpoint, plus a
+  long-press **Translate** context action (`@contextMenu`)
+  (`commands`, `send`, `http`, `settings`, `ui`).
 - **gemini-chat** — /ai, dual-mode Gemini as documented in the Google
   section (`commands`, `send`, `http`, `google`, `settings`, `menu`).
 - **link-cleaner** — strips tracking parameters from links.
