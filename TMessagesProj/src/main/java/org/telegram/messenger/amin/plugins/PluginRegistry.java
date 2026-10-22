@@ -21,6 +21,8 @@ import org.telegram.messenger.amin.modules.VideoBackgroundModule;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Central registry of all mod modules. The Plugins hub UI is generated
@@ -30,6 +32,7 @@ public final class PluginRegistry {
 
     private static final String PREFS = "amingram_plugins";
     private static final List<ModModule> MODULES = new ArrayList<>();
+    private static final Map<String, ModModule> MODULES_BY_ID = new ConcurrentHashMap<>();
     private static boolean registered;
 
     private PluginRegistry() {
@@ -54,6 +57,9 @@ public final class PluginRegistry {
         MODULES.add(new ScreenshotUnlockModule());
         MODULES.add(new HiddenChatsModule());
         MODULES.add(new SendWhenOnlineModule());
+        for (ModModule module : MODULES) {
+            MODULES_BY_ID.put(module.id(), module);
+        }
     }
 
     public static List<ModModule> modules() {
@@ -62,17 +68,62 @@ public final class PluginRegistry {
     }
 
     public static boolean isEnabledById(Context context, String moduleId) {
-        for (ModModule module : modules()) {
-            if (module.id().equals(moduleId)) {
-                return isEnabled(context, module);
-            }
+        registerAll();
+        ModModule module = MODULES_BY_ID.get(moduleId);
+        return module != null && isEnabled(context, module);
+    }
+
+    // ------------------------------------------------------------------
+    // Enabled-state cache (2026-10-22 optimization pass).
+    //
+    // isEnabled() backs AminHooks' module gates, which sit on hot
+    // upstream paths — MessagesController.sendTyping (per typing
+    // burst), updateStatus, the read-receipt task, story/sponsored
+    // checks in list binds. The uncached read cost a linear registry
+    // scan, a getSharedPreferences lookup, a string-concat key and a
+    // prefs read on EVERY call. The cache turns a hit into one map
+    // read; it is invalidated by a prefs change listener (fires for
+    // any in-process write to an "enabled_*" key, including backup
+    // restores) and updated directly by setEnabled. The listener is
+    // held in a static field because SharedPreferences keeps only a
+    // weak reference to listeners. Event-driven — no polling.
+    // ------------------------------------------------------------------
+
+    private static final Map<String, Boolean> enabledCache = new ConcurrentHashMap<>();
+    private static volatile boolean enabledListenerRegistered;
+    private static SharedPreferences.OnSharedPreferenceChangeListener enabledListener;
+
+    private static void ensureEnabledListener(Context context) {
+        if (enabledListenerRegistered) {
+            return;
         }
-        return false;
+        synchronized (PluginRegistry.class) {
+            if (enabledListenerRegistered) {
+                return;
+            }
+            enabledListener = (prefs, key) -> {
+                if (key != null && key.startsWith("enabled_")) {
+                    enabledCache.remove(key.substring("enabled_".length()));
+                }
+            };
+            context.getApplicationContext()
+                    .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .registerOnSharedPreferenceChangeListener(enabledListener);
+            enabledListenerRegistered = true;
+        }
     }
 
     public static boolean isEnabled(Context context, ModModule module) {
+        String id = module.id();
+        Boolean cached = enabledCache.get(id);
+        if (cached != null) {
+            return cached;
+        }
+        ensureEnabledListener(context);
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        return prefs.getBoolean("enabled_" + module.id(), module.enabledByDefault());
+        boolean enabled = prefs.getBoolean("enabled_" + id, module.enabledByDefault());
+        enabledCache.put(id, enabled);
+        return enabled;
     }
 
     public static void setEnabled(Context context, ModModule module, boolean enabled) {
@@ -80,5 +131,6 @@ public final class PluginRegistry {
                 .edit()
                 .putBoolean("enabled_" + module.id(), enabled)
                 .apply();
+        enabledCache.put(module.id(), enabled);
     }
 }
