@@ -55,6 +55,10 @@ build:
       - android-sdk/platforms
       - android-sdk/build-tools
       - android-sdk/ndk/27.2.12479018
+      # Soar toolchain (mirrors actions/setup-go in build.yml).
+      - .goroot
+      - .gopath
+      - .gomodcache
   before_script:
     # Tool bootstrap (GitHub runners preinstall all of this).
     - |
@@ -129,6 +133,7 @@ build:
       git apply ../patches/0018-message-details.patch
       git apply ../patches/0019-screenshot-unlock.patch
       git apply ../patches/0020-context-menu-items.patch
+      git apply ../patches/0021-dns-tunnel.patch
       cd ..
     # --- Mirror: "Register fork package in google-services.json" ----------
     - |
@@ -190,6 +195,33 @@ build:
         done
         test "$ok" = 1 && test -f "$ANDROID_SDK_ROOT/ndk/$NDK_VERSION/source.properties"
       fi
+    # --- Mirror: "Set up Go 1.25 (Soar)" + "Build Soar bridge .aar" ------
+    # build.yml uses actions/setup-go; here the official Go 1.25 tarball
+    # is fetched into the project dir and cached (.goroot/.gopath/
+    # .gomodcache in the cache block above). Keep the Go version in
+    # step with build.yml.
+    - |
+      set -e
+      export GOROOT="$CI_PROJECT_DIR/.goroot"
+      export GOPATH="$CI_PROJECT_DIR/.gopath"
+      export GOMODCACHE="$CI_PROJECT_DIR/.gomodcache"
+      export PATH="$GOROOT/bin:$GOPATH/bin:$PATH"
+      if [ ! -x "$GOROOT/bin/go" ]; then
+        curl -sSL -o /tmp/go.tgz "https://go.dev/dl/go1.25.0.linux-amd64.tar.gz"
+        rm -rf /tmp/gotree "$GOROOT"
+        mkdir -p /tmp/gotree
+        tar -C /tmp/gotree -xzf /tmp/go.tgz
+        mv /tmp/gotree/go "$GOROOT"
+        rm -f /tmp/go.tgz
+      fi
+      go version
+      export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/$NDK_VERSION"
+      go install golang.org/x/mobile/cmd/gomobile@latest
+      cd dns-native/soarbridge
+      gomobile bind -target=android -androidapi 23 -javapkg org.telegram.amingram -o soarbridge.aar .
+      mkdir -p ../../upstream/TMessagesProj/libs
+      cp soarbridge.aar ../../upstream/TMessagesProj/libs/
+      cd "$CI_PROJECT_DIR"
     # --- Mirror: "Build release APK (afat)" -------------------------------
     - |
       set -e
