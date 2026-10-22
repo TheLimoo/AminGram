@@ -1596,3 +1596,76 @@ whether they join the bundled set is Amin's call.
   BundledPlugins.java (the only touched Java file); no patch
   files touched, so the 18/18 patch replay is unaffected;
   overlay == repo byte-identical for every touched file.
+
+## Optimization pass (2026-10-22, on top of 9df1be7)
+
+Performance-only pass (Amin's phone heats up; suspects were the
+plugin system and the video wallpaper). No behavior change when
+a feature is ON, no plugin API changes, no new timers / polling /
+wakelocks. Every fix cites the hot spot it removes.
+
+- Rhino instruction observer (AminContextFactory.java):
+  OBSERVER_THRESHOLD 1000 -> 10000. The observer callback
+  (ThreadLocal read + wall-clock read) fired every 1000 executed
+  instructions on ALL plugin JS; at 10k ticks the callback runs
+  10x less often while the 5 s per-hook wall-clock deadline —
+  checked at every tick — stays fully authoritative (10k
+  interpreted instructions execute in well under a millisecond,
+  so deadline overshoot is unchanged in practice).
+- Module gates (PluginRegistry.java): isEnabledById/isEnabled
+  back every AminHooks gate, which sit on hot upstream paths
+  (MessagesController.sendTyping, updateStatus, the read-receipt
+  task, story/sponsored list binds). Before: a linear 14-module
+  scan with a list-wrapper allocation, getSharedPreferences, a
+  string-concat key and a prefs read on EVERY call. After: an
+  id->module map (built in registerAll) + a ConcurrentHashMap
+  enabled-state cache — a gate is two map reads. Invalidation is
+  event-driven: an OnSharedPreferenceChangeListener (held in a
+  static field; SharedPreferences keeps only weak refs) drops the
+  entry for any in-process "enabled_*" write, incl. backup
+  restores; setEnabled also updates the cache directly.
+  GhostModeModule's sub-toggle reads are only reached after the
+  master gate passes (AminHooks short-circuit), so with Ghost
+  Mode off the gates cost just the cached master read.
+- JS dispatch (JsPluginManager.java):
+  * hasEnabledPlugins() — runs on Telegram's update thread for
+    every update batch — no longer allocates a full copy of the
+    plugin list via plugins(); it scans the meta cache in place
+    under the class lock.
+  * New enabledPlugins(context, capability) builds dispatch
+    target lists straight from the cache under the lock;
+    dispatchMessage ("observe") and enabledCommandPlugins
+    ("commands") use it instead of copy-then-filter.
+  * New MsgFields/computeMsgFields: the immutable per-message
+    values (sender name — a string-building getUserName — chat /
+    sender controller lookups, chat title/type, forward-origin
+    name) are computed ONCE per dispatch event (lazily, on first
+    target that defines the hook) instead of inside buildMsg for
+    every target plugin. Each plugin still gets its own
+    scope-bound Scriptable + media descriptor; only the lookups
+    and strings are shared.
+- Video wallpaper (VideoBackgroundHelper.java): new
+  capDecodeSize() sets the ExoPlayer track-selection max video
+  size to the TextureView's pixel size (applied on resume and on
+  video-size change, idempotent per size), so a multi-rendition
+  source is never selected/decoded above what the full-screen
+  layer can show. Single-rendition files are unaffected (media3
+  exposes no decode-downscale for a lone track). Audited and
+  already correct, left alone: lifecycle (pause on fragment
+  onPause, release on destroy — patch 0004), hardware decode
+  preferred (upstream DefaultRenderersFactory
+  EXTENSION_RENDERER_MODE_ON), audio track type disabled and no
+  second audio player (VideoPlayer(false, true) + preparePlayer,
+  not the loop API), one player per ChatActivity with stacked
+  instances paused.
+- Audited, already fine (evidence in the pass report): the
+  onRawUpdates / MessagePipeline gate fan-out (all features
+  early-out per batch; Radar loads keywords once per batch and
+  disables itself when the list is empty), DeletedStore's live
+  snapshot path (in-memory upserts + 750 ms debounced stageQueue
+  flush, no per-message prefs write — Stage 1 D4), the error
+  storm tracker (error path only), ensureRuntime (cached).
+- Verified: JDK 17 JavacTask parse clean (4 touched files);
+  Rhino full suite 676/676 (baseline held); no patch files
+  touched, so the 18/18 patch replay is unaffected;
+  overlay == repo byte-identical for every touched file.
