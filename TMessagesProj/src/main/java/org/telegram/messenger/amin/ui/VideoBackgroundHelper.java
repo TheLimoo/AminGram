@@ -67,6 +67,8 @@ public class VideoBackgroundHelper {
     private String attachedPath;
     private boolean prepared;
     private boolean released;
+    private int cappedWidth;
+    private int cappedHeight;
 
     /** Compatibility delegate: the active library item's path (the
      *  store self-heals a dangling active id to null). Playback below
@@ -186,6 +188,7 @@ public class VideoBackgroundHelper {
                                                int unappliedRotationDegrees,
                                                float pixelWidthHeightRatio) {
                     applyCenterCrop(width, height, pixelWidthHeightRatio);
+                    capDecodeSize();
                 }
 
                 @Override
@@ -207,6 +210,38 @@ public class VideoBackgroundHelper {
             FileLog.e("AminGram videobg: attach failed, no layer", t);
             release();
             return false;
+        }
+    }
+
+    /** Caps the player's track selection at the texture view's
+     *  pixel size (2026-10-22 optimization pass). The layer is
+     *  MATCH_PARENT, so without a cap the track selector is free
+     *  to pick — and the codec to decode — the largest rendition
+     *  the file offers even when it far exceeds the screen. With
+     *  the cap, a multi-rendition source decodes at most what the
+     *  view can show; a single-rendition file is unaffected (the
+     *  codec still decodes its only track — ExoPlayer exposes no
+     *  decode-downscale for that case). Idempotent per size; the
+     *  wrapped ExoPlayer is a public field on upstream's
+     *  VideoPlayer and parameters route to its track selector. */
+    private void capDecodeSize() {
+        try {
+            if (player == null || player.player == null || textureView == null) {
+                return;
+            }
+            int width = textureView.getWidth();
+            int height = textureView.getHeight();
+            if (width <= 0 || height <= 0
+                    || (width == cappedWidth && height == cappedHeight)) {
+                return;
+            }
+            cappedWidth = width;
+            cappedHeight = height;
+            player.player.setTrackSelectionParameters(
+                    player.player.getTrackSelectionParameters().buildUpon()
+                            .setMaxVideoSize(width, height)
+                            .build());
+        } catch (Throwable ignored) {
         }
     }
 
@@ -304,6 +339,7 @@ public class VideoBackgroundHelper {
                 return;
             }
             if (player != null) {
+                capDecodeSize();
                 player.play();
             }
             if (animatedDrawable != null) {

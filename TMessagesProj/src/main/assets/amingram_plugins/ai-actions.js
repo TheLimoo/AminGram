@@ -1,12 +1,13 @@
 // ==AminGramPlugin==
 // @id          ai-actions
 // @name        AI Actions
-// @version     1.0
+// @version     1.1
 // @author      Amin
-// @description AI on any message: reply to a message with /sum to summarize it, /explain to explain it simply, or /draft to draft a reply to it — or pass text directly (/sum <text>). Uses Gemini via your connected Google account (AI Studio or Vertex AI mode, see Plugins → Google Account).
+// @description AI on any message: reply to a message with /sum to summarize it, /explain to explain it simply, or /draft to draft a reply to it — or pass text directly (/sum <text>). Uses Gemini via your connected Google account (AI Studio or Vertex AI mode, see Plugins → Google Account). (v1.1: async requests, usage stats in amin.db on the plugin page.)
 // @icon        sparkles
 // @menuLabel   AI: summarize
 // @capabilities commands, send, http, google, menu, observe, settings
+// @minPlatform 2
 // ==/AminGramPlugin==
 
 var SETTINGS = [
@@ -15,6 +16,12 @@ var SETTINGS = [
   { key: "vertexLocation", type: "text", title: "Vertex AI location", def: "us-central1" },
   { key: "vertexModel", type: "text", title: "Vertex AI model", def: "gemini-2.5-flash" },
   { key: "vertexApiKey", type: "text", title: "Vertex AI API key (optional — skips Google sign-in in Vertex mode)", def: "" }
+];
+
+var PLUGIN_PAGE = [
+  { type: "info", text: "AI Actions counts how often /sum, /explain, /draft and the menu summary run. Counts live in the plugin database — Clear stats zeroes them." },
+  { type: "action", id: "stats", title: "Usage stats", subtitle: "Toast the totals and log the per-action breakdown" },
+  { type: "action", id: "clear", title: "Clear stats", subtitle: "Zero every counter" }
 ];
 
 var PROMPTS = {
@@ -33,15 +40,78 @@ var lastByChat = {};
 var lastOrder = [];
 var LAST_CAP = 50;
 
+// Settings read: amin.settings.get when the bridge offers it, else
+// the storage form (settings live in the same per-plugin store).
+function settingGet(key, def) {
+  try {
+    if (amin.settings && typeof amin.settings.get === "function") {
+      var v = amin.settings.get(key, def);
+      if (v !== undefined && v !== null) return v;
+    }
+  } catch (e) { /* fall through to storage */ }
+  return amin.storage.get(key, def);
+}
+
 function setting(key, def) {
   var v = "";
   try {
-    v = String(amin.storage.get(key, def) || "").trim();
+    v = String(settingGet(key, def) || "").trim();
   } catch (e) {
     v = "";
   }
   return v ? v : def;
 }
+
+function dbOk() {
+  return !!(amin.db && typeof amin.db.put === "function");
+}
+
+// --- amin.db: usage counters --------------------------------------
+// v1.0 kept its only state (last-message-per-chat) in memory, so
+// there are no stored counters to rescue; the totals still follow
+// the lazy one-way pattern — the db record wins, and a legacy
+// storage record (if an older build ever wrote one) is adopted
+// once, on first read.
+function emptyStats() {
+  return {
+    sum: { n: 0, ok: 0 }, explain: { n: 0, ok: 0 },
+    draft: { n: 0, ok: 0 }, menu: { n: 0, ok: 0 }
+  };
+}
+
+function loadStats() {
+  if (dbOk()) {
+    try {
+      var s = amin.db.get("stats", "totals");
+      if (s) return s;
+      var legacy = amin.storage.get("aa_totals", "");
+      if (legacy) {
+        try {
+          var parsed = JSON.parse(legacy);
+          if (parsed && parsed.sum) {
+            amin.db.put("stats", "totals", parsed);
+            amin.storage.set("aa_totals", null);
+            return parsed;
+          }
+        } catch (e) { /* not JSON — start fresh */ }
+      }
+    } catch (e) { amin.debug("ai-actions stats read failed: " + e); }
+  }
+  return emptyStats();
+}
+
+function recordUse(kind, ok) {
+  if (!dbOk()) return;
+  try {
+    var s = loadStats();
+    if (!s[kind]) s[kind] = { n: 0, ok: 0 };
+    s[kind].n = (s[kind].n || 0) + 1;
+    if (ok) s[kind].ok = (s[kind].ok || 0) + 1;
+    amin.db.put("stats", "totals", s);
+  } catch (e) { amin.debug("ai-actions stats write failed: " + e); }
+}
+
+// --- observation + commands (unchanged behaviour) -------------------
 
 function onMessage(msg) {
   try {
@@ -100,8 +170,9 @@ function onCommand(ctx) {
   try {
     var src = resolveSource(ctx);
     if (!src) {
-      amin.reply(ctx.msg, "Usage: /" + cmd + " — reply to a message with /" + cmd
-        + ", or /" + cmd + " <text>");
+      amin.reply(ctx.msg, "Usage: reply to a message with /" + cmd
+        + ", or /" + cmd + " <text>\n\n"
+        + "• /sum — summarize\n• /explain — explain simply\n• /draft — draft a reply");
       return;
     }
     var post = function (t) { amin.reply(ctx.msg, t); };
@@ -124,7 +195,7 @@ function onMenuAction(ctx) {
       return;
     }
     var post = function (t) { amin.send(ctx.chatId, t); };
-    runAi("sum", { text: known.text, senderName: known.senderName || "" }, post);
+    runAi("menu", { text: known.text, senderName: known.senderName || "" }, post);
   } catch (e) {
     amin.log("ai-actions menu error: " + e);
   }
@@ -132,7 +203,7 @@ function onMenuAction(ctx) {
 
 function buildPrompt(kind, src) {
   var block = src.senderName ? ("From " + src.senderName + ":\n" + src.text) : src.text;
-  return PROMPTS[kind] + "\n\n" + block;
+  return PROMPTS[kind === "menu" ? "sum" : kind] + "\n\n" + block;
 }
 
 function googleMode() {
@@ -171,7 +242,7 @@ function runAi(kind, src, post) {
   var mode = googleMode();
   var vertexKey = (mode === "vertex") ? setting("vertexApiKey", "") : "";
   if (mode === "vertex" && vertexKey) {
-    doRequest(mode, prompt, null, vertexKey, post);
+    doRequest(kind, mode, prompt, null, vertexKey, post);
     return;
   }
   if (!amin.google) {
@@ -181,7 +252,7 @@ function runAi(kind, src, post) {
   if (!amin.google.isSignedIn()) {
     amin.google.signIn(function (ok) {
       if (ok) {
-        fetchToken(mode, prompt, post);
+        fetchToken(kind, mode, prompt, post);
       } else {
         post("⚠️ Google sign-in was cancelled or failed — AI actions need "
           + "your Google account. You can also connect it in Plugins → Google Account.");
@@ -189,10 +260,10 @@ function runAi(kind, src, post) {
     });
     return;
   }
-  fetchToken(mode, prompt, post);
+  fetchToken(kind, mode, prompt, post);
 }
 
-function fetchToken(mode, prompt, post) {
+function fetchToken(kind, mode, prompt, post) {
   amin.google.getAccessToken(function (token) {
     try {
       if (!token) {
@@ -204,7 +275,7 @@ function fetchToken(mode, prompt, post) {
         }
         return;
       }
-      doRequest(mode, prompt, token, "", post);
+      doRequest(kind, mode, prompt, token, "", post);
     } catch (e) {
       amin.log("ai-actions token error: " + e);
       try {
@@ -216,7 +287,12 @@ function fetchToken(mode, prompt, post) {
   });
 }
 
-function doRequest(mode, prompt, token, vertexKey, post) {
+// The request itself is async (v1.1): the callback parses the
+// response, records the outcome, and posts — posting is the last
+// substantive action of the callback. (Async POST, like the sync
+// form, delivers the error body on a non-2xx status and body null
+// on transport failure.)
+function doRequest(kind, mode, prompt, token, vertexKey, post) {
   var url;
   var headers;
   if (mode === "vertex") {
@@ -238,28 +314,43 @@ function doRequest(mode, prompt, token, vertexKey, post) {
     headers = { "Authorization": "Bearer " + token, "Content-Type": "application/json" };
   }
   var body = JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] });
-  var response = amin.httpPost(url, body, headers);
-  if (!response) {
-    post("⚠️ Gemini did not answer — check the connection, and "
-      + "that the model name in the plugin settings is right.");
-    return;
-  }
-  var apiError = extractError(response);
-  if (apiError) {
-    if (mode === "vertex" && isBillingError(response)) {
-      post(BILLING_LINE);
-    } else {
-      post("⚠️ Gemini error: " + apiError);
+  amin.httpPostAsync(url, body, headers, function (res) {
+    try {
+      var response = res && res.body ? res.body : null;
+      if (!response) {
+        recordUse(kind, false);
+        post("⚠️ Gemini did not answer — check the connection, and "
+          + "that the model name in the plugin settings is right.");
+        return;
+      }
+      var apiError = extractError(response);
+      if (apiError) {
+        recordUse(kind, false);
+        if (mode === "vertex" && isBillingError(response)) {
+          post(BILLING_LINE);
+        } else {
+          post("⚠️ Gemini error: " + apiError);
+        }
+        return;
+      }
+      var answer = extractText(response);
+      if (!answer) {
+        recordUse(kind, false);
+        post("⚠️ Gemini answered, but the reply could not be read "
+          + "(it may have been blocked by a safety filter).");
+        return;
+      }
+      recordUse(kind, true);
+      post(answer);
+    } catch (e) {
+      amin.log("ai-actions request error: " + e);
+      try {
+        post("⚠️ AI action failed — see the plugin log.");
+      } catch (e2) {
+        // Logged above.
+      }
     }
-    return;
-  }
-  var answer = extractText(response);
-  if (!answer) {
-    post("⚠️ Gemini answered, but the reply could not be read "
-      + "(it may have been blocked by a safety filter).");
-    return;
-  }
-  post(answer);
+  });
 }
 
 // A Vertex 403 whose error mentions billing gets the plain-words
@@ -319,4 +410,31 @@ function extractText(response) {
   } catch (e) {
     return "";
   }
+}
+
+// --- plugin page ----------------------------------------------------
+
+function onPluginAction(actionId) {
+  try {
+    if (actionId === "stats") {
+      var s = loadStats();
+      var total = 0, okTotal = 0, lines = [], kinds = ["sum", "explain", "draft", "menu"];
+      for (var i = 0; i < kinds.length; i++) {
+        var k = kinds[i], rec = s[k] || { n: 0, ok: 0 };
+        total += rec.n || 0;
+        okTotal += rec.ok || 0;
+        lines.push(k + ": " + (rec.ok || 0) + "/" + (rec.n || 0) + " ok");
+      }
+      amin.log("ai-actions usage — " + lines.join(" · "));
+      amin.toast("🤖 AI Actions: " + okTotal + "/" + total + " runs succeeded — details in the log");
+      return;
+    }
+    if (actionId === "clear") {
+      if (dbOk()) {
+        try { amin.db.del("stats", "totals"); } catch (e) { /* best effort */ }
+      }
+      amin.toast("🗑 AI Actions stats cleared");
+      amin.log("ai-actions: usage counters cleared from the plugin page");
+    }
+  } catch (e) { amin.log("ai-actions onPluginAction error: " + e); }
 }

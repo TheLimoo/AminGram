@@ -40,12 +40,28 @@ import java.util.Set;
  * arrives pre-installed. The not-installed set (installed ones
  * excluded) is the user-facing library: {@link #library}.
  *
+ * Promotion update (v2.3): an ALREADY-installed bundled plugin
+ * whose bundled asset now declares a HIGHER @version is updated
+ * in place by ensureInstalled, through the same standard install
+ * path ({@link #install}). That path replaces only the code file
+ * (keeping a .prev.js rollback copy) and the metadata — enabled
+ * state, installed-at and the stored data version carry over —
+ * and never touches the per-plugin data stores (amin.storage /
+ * settings values, PluginDb rows, the amin.files sandbox; only
+ * JsPluginManager.delete and the Developer-tools "clear data"
+ * action remove those), so user settings, API keys and plugin
+ * data survive an APK update. An installed copy at the same or
+ * a higher version (e.g. one imported from a .aminpack) is left
+ * completely alone: bundled delivery never downgrades or
+ * clobbers a newer install.
+ *
  * - shout:      the command example from PLUGIN-MASTER-PROMPT.md.
  * - vip-alert:  the observer+settings example from the master prompt.
- * - media-dl:   TikTok / X / Reddit / Instagram direct-link extractor
- *               (/dl, /mp3, attach-menu button).
+ * - media-dl:   Downloader Pro — TikTok / X / Reddit / Instagram /
+ *               Threads / Pinterest media into the chat
+ *               (/dl, /mp3, attach-menu + long-press actions).
  * - temp-mail:  disposable email + verification-code reader via
- *               1secmail (/tm …, attach-menu button).
+ *               mail.tm (/tm …, attach-menu button).
  * - aesthetic-text: text restyling commands (/wide, /space,
  *               /fliptext, attach-menu hint).
  * - quick-translate: /tr translation via the keyless Google
@@ -79,31 +95,35 @@ public final class BundledPlugins {
 
     private static final List<Bundled> LIST = new ArrayList<>();
 
+    // Descriptor name + tagline mirror each plugin's manifest
+    // @name / @description verbatim (three-way sync with
+    // assets/amingram_plugins/*.js and catalog/index.json —
+    // verified by the promotion sync check, MODS.md v2.3).
     static {
         LIST.add(new Bundled("shout", "Shout", "amingram_plugins/shout.js",
-                "/shout <text> posts the text in uppercase."));
+                "/shout <text> posts the text in uppercase. Optional repeat count in the plugin settings."));
         LIST.add(new Bundled("vip-alert", "VIP Alert", "amingram_plugins/vip-alert.js",
-                "Toasts when a chosen person writes in any chat."));
-        LIST.add(new Bundled("media-dl", "Media Downloader", "amingram_plugins/media-dl.js",
-                "Direct MP4/MP3 links from TikTok, X, Reddit and Instagram posts. /dl, /mp3 or the attach menu."));
+                "Toasts when a chosen person writes in any chat. Watch several people at once: comma-separated names or numeric user IDs in the setting below."));
+        LIST.add(new Bundled("media-dl", "Downloader Pro", "amingram_plugins/media-dl.js",
+                "Downloads public media into the chat from TikTok, Instagram, X/Twitter, Reddit, Pinterest, Threads and direct media links. Supports albums, quality choices, TikTok MP3, replied-to links, a long-press download action, download history and link fallback."));
         LIST.add(new Bundled("temp-mail", "Temp Mail", "amingram_plugins/temp-mail.js",
-                "Disposable email addresses + verification codes inside Telegram. /tm or the attach menu."));
+                "Disposable email via mail.tm: /tm new creates a real account, /tm inbox lists mail, /tm read <id> opens one — verification codes and links are extracted and posted in chat. (v2.1: async HTTP, plugin page with address/copy/inbox/forget actions, address history kept in amin.db.)"));
         LIST.add(new Bundled("aesthetic-text", "Aesthetic Text", "amingram_plugins/aesthetic-text.js",
-                "Restyle text: /wide ｆｕｌｌｗｉｄｔｈ, /space s p a c e d, /fliptext upside down."));
+                "Restyle text: /wide makes ｆｕｌｌｗｉｄｔｈ text, /space spreads l e t t e r s out, /fliptext turns text upside down, /mono makes 𝚖𝚘𝚗𝚘𝚜𝚙𝚊𝚌𝚎 text, /bubble makes ⓑⓤⓑⓑⓛⓔ text, /bold makes 𝐛𝐨𝐥𝐝 text."));
         LIST.add(new Bundled("quick-translate", "Quick Translate", "amingram_plugins/quick-translate.js",
-                "/tr <text> translates (default: Persian; /tr en <text> for English)."));
+                "/tr <text> translates text (default target: Persian). /tr en <text> picks another target language. Long-press a message → Translate does the same for that message."));
         LIST.add(new Bundled("gemini-chat", "Gemini Chat", "amingram_plugins/gemini-chat.js",
-                "/ai <question> asks Gemini — powered by your connected Google account, no API key."));
+                "/ai <question> asks Gemini, using your connected Google account (no API key). Dual mode: AI Studio or Vertex AI (Plugins → Google Account). (v1.1: async requests, plugin page with connection status, question history in amin.db.)"));
         LIST.add(new Bundled("link-cleaner", "Link Cleaner", "amingram_plugins/link-cleaner.js",
-                "/clean <url> strips tracking parameters and resolves short links."));
+                "/clean <url> strips tracking parameters (utm_*, fbclid, gclid, igshid, ref, si, …) and resolves short links. No argument reuses the last link seen in this chat — or tap Link Cleaner in the chat attach menu."));
         LIST.add(new Bundled("qr-maker", "QR Maker", "amingram_plugins/qr-maker.js",
-                "/qr <text or link> posts a QR code image for it."));
+                "/qr <text or link> posts a QR code image for it (qrserver.com). If the image cannot be sent, the QR image link is posted instead."));
         LIST.add(new Bundled("price-check", "Price Check", "amingram_plugins/price-check.js",
-                "/price shows live dollar, gold, coin, BTC and ETH prices in tomans."));
+                "/price shows live Iran-market prices in tomans (dollar, gold 18k, Emami coin, BTC, ETH). /price btc|eth|usd|gold|coin shows just one. Sources: tgju.org + CoinGecko — the same endpoints as the toolbox bot."));
         LIST.add(new Bundled("ai-actions", "AI Actions", "amingram_plugins/ai-actions.js",
-                "/sum, /explain and /draft act on a message with Gemini — reply to one, or pass text."));
+                "AI on any message: reply to a message with /sum to summarize it, /explain to explain it simply, or /draft to draft a reply to it — or pass text directly (/sum <text>). Uses Gemini via your connected Google account (AI Studio or Vertex AI mode, see Plugins → Google Account). (v1.1: async requests, usage stats in amin.db on the plugin page.)"));
         LIST.add(new Bundled("quick-replies", "Quick Replies", "amingram_plugins/quick-replies.js",
-                "/tpl saves text templates and posts them: /tpl set <name> <text>, /tpl <name>."));
+                "Text templates: /tpl set <name> <text> saves one, /tpl <name> posts it, /tpl list shows your templates, /tpl del <name> removes one, /tpl export posts them all in one message. Note: the /tpl command message itself also appears in the chat (the platform can't swallow outgoing commands yet)."));
     }
 
     private BundledPlugins() {
@@ -315,7 +335,14 @@ public final class BundledPlugins {
      *  if seen were somehow lost. An id is marked seen only when
      *  the plugin actually ends up installed, so a failed delivery
      *  is retried on the next process start and the library keeps
-     *  offering it meanwhile. */
+     *  offering it meanwhile.
+     *
+     *  Promotion update rule (v2.3) — an INSTALLED bundled id is
+     *  checked against its bundled asset's @version: when the
+     *  asset is newer, the plugin is updated in place through
+     *  {@link #install} (code + metadata only; per-plugin data is
+     *  never touched by the install path). Same-or-newer installs
+     *  are left exactly as they are. */
     public static void ensureInstalled(Context context) {
         if (ensured) {
             return;
@@ -329,11 +356,12 @@ public final class BundledPlugins {
                 if (userDeleted.contains(bundled.id)) {
                     continue; // deleted by the user: never resurrect
                 }
-                boolean installed = JsPluginManager.get(context, bundled.id) != null;
-                if (installed) {
+                JsPlugin installedPlugin = JsPluginManager.get(context, bundled.id);
+                if (installedPlugin != null) {
                     if (seen.add(bundled.id)) {
                         changed = true;
                     }
+                    updateIfBundledNewer(context, bundled, installedPlugin);
                     continue;
                 }
                 if (seen.contains(bundled.id)) {
@@ -355,6 +383,47 @@ public final class BundledPlugins {
         return context.getSharedPreferences(JsPluginManager.PREFS, Context.MODE_PRIVATE);
     }
 
+    /** Reads a bundled asset's source text. */
+    private static String assetSource(Context context, Bundled bundled) throws Exception {
+        AssetManager assets = context.getAssets();
+        InputStream in = assets.open(bundled.asset);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] buffer = new byte[8192];
+        int read;
+        while ((read = in.read(buffer)) > 0) {
+            out.write(buffer, 0, read);
+        }
+        in.close();
+        return out.toString("UTF-8");
+    }
+
+    /** Promotion update (v2.3): when the bundled asset declares a
+     *  HIGHER @version than the installed copy, update the plugin
+     *  in place through {@link #install}. The install path swaps
+     *  only the code file (old code kept as .prev.js) and the
+     *  metadata — it never touches the per-plugin storage/settings
+     *  prefs, PluginDb rows or the files sandbox, and it carries
+     *  over the enabled flag and stored data version (onMigrate
+     *  still runs at warm-up when the data version moved), so the
+     *  user's settings, API keys and data survive. An installed
+     *  copy at the same or a higher version — e.g. imported from
+     *  a .aminpack — is NOT downgraded or clobbered. Fully
+     *  Throwable-isolated like the rest of ensureInstalled: a bad
+     *  asset can never break first touch. */
+    private static void updateIfBundledNewer(Context context, Bundled bundled,
+                                             JsPlugin installedPlugin) {
+        try {
+            String source = assetSource(context, bundled);
+            JsManifest manifest = JsManifest.parse(source);
+            if (manifest.version != null && !manifest.version.isEmpty()
+                    && JsPluginManager.compareVersions(
+                            manifest.version, installedPlugin.version) > 0) {
+                install(context, bundled);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
     /** Installs (or reinstalls/updates) a bundled plugin through the
      *  standard path. Returns null on success, else the error. A
      *  successful install clears the plugin's user-deleted marker,
@@ -363,16 +432,7 @@ public final class BundledPlugins {
      *  both are idempotent). */
     public static String install(Context context, Bundled bundled) {
         try {
-            AssetManager assets = context.getAssets();
-            InputStream in = assets.open(bundled.asset);
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            byte[] buffer = new byte[8192];
-            int read;
-            while ((read = in.read(buffer)) > 0) {
-                out.write(buffer, 0, read);
-            }
-            in.close();
-            String source = out.toString("UTF-8");
+            String source = assetSource(context, bundled);
             String error = JsPluginManager.installWithSource(context, source, "bundled");
             if (error == null) {
                 onInstalled(context, bundled.id);

@@ -1,0 +1,200 @@
+name: DNS tunnel artifacts (manual prebuild)
+
+# Manual-only (workflow_dispatch). Builds the pieces the main build
+# cannot or should not build every run (DNS-BUILD-PLAN.md §3.4,
+# Option B), and runs the live interop smokes (§6.3 gates 2–3):
+#
+#   1. slipstream-binaries — the 4-ABI slipstream-client binaries
+#      from the pinned commit. The "slipstream-jnilibs" artifact is
+#      committed BY HAND into
+#      TMessagesProj/src/main/jniLibs/<abi>/libslipstream_client.so
+#      and then ships inside the APK; the main CI never compiles
+#      Rust.
+#   2. soar-smoke — builds the linux Soar shim smoke and runs it
+#      against the LIVE default Soar zone (authenticated handshake +
+#      SOCKS CONNECT to a Telegram DC + HTTPS 200 check). Needs the
+#      repository VARIABLE SOAR_SERVER_PUBKEY: the server's PUBLIC
+#      key — public by design (it ships inside every client
+#      profile), so a variable, not a secret.
+#   3. slipstream-smoke — builds the linux slipstream-client and
+#      runs it against the LIVE default Slipstream zone with the
+#      bundled default profile's certificate PINNED (--cert),
+#      proving strict pinning + the tunnel path (server-side the
+#      client's fixed target is the microsocks backend) before the
+#      Android binaries are trusted.
+#
+# Nothing here commits or pushes; artifacts and pass/fail only.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  slipstream-binaries:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout slipstream-rust (pinned, recursive submodules)
+        uses: actions/checkout@v4
+        with:
+          repository: Mygod/slipstream-rust
+          ref: bc772dd07d9a136dbd7553b0da575526de207847
+          submodules: recursive
+          path: slipstream-rust
+
+      - name: Install Android NDK (pinned, same as main build)
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018" >/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - name: Install Rust + Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - name: Install cargo-ndk (pinned)
+        # Reproducibility pin (§3.3). If this exact 4.x is ever
+        # yanked, bump to the current 4.x and update this comment.
+        run: cargo install cargo-ndk --version 4.1.2 --locked
+
+      - name: Build slipstream-client for all 4 ABIs
+        working-directory: slipstream-rust
+        run: |
+          set -e
+          mkdir -p "$GITHUB_WORKSPACE/out/jniLibs"
+          build_one() {
+            target="$1"; abi="$2"
+            cargo ndk -t "$target" --platform 23 build --release
+            cp "target/$target/release/slipstream-client" \
+               "$GITHUB_WORKSPACE/out/jniLibs/$abi/libslipstream_client.so"
+          }
+          build_one aarch64-linux-android arm64-v8a
+          build_one armv7-linux-androideabi armeabi-v7a
+          build_one i686-linux-android x86
+          build_one x86_64-linux-android x86_64
+
+      - name: Upload jniLibs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: slipstream-jnilibs
+          path: out/jniLibs
+          if-no-files-found: error
+
+  soar-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Build + run the Soar interop smoke (live server)
+        env:
+          SOAR_KEY_B64: ${{ vars.SOAR_SERVER_PUBKEY }}
+          SOAR_ZONE: s.limoo.indevs.in
+          SOAR_RESOLVERS: 8.8.8.8:53,1.1.1.1:53
+          SMOKE_HTTPS: example.com
+        run: |
+          if [ -z "$SOAR_KEY_B64" ]; then
+            echo "Repository variable SOAR_SERVER_PUBKEY is not set." >&2
+            echo "Set it to the Soar server's PUBLIC key (base64) — public by design." >&2
+            exit 1
+          fi
+          cd dns-native/soarbridge
+          go build -o /tmp/soar-smoke ./cmd/soar-smoke
+          /tmp/soar-smoke
+
+  slipstream-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout slipstream-rust (pinned, recursive submodules)
+        uses: actions/checkout@v4
+        with:
+          repository: Mygod/slipstream-rust
+          ref: bc772dd07d9a136dbd7553b0da575526de207847
+          submodules: recursive
+          path: slipstream-rust
+
+      - name: Checkout AminGram (for the bundled default cert)
+        uses: actions/checkout@v4
+        with:
+          path: amingram
+
+      - name: Install Rust (host)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build linux slipstream-client
+        working-directory: slipstream-rust
+        run: cargo build --release --bin slipstream-client
+
+      - name: Run the Slipstream interop smoke (live server, cert pinned)
+        run: |
+          python3 - <<'PY'
+          import os, socket, subprocess, sys, time
+
+          def readn(sock, n):
+              buf = b""
+              while len(buf) < n:
+                  chunk = sock.recv(n - len(buf))
+                  if not chunk:
+                      raise IOError("short read")
+                  buf += chunk
+              return buf
+
+          client = os.path.join("slipstream-rust", "target", "release", "slipstream-client")
+          cert = os.path.join("amingram", "TMessagesProj", "src", "main", "assets",
+                              "amingram_dns", "slipstream-default-cert.pem")
+          proc = subprocess.Popen(
+              [client,
+               "--tcp-listen-host", "127.0.0.1", "--tcp-listen-port", "18080",
+               "--domain", "b.limoo.indevs.in",
+               "--resolver", "8.8.8.8:53",
+               "--cert", cert,
+               "--congestion-control", "dcubic",
+               "--keep-alive-interval", "400"],
+              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+          try:
+              sock = None
+              deadline = time.time() + 90
+              while time.time() < deadline:
+                  if proc.poll() is not None:
+                      print(proc.stdout.read())
+                      sys.exit("FAIL: slipstream-client exited early")
+                  try:
+                      sock = socket.create_connection(("127.0.0.1", 18080), timeout=5)
+                      break
+                  except OSError:
+                      time.sleep(1)
+              if sock is None:
+                  sys.exit("FAIL: client listener never came up")
+              sock.settimeout(60)
+              sock.sendall(bytes([5, 1, 0]))
+              if readn(sock, 2) != bytes([5, 0]):
+                  sys.exit("FAIL: SOCKS greeting rejected")
+              # CONNECT 91.108.56.130:443 (a Telegram DC; server-side the
+              # tunnel's fixed target is the microsocks backend).
+              sock.sendall(bytes([5, 1, 0, 1, 91, 108, 56, 130, 0x01, 0xBB]))
+              head = readn(sock, 4)
+              if head[0] != 5:
+                  sys.exit(f"FAIL: bad reply head {head!r}")
+              if head[1] != 0:
+                  sys.exit(f"FAIL: CONNECT refused, rep={head[1]}")
+              atyp = head[3]
+              if atyp == 1:
+                  readn(sock, 4)
+              elif atyp == 4:
+                  readn(sock, 16)
+              elif atyp == 3:
+                  readn(sock, readn(sock, 1)[0])
+              else:
+                  sys.exit(f"FAIL: bad reply atyp {atyp}")
+              readn(sock, 2)
+              print("SLIPSTREAM SMOKE PASS - CONNECT through tunnel OK (cert pinned)")
+          finally:
+              proc.terminate()
+          PY

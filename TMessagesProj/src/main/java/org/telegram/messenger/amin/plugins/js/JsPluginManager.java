@@ -232,9 +232,17 @@ public final class JsPluginManager {
         if (!isEngineEnabled(context)) {
             return false;
         }
-        for (JsPlugin plugin : plugins(context)) {
-            if (plugin.enabled) {
-                return true;
+        // Opt pass (2026-10-22): scan the meta cache in place.
+        // This gate runs on Telegram's update thread for every
+        // update batch (AminHooks.onRawUpdates); the old body went
+        // through plugins(), which allocates a full copy of the
+        // plugin list on every call.
+        synchronized (JsPluginManager.class) {
+            loadCache(context);
+            for (JsPlugin plugin : cache) {
+                if (plugin.enabled) {
+                    return true;
+                }
             }
         }
         return false;
@@ -1852,13 +1860,7 @@ public final class JsPluginManager {
         if (context == null || message == null || !isEngineEnabled(context)) {
             return;
         }
-        final List<JsPlugin> targets = new ArrayList<>();
-        for (JsPlugin plugin : plugins(context)) {
-            if (plugin.enabled && plugin.hasCapability("observe")
-                    && !dispatchBlocked(plugin.id)) {
-                targets.add(plugin);
-            }
-        }
+        final List<JsPlugin> targets = enabledPlugins(context, "observe");
         if (targets.isEmpty()) {
             return;
         }
@@ -1867,6 +1869,7 @@ public final class JsPluginManager {
             org.mozilla.javascript.Context cx = null;
             try {
                 cx = enterContext();
+                MsgFields fields = null;
                 for (JsPlugin plugin : targets) {
                     if (dispatchBlocked(plugin.id)) {
                         continue;
@@ -1878,7 +1881,10 @@ public final class JsPluginManager {
                     if (!(ScriptableObject.getProperty(runtime.scope, "onMessage") instanceof Function)) {
                         continue;
                     }
-                    Scriptable msg = buildMsg(cx, runtime.scope, account, message);
+                    if (fields == null) {
+                        fields = computeMsgFields(account, message);
+                    }
+                    Scriptable msg = buildMsg(cx, runtime.scope, account, message, fields);
                     Object result = callHook(cx, runtime, "onMessage", new Object[]{msg});
                     if (result != null && ScriptRuntime.toBoolean(result)) {
                         break; // handled: stops later plugins
@@ -1975,6 +1981,7 @@ public final class JsPluginManager {
             org.mozilla.javascript.Context cx = null;
             try {
                 cx = enterContext();
+                MsgFields fields = null;
                 for (JsPlugin plugin : enabledCommandPlugins(context)) {
                     if (dispatchBlocked(plugin.id)) {
                         continue;
@@ -1986,7 +1993,10 @@ public final class JsPluginManager {
                     if (!(ScriptableObject.getProperty(runtime.scope, "onCommand") instanceof Function)) {
                         continue;
                     }
-                    Scriptable msg = buildMsg(cx, runtime.scope, account, message);
+                    if (fields == null) {
+                        fields = computeMsgFields(account, message);
+                    }
+                    Scriptable msg = buildMsg(cx, runtime.scope, account, message, fields);
                     long chatId = MessageObject.getDialogId(message);
                     long senderId = UserConfig.getInstance(account).getClientUserId();
                     Scriptable ctx = buildCtx(cx, runtime.scope, msg, chatId, senderId, command, args,
@@ -2516,15 +2526,27 @@ public final class JsPluginManager {
         appendLog(pluginId, "[info] data cleared from the Developer tools");
     }
 
-    private static List<JsPlugin> enabledCommandPlugins(Context context) {
+    /** Enabled, non-blocked plugins declaring {@code capability},
+     *  in hub order. Built straight from the meta cache under the
+     *  class lock (opt pass, 2026-10-22): the dispatch entries used
+     *  to iterate plugins() — a full defensive copy of the list —
+     *  only to filter it down, on the per-message dispatch path. */
+    private static List<JsPlugin> enabledPlugins(Context context, String capability) {
         List<JsPlugin> out = new ArrayList<>();
-        for (JsPlugin plugin : plugins(context)) {
-            if (plugin.enabled && plugin.hasCapability("commands")
-                    && !dispatchBlocked(plugin.id)) {
-                out.add(plugin);
+        synchronized (JsPluginManager.class) {
+            loadCache(context);
+            for (JsPlugin plugin : cache) {
+                if (plugin.enabled && plugin.hasCapability(capability)
+                        && !dispatchBlocked(plugin.id)) {
+                    out.add(plugin);
+                }
             }
         }
         return out;
+    }
+
+    private static List<JsPlugin> enabledCommandPlugins(Context context) {
+        return enabledPlugins(context, "commands");
     }
 
     // ------------------------------------------------------------------
@@ -2672,19 +2694,35 @@ public final class JsPluginManager {
         return null;
     }
 
-    private static Scriptable buildMsg(org.mozilla.javascript.Context cx, Scriptable scope,
-                                       int account, TLRPC.Message message) {
-        Scriptable msg = cx.newObject(scope);
-        long chatId = MessageObject.getDialogId(message);
-        long senderId = message.from_id != null
-                ? DialogObject.getPeerDialogId(message.from_id) : chatId;
-        putNum(msg, "id", message.id);
-        putNum(msg, "chatId", chatId);
-        putNum(msg, "senderId", senderId);
-        String senderName = resolveSenderName(account, senderId, chatId);
-        putStr(msg, "senderName", senderName);
-        putStr(msg, "text", message.message == null ? "" : message.message);
-        msg.put("outgoing", msg, message.out ? Boolean.TRUE : Boolean.FALSE);
+    /** The per-message values of {@link #buildMsg} that are
+     *  immutable for a given (account, message): the peer lookups
+     *  and display strings. Opt pass (2026-10-22): dispatch used to
+     *  recompute these inside buildMsg for EVERY target plugin —
+     *  sender-name resolution (a string-building getUserName),
+     *  chat/sender controller lookups, forward-origin resolution —
+     *  so an incoming message cost N full constructions for N
+     *  observing plugins. Dispatch entries now compute the fields
+     *  once per event and each plugin's Scriptable is populated
+     *  from them; only the scope-bound object itself (and the
+     *  media descriptor) is still built per plugin. */
+    private static final class MsgFields {
+        long chatId;
+        long senderId;
+        String senderName;
+        String chatTitle;
+        String chatType;
+        String senderUsername;
+        String fwdFrom;
+        boolean senderIsBot;
+        boolean channel;
+    }
+
+    private static MsgFields computeMsgFields(int account, TLRPC.Message message) {
+        MsgFields fields = new MsgFields();
+        fields.chatId = MessageObject.getDialogId(message);
+        fields.senderId = message.from_id != null
+                ? DialogObject.getPeerDialogId(message.from_id) : fields.chatId;
+        fields.senderName = resolveSenderName(account, fields.senderId, fields.chatId);
         // Rich context (Platform v2, A1): the chat and sender user
         // are resolved once here and reused for channel / chatType /
         // chatTitle / senderUsername / senderIsBot, keeping the
@@ -2694,11 +2732,11 @@ public final class JsPluginManager {
         TLRPC.User senderUser = null;
         try {
             controller = MessagesController.getInstance(account);
-            if (chatId < 0) {
-                chat = controller.getChat(-chatId);
+            if (fields.chatId < 0) {
+                chat = controller.getChat(-fields.chatId);
             }
-            if (senderId > 0) {
-                senderUser = controller.getUser(senderId);
+            if (fields.senderId > 0) {
+                senderUser = controller.getUser(fields.senderId);
             }
         } catch (Throwable ignored) {
         }
@@ -2713,27 +2751,24 @@ public final class JsPluginManager {
             }
             channel = peerChat == null || !peerChat.megagroup;
         }
-        msg.put("channel", msg, channel ? Boolean.TRUE : Boolean.FALSE);
-        putNum(msg, "date", message.date);
-        putNum(msg, "replyToId", message.reply_to != null ? message.reply_to.reply_to_msg_id : 0);
-        putNum(msg, "editDate", message.edit_date);
-        putStr(msg, "fwdFrom", resolveFwdFromName(account, message, chatId));
-        putNum(msg, "groupedId", message.grouped_id);
+        fields.channel = channel;
+        fields.fwdFrom = resolveFwdFromName(account, message, fields.chatId);
         String chatType;
         String chatTitle = "";
-        if (chatId > 0) {
+        if (fields.chatId > 0) {
             chatType = "private";
             try {
-                TLRPC.User chatUser = controller != null ? controller.getUser(chatId) : null;
+                TLRPC.User chatUser = controller != null ? controller.getUser(fields.chatId) : null;
                 if (chatUser != null) {
                     chatTitle = UserObject.getUserName(chatUser);
                 }
             } catch (Throwable ignored) {
             }
             if (chatTitle == null || chatTitle.isEmpty()) {
-                chatTitle = chatId == senderId && senderName != null ? senderName : "";
+                chatTitle = fields.chatId == fields.senderId && fields.senderName != null
+                        ? fields.senderName : "";
             }
-        } else if (chatId < 0) {
+        } else if (fields.chatId < 0) {
             if (chat != null) {
                 chatTitle = chat.title == null ? "" : chat.title;
                 chatType = chat.broadcast ? "channel" : (chat.megagroup ? "supergroup" : "group");
@@ -2745,24 +2780,54 @@ public final class JsPluginManager {
         } else {
             chatType = "private";
         }
-        putStr(msg, "chatTitle", chatTitle);
-        putStr(msg, "chatType", chatType);
+        fields.chatTitle = chatTitle;
+        fields.chatType = chatType;
         String senderUsername = "";
         boolean senderIsBot = false;
         if (senderUser != null) {
             senderUsername = senderUser.username == null ? "" : senderUser.username;
             senderIsBot = senderUser.bot;
-        } else if (senderId < 0 && controller != null) {
+        } else if (fields.senderId < 0 && controller != null) {
             try {
-                TLRPC.Chat senderChat = controller.getChat(-senderId);
+                TLRPC.Chat senderChat = controller.getChat(-fields.senderId);
                 if (senderChat != null && senderChat.username != null) {
                     senderUsername = senderChat.username;
                 }
             } catch (Throwable ignored) {
             }
         }
-        putStr(msg, "senderUsername", senderUsername);
-        msg.put("senderIsBot", msg, senderIsBot ? Boolean.TRUE : Boolean.FALSE);
+        fields.senderUsername = senderUsername;
+        fields.senderIsBot = senderIsBot;
+        return fields;
+    }
+
+    private static Scriptable buildMsg(org.mozilla.javascript.Context cx, Scriptable scope,
+                                       int account, TLRPC.Message message) {
+        return buildMsg(cx, scope, account, message, null);
+    }
+
+    private static Scriptable buildMsg(org.mozilla.javascript.Context cx, Scriptable scope,
+                                       int account, TLRPC.Message message, MsgFields fields) {
+        if (fields == null) {
+            fields = computeMsgFields(account, message);
+        }
+        Scriptable msg = cx.newObject(scope);
+        putNum(msg, "id", message.id);
+        putNum(msg, "chatId", fields.chatId);
+        putNum(msg, "senderId", fields.senderId);
+        putStr(msg, "senderName", fields.senderName);
+        putStr(msg, "text", message.message == null ? "" : message.message);
+        msg.put("outgoing", msg, message.out ? Boolean.TRUE : Boolean.FALSE);
+        msg.put("channel", msg, fields.channel ? Boolean.TRUE : Boolean.FALSE);
+        putNum(msg, "date", message.date);
+        putNum(msg, "replyToId", message.reply_to != null ? message.reply_to.reply_to_msg_id : 0);
+        putNum(msg, "editDate", message.edit_date);
+        putStr(msg, "fwdFrom", fields.fwdFrom);
+        putNum(msg, "groupedId", message.grouped_id);
+        putStr(msg, "chatTitle", fields.chatTitle);
+        putStr(msg, "chatType", fields.chatType);
+        putStr(msg, "senderUsername", fields.senderUsername);
+        msg.put("senderIsBot", msg, fields.senderIsBot ? Boolean.TRUE : Boolean.FALSE);
         if (message.media != null) {
             msg.put("media", msg, buildMediaDescriptor(cx, scope, message.media));
         } else {

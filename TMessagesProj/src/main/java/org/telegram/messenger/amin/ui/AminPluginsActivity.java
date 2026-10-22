@@ -35,6 +35,9 @@ import org.telegram.messenger.amin.core.MessagePipeline;
 import org.telegram.messenger.amin.core.SendWhenOnlineStore;
 import org.telegram.messenger.amin.core.VaultStore;
 import org.telegram.messenger.amin.core.WallpaperLibraryStore;
+import org.telegram.messenger.amin.dns.AminDnsController;
+import org.telegram.messenger.amin.dns.DnsProfile;
+import org.telegram.messenger.amin.dns.DnsProfiles;
 import org.telegram.messenger.amin.google.GoogleAuthManager;
 import org.telegram.messenger.amin.modules.GhostModeModule;
 import org.telegram.messenger.amin.plugins.ModModule;
@@ -243,6 +246,21 @@ public class AminPluginsActivity extends BaseFragment {
             } catch (Throwable ignored) {
             }
             action("google_account", "Google Account", googleValue);
+            // DNS Tunnel: quick toggle on the ACTIVE profile (the
+            // full profiles page lives behind the second row and in
+            // Telegram's Proxy settings).
+            String dnsValue = "Off";
+            String dnsProfileName = "";
+            try {
+                dnsValue = AminDnsController.proxyRowValue(context);
+                DnsProfile dnsActive = DnsProfiles.activeProfile(context);
+                if (dnsActive != null) {
+                    dnsProfileName = dnsActive.name;
+                }
+            } catch (Throwable ignored) {
+            }
+            action("dns_toggle", "DNS Tunnel", dnsValue);
+            action("dns_open", "DNS Tunnel profiles", dnsProfileName);
         }
         addPluginsSection(context);
         // Developer section (§3.5): the session Developer-mode
@@ -788,6 +806,13 @@ public class AminPluginsActivity extends BaseFragment {
                 break;
             case "google_account":
                 presentFragment(new AminGoogleActivity());
+                break;
+            case "dns_toggle":
+                AminDnsController.get(context).toggle(context);
+                rebuild();
+                break;
+            case "dns_open":
+                presentFragment(new AminDnsTunnelActivity());
                 break;
             case "search_plugins":
                 searchPlugins(context);

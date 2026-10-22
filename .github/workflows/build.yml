@@ -43,6 +43,7 @@ jobs:
           git apply ../patches/0018-message-details.patch
           git apply ../patches/0019-screenshot-unlock.patch
           git apply ../patches/0020-context-menu-items.patch
+          git apply ../patches/0021-dns-tunnel.patch
 
       - name: Register fork package in google-services.json
         run: |
@@ -124,6 +125,21 @@ jobs:
         with:
           path: /usr/local/lib/android/sdk/ndk/27.2.12479018
           key: ndk-27.2.12479018
+
+      - name: Set up Go 1.25 (Soar)
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Build Soar bridge .aar (gomobile)
+        env:
+          ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/27.2.12479018
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          cd dns-native/soarbridge
+          gomobile bind -target=android -androidapi 23 -javapkg org.telegram.amingram -o soarbridge.aar .
+          mkdir -p ../../upstream/TMessagesProj/libs
+          cp soarbridge.aar ../../upstream/TMessagesProj/libs/
 
       - name: Build release APK (afat)
         env:
