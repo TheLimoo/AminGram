@@ -201,16 +201,39 @@ final class SlipstreamBridge {
                 process.destroy();
             } catch (Throwable ignored) {
             }
-            try {
-                process.waitFor();
-            } catch (Throwable ignored) {
-            }
+            // Bounded wait BEFORE the forcible escalation (audit
+            // P1-13): the old code waited unboundedly here, which
+            // made the destroyForcibly() below unreachable for a
+            // SIGTERM-ignoring client — and every stop path runs on
+            // the DNS controller's single worker thread, so one
+            // stubborn subprocess wedged the whole module forever.
             if (Build.VERSION.SDK_INT >= 26) {
+                boolean exited = false;
                 try {
-                    if (isAlive()) {
-                        process.destroyForcibly();
-                    }
+                    exited = process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS);
                 } catch (Throwable ignored) {
+                }
+                if (!exited) {
+                    try {
+                        process.destroyForcibly();
+                    } catch (Throwable ignored) {
+                    }
+                    try {
+                        process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS);
+                    } catch (Throwable ignored) {
+                    }
+                }
+            } else {
+                // Pre-26 has no timed waitFor: poll isAlive()
+                // against a deadline, then give up waiting (the
+                // process reference is dropped either way).
+                long deadline = System.currentTimeMillis() + 2000;
+                while (isAlive() && System.currentTimeMillis() < deadline) {
+                    try {
+                        Thread.sleep(50);
+                    } catch (Throwable ignored) {
+                        break;
+                    }
                 }
             }
             process = null;

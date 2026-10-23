@@ -116,6 +116,12 @@ public final class AminDnsController {
     private volatile long connectedSinceElapsed;
     private volatile boolean cancelStart;
     private volatile boolean stopInProgress;
+    /** Set when WE stop the foreground service (stop path or
+     *  start-failure cleanup), so the service's onDestroy →
+     *  onServiceDied() can tell a controller-initiated stop from a
+     *  genuine system kill (audit P1-15). Cleared by onServiceDied
+     *  when it consumes it. */
+    private volatile boolean serviceStopExpected;
     private volatile SlipstreamBridge slipstream;
     private volatile boolean proxyApplied;
 
@@ -265,7 +271,15 @@ public final class AminDnsController {
         error = "";
         livenessFailure = "";
         setState(State.STARTING);
-        startService(context);
+        if (!startService(context)) {
+            // FGS start refused (audit P1-14): without the service
+            // the process has no foreground priority and Android
+            // may kill it mid-tunnel, leaving Telegram pointed at a
+            // dead local port. Fail the attempt BEFORE any engine
+            // starts, so there is nothing to clean up.
+            fail("Could not start the tunnel service — Android blocked the foreground-service start. Open the app and try again.");
+            return;
+        }
 
         List<String> resolvers = DnsProfiles.effectiveResolvers(context, profile);
         activeResolver = resolvers.isEmpty() ? "" : resolvers.get(0);
@@ -316,7 +330,20 @@ public final class AminDnsController {
             return;
         }
 
-        applyProxy(port, profile);
+        try {
+            applyProxy(port, profile);
+        } catch (Throwable t) {
+            // A timed-out apply (P1-16) must not become CONNECTED:
+            // Telegram may never have been re-pointed. Tear the
+            // engines down and fail with the reason. (The late UI
+            // runnable, if it ever runs, applies the same settings
+            // this attempt would have — and recoverIfStale/the
+            // sweep reconcile any residue at next launch.)
+            stopEngines();
+            stopService(context);
+            fail("Proxy setup failed: " + message(t));
+            return;
+        }
         proxyApplied = true;
         connectedSinceElapsed = SystemClock.elapsedRealtime();
         setState(State.CONNECTED);
@@ -330,7 +357,14 @@ public final class AminDnsController {
         try {
             stopEngines();
             if (proxyApplied) {
-                restoreProxy();
+                try {
+                    restoreProxy();
+                } catch (Throwable ignored) {
+                    // Timed out (P1-16): the restore runnable still
+                    // runs when the UI thread unblocks, and
+                    // recoverIfStale reconciles any residue at the
+                    // next launch — the stop completes regardless.
+                }
                 proxyApplied = false;
             } else {
                 clearSnapshot();
@@ -373,7 +407,10 @@ public final class AminDnsController {
         }
     }
 
-    private void startService(Context context) {
+    /** Returns false when Android refused the start (audit
+     *  P1-14) — the caller must fail the start attempt instead of
+     *  proceeding without a foreground service. */
+    private boolean startService(Context context) {
         try {
             Intent intent = new Intent(context, AminDnsTunnelService.class);
             if (Build.VERSION.SDK_INT >= 26) {
@@ -381,14 +418,23 @@ public final class AminDnsController {
             } else {
                 context.startService(intent);
             }
-        } catch (Throwable ignored) {
-            // FGS start restrictions: the tunnel is only ever
-            // started from a user-visible UI action, so this is a
-            // last-resort guard, not an expected path.
+            return true;
+        } catch (Throwable t) {
+            // FGS start restrictions (ForegroundServiceStartNotAllowed-
+            // Exception on Android 12+ when the start was queued
+            // behind other worker tasks and executes after the user
+            // backgrounded the app): no longer swallowed — a tunnel
+            // without its service is worse than a clear failure.
+            return false;
         }
     }
 
     private void stopService(Context context) {
+        // Mark BEFORE stopping (audit P1-15): the service's
+        // onDestroy reports into onServiceDied(), which must not
+        // mistake this controller-initiated stop for a system kill
+        // and overwrite a just-set ERROR state with OFF.
+        serviceStopExpected = true;
         try {
             context.stopService(new Intent(context, AminDnsTunnelService.class));
         } catch (Throwable ignored) {
@@ -401,6 +447,14 @@ public final class AminDnsController {
      * exactly as a normal stop would.
      */
     public void onServiceDied() {
+        if (serviceStopExpected) {
+            // We stopped the service ourselves (stop path or
+            // start-failure cleanup) — its onDestroy is expected,
+            // not a system kill. Consume the mark and stand down
+            // (audit P1-15).
+            serviceStopExpected = false;
+            return;
+        }
         if (stopInProgress || state == State.OFF) {
             return;
         }
@@ -412,7 +466,12 @@ public final class AminDnsController {
             try {
                 stopEngines();
                 if (proxyApplied) {
-                    restoreProxy();
+                    try {
+                        restoreProxy();
+                    } catch (Throwable ignored) {
+                        // Timed out (P1-16) — same reasoning as
+                        // doStop: finish the teardown regardless.
+                    }
                     proxyApplied = false;
                 } else {
                     clearSnapshot();
@@ -944,7 +1003,14 @@ public final class AminDnsController {
 
     // ---------------------------------------------------------------
 
-    /** Runs r on the UI thread and waits (bounded) — proxy ops mirror upstream's UI-thread calls. */
+    /** Runs r on the UI thread and waits (bounded) — proxy ops mirror upstream's UI-thread calls.
+     *  A timeout is a FAILURE of the operation (audit P1-16): the
+     *  old code returned anyway while the runnable still executed
+     *  later, so callers set proxyApplied/CONNECTED (or made restore
+     *  decisions) against work that had not happened — and could
+     *  then race the late execution. Callers that must not proceed
+     *  on a maybe-applied proxy let this propagate; stop paths
+     *  catch it and continue their teardown regardless. */
     private void runOnUiSync(Runnable r) {
         if (Looper.myLooper() == Looper.getMainLooper()) {
             r.run();
@@ -958,9 +1024,14 @@ public final class AminDnsController {
                 latch.countDown();
             }
         });
+        boolean done;
         try {
-            latch.await(5, TimeUnit.SECONDS);
-        } catch (InterruptedException ignored) {
+            done = latch.await(5, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            done = false;
+        }
+        if (!done) {
+            throw new IllegalStateException("UI thread busy — proxy operation timed out");
         }
     }
 }
