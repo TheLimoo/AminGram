@@ -43,14 +43,20 @@ import java.util.Map;
  *    one consistent state, and every hook body is fully guarded — a Ryoku
  *    failure can only ever fall back to stock, never throw into
  *    AndroidUtilities/Theme startup code.
- *  - healAtStartup() runs from ApplicationLoader.postInitApplication
- *    (patch 0022) before Theme consumes any persisted state: it validates
- *    the Ryoku override-wallpaper entries in "themeconfig" (JSON parses,
- *    the referenced file exists, is non-empty and decodes as an image) and
- *    honours a crash probe — if the previous launch died before the shared
- *    paints were created, the Ryoku theme selection + overrides are reset
- *    to stock and the toggle is forced OFF. A bad wallpaper state can
- *    never brick the install again.
+ *  - Startup self-heal has two layers. Heal v2 (RyokuStartupHeal,
+ *    patch 0022) runs from ApplicationLoader.attachBaseContext with
+ *    raw prefs/files APIs only — before Theme's static initializer
+ *    can consume any persisted state — validates the Ryoku
+ *    override-wallpaper entries and the video-background selection,
+ *    and, if the crash probe shows the previous launch died during
+ *    startup, resets the Ryoku theme selection (which Theme persists
+ *    in "mainconfig", not "themeconfig"), the overrides, the video
+ *    background selection/module flag and the bubble radius. The
+ *    round-1 healAtStartup() below remains as a second layer in
+ *    ApplicationLoader.postInitApplication: it validates the
+ *    "themeconfig" override-wallpaper entries (JSON parses, the
+ *    referenced file exists, is non-empty and decodes as an image).
+ *    A bad wallpaper state can never brick the install again.
  *  - applyWallpaper() writes ONE fixed file (ryoku_wallpaper.jpg), clears
  *    the previous override through upstream bookkeeping first (no random
  *    filename accumulation, no dangling references), and refuses to run

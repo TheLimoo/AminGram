@@ -149,7 +149,19 @@ index b56ee0d..6862cb0 100644
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
-@@ -193,6 +193,9 @@
+@@ -81,6 +81,11 @@
+     @Override
+     protected void attachBaseContext(Context base) {
+         super.attachBaseContext(base);
++        // AminGram Ryoku heal v2: validate/reset persisted display state
++        // (Ryoku theme selection + override wallpapers, video background
++        // selection) with raw prefs APIs, before Theme's static init can
++        // consume any of it. Never throws.
++        org.telegram.messenger.amin.ui.RyokuStartupHeal.healOnAttach(base);
+     }
+ 
+     public static ILocationServiceProvider getLocationServiceProvider() {
+@@ -193,6 +198,9 @@
              return;
          }
          applicationInited = true;
