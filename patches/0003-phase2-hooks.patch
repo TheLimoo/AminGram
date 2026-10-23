@@ -1,8 +1,18 @@
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
-index 93bc81c..ef6e87e 100644
+index 93bc81c..c05b8c9 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
-@@ -10510,7 +10510,7 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -926,6 +926,9 @@ public class MessagesController extends BaseController implements NotificationCe
+     }
+ 
+     public boolean isPremiumUser(TLRPC.User currentUser) {
++        if (currentUser != null && currentUser.self && org.telegram.messenger.amin.AminHooks.localPremium()) {
++            return true;
++        }
+         return currentUser != null && currentUser.premium && !isSupportUser(currentUser);
+     }
+ 
+@@ -10510,7 +10513,7 @@ public class MessagesController extends BaseController implements NotificationCe
          if (getUserConfig().isClientActivated()) {
              if (!ignoreSetOnline && getConnectionsManager().getPauseTime() == 0 && ApplicationLoader.isScreenOn && !ApplicationLoader.mainInterfacePausedStageQueue) {
                  if (ApplicationLoader.mainInterfacePausedStageQueueTime != 0 && Math.abs(ApplicationLoader.mainInterfacePausedStageQueueTime - System.currentTimeMillis()) > 1000) {
@@ -11,7 +21,7 @@ index 93bc81c..ef6e87e 100644
                          statusSettingState = 1;
  
                          if (statusRequest != 0) {
-@@ -11367,6 +11367,9 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -11367,6 +11370,9 @@ public class MessagesController extends BaseController implements NotificationCe
      }
  
      public boolean sendTyping(long dialogId, long threadMsgId, int action, String emojicon, int classGuid) {
@@ -21,7 +31,7 @@ index 93bc81c..ef6e87e 100644
          if (action < 0 || action >= sendingTypings.length || dialogId == 0) {
              return false;
          }
-@@ -14541,6 +14544,9 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -14541,6 +14547,9 @@ public class MessagesController extends BaseController implements NotificationCe
      }
  
      private void completeReadTask(ReadTask task) {
@@ -31,7 +41,7 @@ index 93bc81c..ef6e87e 100644
          if (task.replyId != 0 && task.monoForumPeerId == 0) {
              TLRPC.TL_messages_readDiscussion req = new TLRPC.TL_messages_readDiscussion();
              req.msg_id = (int) task.replyId;
-@@ -21129,7 +21135,10 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -21129,7 +21138,10 @@ public class MessagesController extends BaseController implements NotificationCe
                      getNotificationCenter().postNotificationName(NotificationCenter.messagesReadContent, key, value);
                  }
              }
@@ -43,7 +53,7 @@ index 93bc81c..ef6e87e 100644
                  for (int a = 0, size = deletedMessagesFinal.size(); a < size; a++) {
                      long dialogId = deletedMessagesFinal.keyAt(a);
                      ArrayList<Integer> arrayList = deletedMessagesFinal.valueAt(a);
-@@ -21249,7 +21258,7 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -21249,7 +21261,7 @@ public class MessagesController extends BaseController implements NotificationCe
                  getMessagesStorage().markMessagesContentAsRead(key, arrayList, currentTime2, markContentAsReadMessagesDate);
              }
          }
@@ -115,3 +125,136 @@ index 0f79e44..66cb742 100644
          TLRPC.User user = currentUser;
          if (user == null) {
              return false;
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/UserObject.java b/TMessagesProj/src/main/java/org/telegram/messenger/UserObject.java
+index a05e9e3..62f47ee 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/UserObject.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/UserObject.java
+@@ -58,7 +58,9 @@ public class UserObject {
+             return LocaleController.getString(R.string.HiddenName);
+         }
+         String name = AndroidUtilities.removeRTL(AndroidUtilities.removeDiacritics(ContactsController.formatName(user.first_name, user.last_name)));
+-        return name.length() != 0 || TextUtils.isEmpty(user.phone) ? name : PhoneFormat.getInstance().format("+" + user.phone);
++        String result = name.length() != 0 || TextUtils.isEmpty(user.phone) ? name : PhoneFormat.getInstance().format("+" + user.phone);
++        String nameEmojiSuffix = org.telegram.messenger.amin.AminHooks.localNameEmojiSuffix(user);
++        return nameEmojiSuffix == null ? result : result + nameEmojiSuffix;
+     }
+ 
+     public static String getPublicUsername(TLRPC.User user, boolean editable) {
+@@ -152,6 +154,10 @@ public class UserObject {
+         if (user == null) {
+             return null;
+         }
++        Long localStatus = org.telegram.messenger.amin.AminHooks.localStatusDocumentId(user);
++        if (localStatus != null) {
++            return localStatus;
++        }
+         return getEmojiStatusDocumentId(user.emoji_status);
+     }
+ 
+@@ -189,6 +195,8 @@ public class UserObject {
+ 
+     public static int getColorId(TLRPC.User user) {
+         if (user == null) return 0;
++        Integer localColor = org.telegram.messenger.amin.AminHooks.localNameColorId(user);
++        if (localColor != null) return localColor;
+         if (user.color instanceof TLRPC.TL_peerColor && (user.color.flags & 1) != 0) return user.color.color;
+         return (int) (user.id % 7);
+     }
+@@ -200,6 +208,8 @@ public class UserObject {
+ 
+     public static int getProfileColorId(TLRPC.User user) {
+         if (user == null) return 0;
++        Integer localColor = org.telegram.messenger.amin.AminHooks.localProfileColorId(user);
++        if (localColor != null) return localColor;
+         if (user.profile_color instanceof TLRPC.TL_peerColor && (user.profile_color.flags & 1) != 0) return user.profile_color.color;
+         return -1;
+     }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiView.java
+index 4f46a0c..78fcf33 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiView.java
+@@ -1385,7 +1385,7 @@ public class EmojiView extends FrameLayout implements
+                 if (emoticon == null && document != null) {
+                     emoticon = MessageObject.findAnimatedEmojiEmoticon(document);
+                 }
+-                if (!MessageObject.isFreeEmoji(document) && !UserConfig.getInstance(currentAccount).isPremium() && !(delegate != null && delegate.isUserSelf()) && !allowEmojisForNonPremium && !isGroupEmojis) {
++                if (!MessageObject.isFreeEmoji(document) && (!UserConfig.getInstance(currentAccount).isPremium() || org.telegram.messenger.amin.AminHooks.pickerPremiumBlocked()) && !(delegate != null && delegate.isUserSelf()) && !allowEmojisForNonPremium && !isGroupEmojis) {
+                     showBottomTab(false, true);
+                     BulletinFactory factory = fragment != null ? BulletinFactory.of(fragment) : BulletinFactory.of(bulletinContainer, resourcesProvider);
+                     if (premiumBulletin || fragment == null) {
+@@ -2343,7 +2343,7 @@ public class EmojiView extends FrameLayout implements
+                     return;
+                 }
+                 StickerEmojiCell cell = (StickerEmojiCell) view;
+-                if (cell.getSticker() != null && MessageObject.isPremiumSticker(cell.getSticker()) && !AccountInstance.getInstance(currentAccount).getUserConfig().isPremium()) {
++                if (cell.getSticker() != null && MessageObject.isPremiumSticker(cell.getSticker()) && (!AccountInstance.getInstance(currentAccount).getUserConfig().isPremium() || org.telegram.messenger.amin.AminHooks.pickerPremiumBlocked())) {
+                     ContentPreviewViewer.getInstance().showMenuFor(cell);
+                     return;
+                 }
+@@ -4279,7 +4279,7 @@ public class EmojiView extends FrameLayout implements
+             }
+             int state = BUTTON_STATE_EMPTY;
+             boolean installed = pack.installed || installedEmojiSets.contains(pack.set.id);
+-            if (!pack.free && !UserConfig.getInstance(currentAccount).isPremium() && !allowEmojisForNonPremium) {
++            if (!pack.free && (!UserConfig.getInstance(currentAccount).isPremium() || org.telegram.messenger.amin.AminHooks.pickerPremiumBlocked()) && !allowEmojisForNonPremium) {
+                 state = BUTTON_STATE_LOCKED;
+             } else if (pack.featured) {
+                 if (installed) {
+@@ -6247,7 +6247,7 @@ public class EmojiView extends FrameLayout implements
+             int previousCount2 = favouriteStickers.size();
+             recentStickers = MediaDataController.getInstance(currentAccount).getRecentStickers(MediaDataController.TYPE_IMAGE, true);
+             favouriteStickers = MediaDataController.getInstance(currentAccount).getRecentStickers(MediaDataController.TYPE_FAVE);
+-            if (UserConfig.getInstance(currentAccount).isPremium()) {
++            if (UserConfig.getInstance(currentAccount).isPremium() && !org.telegram.messenger.amin.AminHooks.pickerPremiumBlocked()) {
+                 premiumStickers = MediaDataController.getInstance(currentAccount).getRecentStickers(MediaDataController.TYPE_PREMIUM_STICKERS);
+             } else {
+                 premiumStickers = new ArrayList<>();
+@@ -7425,7 +7425,7 @@ public class EmojiView extends FrameLayout implements
+                             count += size;
+                         }
+                         if (code == null) {
+-                            final boolean isPremium = UserConfig.getInstance(currentAccount).isPremium();
++                            final boolean isPremium = UserConfig.getInstance(currentAccount).isPremium() && !org.telegram.messenger.amin.AminHooks.pickerPremiumBlocked();
+                             final int maxlen = emojiLayoutManager.getSpanCount() * 3;
+                             for (int b = 0; b < packStartPosition.size(); ++b) {
+                                 EmojiPack pack = emojipacksProcessed.get(b);
+@@ -7583,7 +7583,7 @@ public class EmojiView extends FrameLayout implements
+                 frozenEmojiPacks = new ArrayList<>(mediaDataController.getStickerSets(MediaDataController.TYPE_EMOJIPACKS));
+             }
+             ArrayList<TLRPC.TL_messages_stickerSet> installedEmojipacks = frozenEmojiPacks;
+-            boolean isPremium = UserConfig.getInstance(currentAccount).isPremium() || allowEmojisForNonPremium;
++            boolean isPremium = (UserConfig.getInstance(currentAccount).isPremium() && !org.telegram.messenger.amin.AminHooks.pickerPremiumBlocked()) || allowEmojisForNonPremium;
+             int index = 0;
+ 
+             if (info != null && info.emojiset != null) {
+@@ -7724,7 +7724,7 @@ public class EmojiView extends FrameLayout implements
+             int start = packStartPosition.get(index);
+             expandedEmojiSets.add(pack.set.id);
+ 
+-            boolean isPremium = UserConfig.getInstance(currentAccount).isPremium() || allowEmojisForNonPremium;
++            boolean isPremium = (UserConfig.getInstance(currentAccount).isPremium() && !org.telegram.messenger.amin.AminHooks.pickerPremiumBlocked()) || allowEmojisForNonPremium;
+             int maxlen = emojiLayoutManager.getSpanCount() * 3;
+             int fromCount = ((pack.installed && !pack.featured) && (pack.free || isPremium) || pack.expanded ? pack.documents.size() : Math.min(maxlen, pack.documents.size()));
+             Integer from = null, count = null;
+@@ -7775,7 +7775,7 @@ public class EmojiView extends FrameLayout implements
+             packStartPosition.clear();
+             rowHashCodes.clear();
+             itemCount = 0;
+-            boolean isPremium = UserConfig.getInstance(currentAccount).isPremium() || allowEmojisForNonPremium;
++            boolean isPremium = (UserConfig.getInstance(currentAccount).isPremium() && !org.telegram.messenger.amin.AminHooks.pickerPremiumBlocked()) || allowEmojisForNonPremium;
+             if (needEmojiSearch) {
+                 itemCount++;
+                 rowHashCodes.add(-1);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ReplyMessageLine.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ReplyMessageLine.java
+index 2f52841..e7e02af 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ReplyMessageLine.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ReplyMessageLine.java
+@@ -265,7 +265,7 @@ public class ReplyMessageLine {
+                 return resolveCollectionColor(messageObject, (TLRPC.TL_peerColorCollectible) user.color, resourcesProvider);
+             }
+             if (user != null) {
+-                colorId = UserObject.getColorId(user);
++                colorId = org.telegram.messenger.amin.AminHooks.replyColorId(user);
+                 emojiDocumentId = UserObject.getEmojiId(user);
+             }
+             resolveColor(messageObject, colorId, resourcesProvider);

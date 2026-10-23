@@ -40,6 +40,29 @@ Target: keep this list under 30 files, each with 1–3 line hooks.
 
 - `org/telegram/messenger/UserConfig.java` — LocalPremium: `isPremium()`
   returns true when the module is enabled (1 guard line, patch 0003).
+- LocalPremium v2 (AyuGram-style, still patch 0003) — the module
+  (`amin.modules.LocalPremiumModule`, prefs `amingram_local_premium`)
+  grew sub-toggles (premium flag / picker unlock / name emoji /
+  emoji status / peer colors, all default ON, narrowing the master
+  switch only) and per-account picks keyed by user id:
+  `MessagesController.isPremiumUser()` returns true for the self
+  user while the flag is on (premium badges for own account);
+  `UserObject.getUserName()` appends the picked name emoji's base
+  glyph for the self user; `UserObject.getEmojiStatusDocumentId(User)`
+  returns the locally stored status document for the self user;
+  `UserObject.getColorId()` / `getProfileColorId()` return the local
+  name/profile color ids for the self user; `ReplyMessageLine`
+  resolves its color through `AminHooks.replyColorId()` (local reply
+  color, falling back to `getColorId`); `EmojiView`'s eight premium
+  pack gates (emoji cell, premium sticker cell, pack install button,
+  premium recents, search + three adapter flags) additionally
+  consult `AminHooks.pickerPremiumBlocked()` so the picker
+  sub-toggle can re-lock the packs while the flag stays on.
+  Everything renders locally only — the server still sees a free
+  account. Hub rows live under the module in `AminPluginsActivity`
+  (upstream `SelectAnimatedEmojiDialog` popup for the emoji picks,
+  `MessagesController.peerColors`/`profilePeerColors` palettes for
+  the color picks).
 - `org/telegram/messenger/MessagesController.java` — GhostMode:
   `completeReadTask` early-return (no read receipts sent) and the
   `updateTimerProc` online-status branch skipped while ghost is on;

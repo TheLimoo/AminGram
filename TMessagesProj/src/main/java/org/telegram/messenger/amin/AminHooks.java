@@ -20,6 +20,7 @@ import org.telegram.messenger.amin.core.HiddenChatsStore;
 import org.telegram.messenger.amin.core.MessagePipeline;
 import org.telegram.messenger.amin.core.SendWhenOnlineStore;
 import org.telegram.messenger.amin.modules.GhostModeModule;
+import org.telegram.messenger.amin.modules.LocalPremiumModule;
 import org.telegram.messenger.amin.plugins.PluginRegistry;
 import org.telegram.messenger.amin.plugins.js.JsPlugin;
 import org.telegram.messenger.amin.plugins.js.JsPluginManager;
@@ -62,8 +63,124 @@ public final class AminHooks {
         return PluginRegistry.isEnabledById(context, moduleId);
     }
 
+    /** Local Premium master funnel (patch 0003: UserConfig.isPremium
+     *  and MessagesController.isPremiumUser for the self user). The
+     *  "premium flag" sub-toggle narrows the master module switch;
+     *  default ON, so existing users see no change. */
     public static boolean localPremium() {
-        return moduleEnabled("local_premium");
+        if (!moduleEnabled("local_premium")) {
+            return false;
+        }
+        Context context = ApplicationLoader.applicationContext;
+        return context != null && LocalPremiumModule.premiumFlag(context);
+    }
+
+    /** True while Local Premium's flag makes isPremium() true but the
+     *  "premium emoji & sticker packs" sub-toggle is OFF — the
+     *  EmojiView pack gates (patch 0003) consult this so the picker
+     *  sub-toggle narrows the flag exactly like Ghost Mode's
+     *  sub-toggles narrow its master switch. */
+    public static boolean pickerPremiumBlocked() {
+        if (!moduleEnabled("local_premium")) {
+            return false;
+        }
+        Context context = ApplicationLoader.applicationContext;
+        return context != null
+                && LocalPremiumModule.premiumFlag(context)
+                && !LocalPremiumModule.pickerUnlock(context);
+    }
+
+    /** Local emoji status for the self user (patch 0003:
+     *  UserObject.getEmojiStatusDocumentId). Returns the stored
+     *  document id, or null to keep upstream behaviour. The user must
+     *  be a logged-in account's own user (multi-account safe: picks
+     *  are keyed by that account's user id). */
+    public static Long localStatusDocumentId(TLRPC.User user) {
+        if (!moduleEnabled("local_premium") || !isLocalSelf(user)) {
+            return null;
+        }
+        Context context = ApplicationLoader.applicationContext;
+        if (context == null || !LocalPremiumModule.emojiStatusEnabled(context)) {
+            return null;
+        }
+        long documentId = LocalPremiumModule.statusDocumentId(context, user.id);
+        return documentId != 0 ? documentId : null;
+    }
+
+    /** Suffix appended to the self user's locally rendered name
+     *  (patch 0003: UserObject.getUserName) — the base emoji of the
+     *  picked custom-emoji document, or null for no suffix. */
+    public static String localNameEmojiSuffix(TLRPC.User user) {
+        if (!moduleEnabled("local_premium") || !isLocalSelf(user)) {
+            return null;
+        }
+        Context context = ApplicationLoader.applicationContext;
+        if (context == null || !LocalPremiumModule.nameEmojiEnabled(context)) {
+            return null;
+        }
+        if (LocalPremiumModule.nameEmojiDocumentId(context, user.id) == 0) {
+            return null;
+        }
+        String alt = LocalPremiumModule.nameEmojiAlt(context, user.id);
+        return alt == null || alt.isEmpty() ? null : " " + alt;
+    }
+
+    /** Local name color for the self user (patch 0003:
+     *  UserObject.getColorId — drives sender-name colors app-wide). */
+    public static Integer localNameColorId(TLRPC.User user) {
+        return localPeerColorId(user, 0);
+    }
+
+    /** Local profile color for the self user (patch 0003:
+     *  UserObject.getProfileColorId — the profile header palette). */
+    public static Integer localProfileColorId(TLRPC.User user) {
+        return localPeerColorId(user, 1);
+    }
+
+    /** Color id for the self user's reply lines (patch 0003:
+     *  ReplyMessageLine): the local reply color when set, else the
+     *  upstream resolution (which itself honours the local name
+     *  color above). */
+    public static int replyColorId(TLRPC.User user) {
+        Integer local = localPeerColorId(user, 2);
+        return local != null ? local : UserObject.getColorId(user);
+    }
+
+    private static Integer localPeerColorId(TLRPC.User user, int which) {
+        if (!moduleEnabled("local_premium") || !isLocalSelf(user)) {
+            return null;
+        }
+        Context context = ApplicationLoader.applicationContext;
+        if (context == null || !LocalPremiumModule.peerColorsEnabled(context)) {
+            return null;
+        }
+        int colorId;
+        if (which == 0) {
+            colorId = LocalPremiumModule.nameColorId(context, user.id);
+        } else if (which == 1) {
+            colorId = LocalPremiumModule.profileColorId(context, user.id);
+        } else {
+            colorId = LocalPremiumModule.replyColorId(context, user.id);
+        }
+        return colorId != LocalPremiumModule.COLOR_UNSET ? colorId : null;
+    }
+
+    /** True when {@code user} is the own user of one of the logged-in
+     *  accounts on this device. Contacts never carry the server-set
+     *  self flag; the clientUserId scan keeps multi-account rendering
+     *  unambiguous. */
+    private static boolean isLocalSelf(TLRPC.User user) {
+        if (user == null || !user.self) {
+            return false;
+        }
+        for (int a = 0; a < UserConfig.MAX_ACCOUNT_COUNT; a++) {
+            UserConfig config = UserConfig.getInstance(a);
+            if (config != null && config.isClientActivated()
+                    && config.getClientUserId() == user.id) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public static boolean ghostMode() {

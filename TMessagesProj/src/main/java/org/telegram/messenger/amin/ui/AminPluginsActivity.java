@@ -26,7 +26,10 @@ import androidx.recyclerview.widget.RecyclerView;
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.MediaController;
+import org.telegram.messenger.MessageObject;
+import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.R;
+import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.amin.core.AutoSaverStore;
 import org.telegram.messenger.amin.core.BackupManager;
 import org.telegram.messenger.amin.core.DeletedStore;
@@ -40,11 +43,14 @@ import org.telegram.messenger.amin.dns.DnsProfile;
 import org.telegram.messenger.amin.dns.DnsProfiles;
 import org.telegram.messenger.amin.google.GoogleAuthManager;
 import org.telegram.messenger.amin.modules.GhostModeModule;
+import org.telegram.messenger.amin.modules.LocalPremiumModule;
 import org.telegram.messenger.amin.plugins.ModModule;
 import org.telegram.messenger.amin.plugins.PluginRegistry;
 import org.telegram.messenger.amin.plugins.js.BundledPlugins;
 import org.telegram.messenger.amin.plugins.js.JsPlugin;
 import org.telegram.messenger.amin.plugins.js.JsPluginManager;
+import org.telegram.tgnet.TLRPC;
+import org.telegram.tgnet.tl.TL_stars;
 import org.telegram.ui.ActionBar.ActionBar;
 import org.telegram.ui.ActionBar.AlertDialog;
 import org.telegram.ui.ActionBar.BaseFragment;
@@ -53,8 +59,10 @@ import org.telegram.ui.Cells.TextCell;
 import org.telegram.ui.Cells.TextInfoPrivacyCell;
 import org.telegram.ui.Components.BulletinFactory;
 import org.telegram.ui.Components.EditTextBoldCursor;
+import org.telegram.ui.Components.LayoutHelper;
 import org.telegram.ui.Components.RecyclerListView;
 import org.telegram.ui.Components.Switch;
+import org.telegram.ui.SelectAnimatedEmojiDialog;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -175,6 +183,9 @@ public class AminPluginsActivity extends BaseFragment {
     private HubAdapter adapter;
     private final List<Row> rows = new ArrayList<>();
     private String pluginQuery = "";
+    /** Last row view tapped — anchor for popup pickers (Local
+     *  Premium's emoji picker is an upstream popup window). */
+    private View lastRowView;
     private final Runnable swoListener = () -> AndroidUtilities.runOnUIThread(this::rebuild);
 
     @Override
@@ -524,6 +535,38 @@ public class AminPluginsActivity extends BaseFragment {
                 }
                 break;
             }
+            case "local_premium": {
+                // AyuGram-style local premium: sub-toggles that only
+                // narrow the master switch (Ghost Mode idiom) plus
+                // the per-account picks. Everything is local to this
+                // device — see LocalPremiumModule.
+                long selfId = UserConfig.getInstance(getCurrentAccount()).getClientUserId();
+                action("lp_flag", "Premium flag",
+                        LocalPremiumModule.premiumFlag(context) ? "On" : "Off");
+                action("lp_picker", "Premium emoji & sticker packs",
+                        LocalPremiumModule.pickerUnlock(context) ? "On" : "Off");
+                action("lp_status_toggle", "Emoji status",
+                        LocalPremiumModule.emojiStatusEnabled(context) ? "On" : "Off");
+                long statusDoc = LocalPremiumModule.statusDocumentId(context, selfId);
+                action("lp_status_pick", "Status emoji",
+                        statusDoc == 0 ? "None" : "Set");
+                action("lp_name_toggle", "Name emoji",
+                        LocalPremiumModule.nameEmojiEnabled(context) ? "On" : "Off");
+                long nameDoc = LocalPremiumModule.nameEmojiDocumentId(context, selfId);
+                String nameAlt = LocalPremiumModule.nameEmojiAlt(context, selfId);
+                action("lp_name_pick", "Name emoji — choose",
+                        nameDoc == 0 ? "None"
+                                : nameAlt == null || nameAlt.isEmpty() ? "Set" : nameAlt);
+                action("lp_colors_toggle", "My colors",
+                        LocalPremiumModule.peerColorsEnabled(context) ? "On" : "Off");
+                action("lp_name_color", "Name color",
+                        peerColorValueText(LocalPremiumModule.nameColorId(context, selfId)));
+                action("lp_profile_color", "Profile color",
+                        peerColorValueText(LocalPremiumModule.profileColorId(context, selfId)));
+                action("lp_reply_color", "Reply color",
+                        peerColorValueText(LocalPremiumModule.replyColorId(context, selfId)));
+                break;
+            }
             default:
                 break;
         }
@@ -614,6 +657,7 @@ public class AminPluginsActivity extends BaseFragment {
             return;
         }
         Row row = rows.get(position);
+        lastRowView = view;
         switch (row.kind) {
             case KIND_HEADER:
                 if (row.sectionId != null) {
@@ -772,6 +816,46 @@ public class AminPluginsActivity extends BaseFragment {
                 GhostModeModule.setSuppressOnlineStatus(context,
                         !GhostModeModule.suppressOnlineStatus(context));
                 rebuild();
+                break;
+            case "lp_flag":
+                LocalPremiumModule.setPremiumFlag(context,
+                        !LocalPremiumModule.premiumFlag(context));
+                rebuild();
+                break;
+            case "lp_picker":
+                LocalPremiumModule.setPickerUnlock(context,
+                        !LocalPremiumModule.pickerUnlock(context));
+                rebuild();
+                break;
+            case "lp_status_toggle":
+                LocalPremiumModule.setEmojiStatusEnabled(context,
+                        !LocalPremiumModule.emojiStatusEnabled(context));
+                rebuild();
+                break;
+            case "lp_status_pick":
+                pickLocalPremiumEmoji(true);
+                break;
+            case "lp_name_toggle":
+                LocalPremiumModule.setNameEmojiEnabled(context,
+                        !LocalPremiumModule.nameEmojiEnabled(context));
+                rebuild();
+                break;
+            case "lp_name_pick":
+                pickLocalPremiumEmoji(false);
+                break;
+            case "lp_colors_toggle":
+                LocalPremiumModule.setPeerColorsEnabled(context,
+                        !LocalPremiumModule.peerColorsEnabled(context));
+                rebuild();
+                break;
+            case "lp_name_color":
+                pickLocalPremiumColor(0);
+                break;
+            case "lp_profile_color":
+                pickLocalPremiumColor(1);
+                break;
+            case "lp_reply_color":
+                pickLocalPremiumColor(2);
                 break;
             case "view_deleted":
                 presentFragment(new AminStoreListActivity("Deleted messages",
@@ -974,6 +1058,151 @@ public class AminPluginsActivity extends BaseFragment {
             }
         }
         return "Default";
+    }
+
+    // ------------------------------------------------------------------
+    // Local Premium pickers (all state is this-device-only — see
+    // LocalPremiumModule)
+    // ------------------------------------------------------------------
+
+    /** The classic names of the seven default peer colors (ids 0–6,
+     *  in Theme.keys_avatar_nameInMessage order). */
+    private static final String[] PEER_COLOR_NAMES = {
+            "Red", "Orange", "Violet", "Green", "Cyan", "Blue", "Pink"
+    };
+
+    private long localPremiumSelfId() {
+        return UserConfig.getInstance(getCurrentAccount()).getClientUserId();
+    }
+
+    private static String peerColorName(int colorId) {
+        if (colorId >= 0 && colorId < PEER_COLOR_NAMES.length) {
+            return PEER_COLOR_NAMES[colorId];
+        }
+        return "Color " + colorId;
+    }
+
+    private String peerColorValueText(int colorId) {
+        return colorId == LocalPremiumModule.COLOR_UNSET
+                ? "Default" : peerColorName(colorId);
+    }
+
+    /** Upstream's custom-emoji picker — the same popup window the
+     *  Peer Color / Channel Color pages use — anchored to the tapped
+     *  hub row. Picking the empty slot clears the stored document. */
+    private void pickLocalPremiumEmoji(boolean forStatus) {
+        Context context = getContext();
+        View anchor = lastRowView;
+        if (context == null || anchor == null || getParentActivity() == null) {
+            return;
+        }
+        final long selfId = localPremiumSelfId();
+        final long current = forStatus
+                ? LocalPremiumModule.statusDocumentId(context, selfId)
+                : LocalPremiumModule.nameEmojiDocumentId(context, selfId);
+        final SelectAnimatedEmojiDialog.SelectAnimatedEmojiDialogWindow[] popup =
+                new SelectAnimatedEmojiDialog.SelectAnimatedEmojiDialogWindow[1];
+        int[] location = new int[2];
+        anchor.getLocationInWindow(location);
+        boolean anchorLow = location[1] > AndroidUtilities.displaySize.y / 2;
+        int type = anchorLow
+                ? SelectAnimatedEmojiDialog.TYPE_EMOJI_STATUS_TOP
+                : SelectAnimatedEmojiDialog.TYPE_EMOJI_STATUS;
+        final int popupHeight = (int) Math.min(AndroidUtilities.dp(330),
+                AndroidUtilities.displaySize.y * .75f);
+        SelectAnimatedEmojiDialog layout = new SelectAnimatedEmojiDialog(this, context, true,
+                null, type, true, getResourceProvider(), anchorLow ? 24 : 16,
+                getThemedColor(Theme.key_windowBackgroundWhiteBlackText)) {
+            @Override
+            protected void onEmojiSelected(View emojiView, Long documentId,
+                    TLRPC.Document document, TL_stars.TL_starGiftUnique gift, Integer until) {
+                long chosen = documentId == null ? 0 : documentId;
+                if (forStatus) {
+                    LocalPremiumModule.setStatusDocumentId(context, selfId, chosen);
+                } else {
+                    String alt = chosen == 0 || document == null ? ""
+                            : MessageObject.findAnimatedEmojiEmoticon(document, "");
+                    LocalPremiumModule.setNameEmoji(context, selfId, chosen, alt);
+                }
+                bulletin(R.raw.contact_check,
+                        chosen == 0 ? "Cleared" : "Saved — this device only");
+                rebuild();
+                if (popup[0] != null) {
+                    popup[0].dismiss();
+                }
+            }
+        };
+        layout.setSelected(current == 0 ? null : current);
+        popup[0] = new SelectAnimatedEmojiDialog.SelectAnimatedEmojiDialogWindow(layout,
+                LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT);
+        int yoff = anchorLow ? -(anchor.getHeight() + popupHeight) : 0;
+        popup[0].showAsDropDown(anchor, 0, yoff, Gravity.TOP | Gravity.RIGHT);
+        popup[0].dimBehind();
+    }
+
+    /** Color picker over upstream's own peer-color palettes
+     *  (MessagesController.peerColors / profilePeerColors — the same
+     *  lists PeerColorActivity renders). which: 0 = name, 1 =
+     *  profile, 2 = reply. */
+    private void pickLocalPremiumColor(int which) {
+        Context context = getContext();
+        if (context == null || getParentActivity() == null) {
+            return;
+        }
+        MessagesController controller = MessagesController.getInstance(getCurrentAccount());
+        MessagesController.PeerColors palette = which == 1
+                ? controller.profilePeerColors : controller.peerColors;
+        if (palette == null || palette.colors.isEmpty()) {
+            AlertDialog.Builder notice = new AlertDialog.Builder(getParentActivity());
+            notice.setTitle("Colors");
+            notice.setMessage("The color list is still loading — connect once and try again.");
+            notice.setPositiveButton("OK", null);
+            showDialog(notice.create());
+            return;
+        }
+        final long selfId = localPremiumSelfId();
+        final int current = which == 0
+                ? LocalPremiumModule.nameColorId(context, selfId)
+                : which == 1 ? LocalPremiumModule.profileColorId(context, selfId)
+                : LocalPremiumModule.replyColorId(context, selfId);
+        List<CharSequence> items = new ArrayList<>();
+        List<Integer> ids = new ArrayList<>();
+        items.add("Default" + (current == LocalPremiumModule.COLOR_UNSET ? "  ✓" : ""));
+        ids.add(LocalPremiumModule.COLOR_UNSET);
+        for (MessagesController.PeerColor peerColor : palette.colors) {
+            if (peerColor.hidden) {
+                continue;
+            }
+            int swatch = peerColor.isDefaultName && peerColor.id >= 0
+                    && peerColor.id < Theme.keys_avatar_nameInMessage.length
+                    ? Theme.getColor(Theme.keys_avatar_nameInMessage[peerColor.id])
+                    : peerColor.getColor1();
+            SpannableString label = new SpannableString("●  " + peerColorName(peerColor.id)
+                    + (current == peerColor.id ? "  ✓" : ""));
+            label.setSpan(new ForegroundColorSpan(swatch), 0, 1,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            items.add(label);
+            ids.add(peerColor.id);
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle(which == 0 ? "Name color" : which == 1 ? "Profile color" : "Reply color");
+        builder.setItems(items.toArray(new CharSequence[0]), (dialog, index) -> {
+            if (index < 0 || index >= ids.size()) {
+                return;
+            }
+            int chosen = ids.get(index);
+            if (which == 0) {
+                LocalPremiumModule.setNameColorId(context, selfId, chosen);
+            } else if (which == 1) {
+                LocalPremiumModule.setProfileColorId(context, selfId, chosen);
+            } else {
+                LocalPremiumModule.setReplyColorId(context, selfId, chosen);
+            }
+            bulletin(R.raw.contact_check, "Saved — this device only");
+            rebuild();
+        });
+        builder.setNegativeButton("Cancel", null);
+        showDialog(builder.create());
     }
 
     private void swoComposeText(Context context, long peer, String name) {
