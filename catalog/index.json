@@ -1,6 +1,6 @@
 {
   "catalogVersion": 1,
-  "updatedAt": "2026-10-22",
+  "updatedAt": "2026-10-24",
   "plugins": [
     {
       "id": "shout",
@@ -253,6 +253,49 @@
       "sha256": "550517c3d6548c8cfd8384b252dafb5686815819d6b852f414b545b9ef5e1a25",
       "size": 10393,
       "updatedAt": "2026-10-22"
+    },
+    {
+      "id": "theme-manager",
+      "name": "Theme Changer",
+      "version": "4.2",
+      "author": "Amin",
+      "description": "Real-button theme manager: the interactive UI (theme grid, prev/next/random, favorite, close) is rendered by our Telegram bot @awminai with native inline buttons; the built-in themes are delivered by the bot as real Android .attheme files (the old addtheme slugs were other platforms' formats and got refused). This plugin syncs your theme list to the bot and keeps the fast local tricks (1-tap cycle, quick numbers, settings picker) on-device.",
+      "category": "Appearance",
+      "capabilities": [
+        "observe",
+        "commands",
+        "send",
+        "settings",
+        "menu",
+        "file",
+        "act"
+      ],
+      "minPlatform": 2,
+      "depends": [],
+      "url": "https://raw.githubusercontent.com/TheLimoo/AminGram/main/TMessagesProj/src/main/assets/amingram_plugins/theme-manager.js",
+      "sha256": "7e88b098bdcea6c822f8d5514c750c0645c809092b1ae4d1a729f9b3ce869217",
+      "size": 29024,
+      "updatedAt": "2026-10-24"
+    },
+    {
+      "id": "fun-tools",
+      "name": "Fun Tools",
+      "version": "1.1",
+      "author": "Vesper",
+      "description": "Little chat toys: /roll a dice, /flip a coin, /pick or /choose from a list, /8ball answers a question. Menu button posts a dice roll in the chat.",
+      "category": "Fun",
+      "capabilities": [
+        "commands",
+        "send",
+        "menu",
+        "settings"
+      ],
+      "minPlatform": 2,
+      "depends": [],
+      "url": "https://raw.githubusercontent.com/TheLimoo/AminGram/main/TMessagesProj/src/main/assets/amingram_plugins/fun-tools.js",
+      "sha256": "f1f87e71e8adf715e9739c67d11b777f2f28c7b50d5de59a1e8e0d3811740fc1",
+      "size": 5490,
+      "updatedAt": "2026-10-24"
     }
   ]
 }
