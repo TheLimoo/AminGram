@@ -61,6 +61,7 @@ public class AminDnsTunnelActivity extends BaseFragment implements AminDnsContro
         String action;
         boolean checked;
         boolean red;
+        boolean accent;
         DnsProfile profile;
     }
 
@@ -145,7 +146,13 @@ public class AminDnsTunnelActivity extends BaseFragment implements AminDnsContro
         boolean on = state == AminDnsController.State.CONNECTED || state == AminDnsController.State.STARTING;
 
         header("Status");
-        info(statusText(context, state, active));
+        info(statusHeadline(state, active));
+        Row primary = setting(primaryActionTitle(state), primaryActionValue(state, active), "toggle");
+        primary.accent = true;
+        String details = statusDetails(state, active);
+        if (!details.isEmpty()) {
+            info(details);
+        }
         check("Use DNS Tunnel", on, "toggle");
         setting("Engine", engineLabel(engine), "engine");
         if (DnsProfile.ENGINE_SLIPSTREAM.equals(engine) && !AminDnsController.isSlipstreamAvailable(context)) {
@@ -154,7 +161,8 @@ public class AminDnsTunnelActivity extends BaseFragment implements AminDnsContro
         }
         shadow();
 
-        header("Profiles");
+        header("Profile");
+        setting("Active profile", active != null ? active.name : "None", "switch_profile");
         addProfileRows(context, DnsProfile.ENGINE_SOAR, "Soar");
         addProfileRows(context, DnsProfile.ENGINE_SLIPSTREAM, "Slipstream");
         setting("Add Soar profile", "", "add_soar");
@@ -163,7 +171,7 @@ public class AminDnsTunnelActivity extends BaseFragment implements AminDnsContro
         shadow();
 
         if (active != null) {
-            header("Active profile — " + active.name);
+            header("Settings");
             if (active.isSoar()) {
                 setting("Zone", active.zone, "edit_zone");
                 setting("Server key", active.serverKey.isEmpty() ? "Not set" : "Set", "edit_key");
@@ -206,25 +214,56 @@ public class AminDnsTunnelActivity extends BaseFragment implements AminDnsContro
         }
     }
 
-    private String statusText(Context context, AminDnsController.State state, DnsProfile active) {
-        StringBuilder sb = new StringBuilder();
+    /** One-line status in words, at the very top of the page. */
+    private String statusHeadline(AminDnsController.State state, DnsProfile active) {
         switch (state) {
             case CONNECTED:
-                sb.append("Connected");
-                break;
+                return active != null
+                        ? "Connected — " + shortEngineLabel(active.engine) + " via " + active.name
+                        : "Connected";
             case STARTING:
-                sb.append("Connecting…");
-                break;
+                return "Connecting…";
             case ERROR:
-                sb.append("Error: ").append(controller.error());
-                break;
+                return "Error: " + controller.error();
             case OFF:
             default:
-                sb.append("Off");
-                break;
+                return "Off";
         }
+    }
+
+    private static String shortEngineLabel(String engine) {
+        return DnsProfile.ENGINE_SLIPSTREAM.equals(engine) ? "Slipstream" : "Soar";
+    }
+
+    /** The prominent primary action row: always Connect or Disconnect. */
+    private String primaryActionTitle(AminDnsController.State state) {
+        switch (state) {
+            case CONNECTED:
+                return "Disconnect";
+            case STARTING:
+                return "Cancel connection";
+            case ERROR:
+            case OFF:
+            default:
+                return "Connect";
+        }
+    }
+
+    private String primaryActionValue(AminDnsController.State state, DnsProfile active) {
+        if (active == null) {
+            return "";
+        }
+        if (state == AminDnsController.State.CONNECTED || state == AminDnsController.State.STARTING) {
+            return active.name;
+        }
+        return shortEngineLabel(active.engine) + " · " + active.name;
+    }
+
+    /** Detail lines under the headline (engine / profile / live session facts). */
+    private String statusDetails(AminDnsController.State state, DnsProfile active) {
+        StringBuilder sb = new StringBuilder();
         if (active != null) {
-            sb.append("\nEngine: ").append(engineLabel(active.engine));
+            sb.append("Engine: ").append(engineLabel(active.engine));
             sb.append("\nProfile: ").append(active.name).append(" (").append(active.host()).append(")");
         }
         if (state == AminDnsController.State.CONNECTED) {
@@ -338,6 +377,23 @@ public class AminDnsTunnelActivity extends BaseFragment implements AminDnsContro
             case "engine":
                 chooseEngine(context);
                 break;
+            case "switch_profile": {
+                List<DnsProfile> list = DnsProfiles.profiles(context, DnsProfiles.engine(context));
+                if (list.isEmpty()) {
+                    break;
+                }
+                String[] labels = new String[list.size()];
+                int current = 0;
+                for (int i = 0; i < list.size(); i++) {
+                    labels[i] = list.get(i).name;
+                    if (active != null && list.get(i).id.equals(active.id)) {
+                        current = i;
+                    }
+                }
+                showChooser("Active profile", labels, current,
+                        which -> activateProfile(context, list.get(which)));
+                break;
+            }
             case "profile":
                 activateProfile(context, row.profile);
                 break;
@@ -898,7 +954,9 @@ public class AminDnsTunnelActivity extends BaseFragment implements AminDnsContro
                 case KIND_SETTING: {
                     TextSettingsCell cell = (TextSettingsCell) holder.itemView;
                     cell.setTextColor(Theme.getColor(row.red
-                            ? Theme.key_text_RedRegular : Theme.key_windowBackgroundWhiteBlackText));
+                            ? Theme.key_text_RedRegular
+                            : row.accent ? Theme.key_windowBackgroundWhiteBlueText
+                            : Theme.key_windowBackgroundWhiteBlackText));
                     if (row.value == null || row.value.isEmpty()) {
                         cell.setText(row.title, divider);
                     } else {
