@@ -32,6 +32,9 @@ public class AminBundledLibraryActivity extends BaseFragment {
     private final List<BundledPlugins.Bundled> items = new ArrayList<>();
     private RecyclerListView listView;
     private LibraryAdapter adapter;
+    /** True while an async install is in flight (P1-7) — taps are
+     *  ignored until the plugin thread reports back. */
+    private boolean installing;
 
     private void reload(Context context) {
         items.clear();
@@ -69,19 +72,27 @@ public class AminBundledLibraryActivity extends BaseFragment {
             if (position < 0 || position >= items.size()) {
                 return;
             }
-            BundledPlugins.Bundled bundled = items.get(position);
-            String error = BundledPlugins.install(context, bundled);
-            if (error == null) {
-                BulletinFactory.of(this).createSimpleBulletin(
-                        R.raw.contact_check, bundled.name + " installed").show();
-                reload(context);
-            } else {
-                AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
-                builder.setTitle("Plugin not installed");
-                builder.setMessage(error);
-                builder.setPositiveButton("OK", null);
-                showDialog(builder.create());
+            if (installing) {
+                return;
             }
+            BundledPlugins.Bundled bundled = items.get(position);
+            // Off the UI thread (audit P1-7): the validated install
+            // probe-evaluates the plugin's top level in Rhino.
+            installing = true;
+            BundledPlugins.installAsync(context, bundled, error -> {
+                installing = false;
+                if (error == null) {
+                    BulletinFactory.of(this).createSimpleBulletin(
+                            R.raw.contact_check, bundled.name + " installed").show();
+                    reload(context);
+                } else {
+                    AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+                    builder.setTitle("Plugin not installed");
+                    builder.setMessage(error);
+                    builder.setPositiveButton("OK", null);
+                    showDialog(builder.create());
+                }
+            });
         });
         layout.addView(listView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));

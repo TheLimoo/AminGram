@@ -442,4 +442,34 @@ public final class BundledPlugins {
             return "Could not read the bundled plugin: " + t.getMessage();
         }
     }
+
+    /** Async variant for UI callers (audit P1-7): the asset read
+     *  stays on the caller (a small text asset, exactly as in
+     *  {@link #install}), but the validated install's Rhino compile
+     *  + probe runs on the plugin thread via
+     *  JsPluginManager.installAsync; the result (null = success)
+     *  is delivered on the UI thread. */
+    public static void installAsync(Context context, Bundled bundled,
+                                    java.util.function.Consumer<String> done) {
+        final String source;
+        try {
+            source = assetSource(context, bundled);
+        } catch (Throwable t) {
+            final String error = "Could not read the bundled plugin: " + t.getMessage();
+            org.telegram.messenger.AndroidUtilities.runOnUIThread(() -> {
+                if (done != null) {
+                    done.accept(error);
+                }
+            });
+            return;
+        }
+        JsPluginManager.installAsync(context, source, "bundled", error -> {
+            if (error == null) {
+                onInstalled(context, bundled.id);
+            }
+            if (done != null) {
+                done.accept(error);
+            }
+        });
+    }
 }

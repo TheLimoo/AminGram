@@ -89,6 +89,11 @@ public class PluginReviewActivity extends BaseFragment {
     private final List<String> rowTexts = new ArrayList<>();
     private int installRow = -1;
     private int cancelRow = -1;
+    /** True while an async install is in flight (P1-7): the
+     *  install row shows "Installing…" and further taps are
+     *  ignored until the plugin thread reports back. */
+    private boolean installing;
+    private RecyclerListView listView;
 
     public PluginReviewActivity() {
         super();
@@ -129,7 +134,7 @@ public class PluginReviewActivity extends BaseFragment {
 
         FrameLayout layout = new FrameLayout(context);
         layout.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray));
-        RecyclerListView listView = new RecyclerListView(context);
+        listView = new RecyclerListView(context);
         listView.setLayoutManager(new LinearLayoutManager(
                 context, LinearLayoutManager.VERTICAL, false));
         listView.setAdapter(new ReviewAdapter());
@@ -283,21 +288,34 @@ public class PluginReviewActivity extends BaseFragment {
 
     private void onRowClick(Context context, int position) {
         if (position == installRow) {
-            String error = JsPluginManager.installWithSource(context, code, sourceTag);
-            if (error == null) {
-                BulletinFactory.of(PluginReviewActivity.this)
-                        .createSimpleBulletin(R.raw.contact_check,
-                                (preview.update ? "Updated: " : "Installed: ") + preview.name)
-                        .show();
-                finishReview(true, null);
-            } else {
-                AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
-                builder.setTitle("Plugin not installed");
-                builder.setMessage(error);
-                builder.setPositiveButton("OK", null);
-                showDialog(builder.create());
-                finishReview(false, error);
+            if (installing) {
+                return;
             }
+            // The validated install (compile + probe of untrusted
+            // JS) runs on the plugin thread, never here on the UI
+            // thread (audit P1-7).
+            installing = true;
+            rowTexts.set(installRow, "Installing…");
+            if (listView != null && listView.getAdapter() != null) {
+                listView.getAdapter().notifyItemChanged(installRow);
+            }
+            JsPluginManager.installAsync(context, code, sourceTag, error -> {
+                installing = false;
+                if (error == null) {
+                    BulletinFactory.of(PluginReviewActivity.this)
+                            .createSimpleBulletin(R.raw.contact_check,
+                                    (preview.update ? "Updated: " : "Installed: ") + preview.name)
+                            .show();
+                    finishReview(true, null);
+                } else {
+                    AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+                    builder.setTitle("Plugin not installed");
+                    builder.setMessage(error);
+                    builder.setPositiveButton("OK", null);
+                    showDialog(builder.create());
+                    finishReview(false, error);
+                }
+            });
         } else if (position == cancelRow) {
             finishReview(false, "skipped");
         }

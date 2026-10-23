@@ -91,10 +91,13 @@ public final class JsPluginManager {
     private static final List<JsPlugin> cache = new ArrayList<>();
     private static boolean cacheLoaded;
 
-    /** Runtimes live only on the dedicated plugin thread (and are
-     *  dropped via runnables posted to it), keeping Rhino
-     *  single-threaded. */
-    private static final Map<String, Runtime> runtimes = new HashMap<>();
+    /** Runtimes are created/dropped on the dedicated plugin thread,
+     *  but runtimeState() reads the map from the UI thread — a plain
+     *  HashMap raced there (audit P1-8). The synchronized map makes
+     *  every single operation safe; ensureRuntime additionally
+     *  guards its get-then-put so check-and-create stays atomic. */
+    private static final Map<String, Runtime> runtimes =
+            Collections.synchronizedMap(new HashMap<>());
     private static final Set<String> broken = Collections.synchronizedSet(new HashSet<>());
 
     /** The single Rhino context factory (A8): installs the
@@ -121,7 +124,11 @@ public final class JsPluginManager {
     private static final Map<String, String> pendingSettingKeys =
             Collections.synchronizedMap(new HashMap<>());
 
-    private static volatile int dispatchAccount;
+    /** Account the current plugin execution belongs to. -1 until
+     *  the first dispatch (audit P1-9): the old default of 0 made
+     *  pre-dispatch bridge lookups silently target account slot 0,
+     *  which is a valid account and may not be the selected one. */
+    private static volatile int dispatchAccount = -1;
 
     private static final ClassShutter CLASS_SHUTTER = new ClassShutter() {
         @Override
@@ -184,8 +191,13 @@ public final class JsPluginManager {
     private JsPluginManager() {
     }
 
+    /** The account bridge calls resolve against: the dispatching
+     *  account once any dispatch has run, the user's selected
+     *  account before that — never a raw -1 and never a hardcoded
+     *  slot 0 (audit P1-9). */
     public static int dispatchAccount() {
-        return dispatchAccount;
+        int account = dispatchAccount;
+        return account >= 0 ? account : UserConfig.selectedAccount;
     }
 
     public static String storagePrefsName(String pluginId) {
@@ -672,6 +684,40 @@ public final class JsPluginManager {
         }
     }
 
+    /** Async install for UI callers (audit P1-7): the manifest
+     *  check + Rhino compile + probe evaluation run installInternal's
+     *  whole top level, and the only bound on a hostile plugin is
+     *  the 5 s hook budget — on the UI thread that is a multi-second
+     *  freeze on the very screen where the user decides whether to
+     *  trust the plugin. This variant runs the identical validated
+     *  path on the plugin thread and delivers the result (null =
+     *  success, else the same user-readable error installWithSource
+     *  returns) on the UI thread. */
+    public static void installAsync(final Context context, final String source,
+                                    final String sourceTag,
+                                    final java.util.function.Consumer<String> done) {
+        final Context appContext = context != null
+                ? context.getApplicationContext() : null;
+        postToPluginThread(() -> {
+            String error;
+            try {
+                error = installWithSource(appContext != null ? appContext : context,
+                        source, sourceTag);
+            } catch (Throwable t) {
+                error = "Plugin install failed: " + t.getClass().getSimpleName();
+            }
+            if (done != null) {
+                final String result = error;
+                org.telegram.messenger.AndroidUtilities.runOnUIThread(() -> {
+                    try {
+                        done.accept(result);
+                    } catch (Throwable ignored) {
+                    }
+                });
+            }
+        });
+    }
+
     /** Semver check (§2.1): X.Y or X.Y.Z, all-numeric parts. */
     public static boolean isSemver(String version) {
         if (version == null) {
@@ -1101,9 +1147,10 @@ public final class JsPluginManager {
         if (broken.contains(pluginId)) {
             return "broken";
         }
-        synchronized (JsPluginManager.class) {
-            return runtimes.containsKey(pluginId) ? "loaded" : "not loaded";
-        }
+        // runtimes is a synchronized map (P1-8): containsKey is
+        // atomic on its own — the class-monitor wrapper this read
+        // used to take was a lock the plugin thread never holds.
+        return runtimes.containsKey(pluginId) ? "loaded" : "not loaded";
     }
 
     public static boolean isRuntimeLoaded(String pluginId) {
@@ -1515,6 +1562,19 @@ public final class JsPluginManager {
      *  A deleted plugin's pending callbacks are dropped. */
     public static void invokePluginCallback(final String pluginId, final Object fnObject,
                                             final Object value) {
+        invokePluginCallback(pluginId, fnObject, value, -1);
+    }
+
+    /** Account-carrying variant (audit P1-9): {@code account} is
+     *  the account captured when the async bridge call was MADE
+     *  (on the plugin thread, where dispatchAccount was that
+     *  call's account). The posted runnable adopts it before the
+     *  callback runs, so the callback's own bridge calls resolve
+     *  against the account the operation belongs to — not
+     *  whichever account most recently dispatched a message.
+     *  -1 = unknown: resolve to the selected account at delivery. */
+    public static void invokePluginCallback(final String pluginId, final Object fnObject,
+                                            final Object value, final int account) {
         if (!(fnObject instanceof Function)) {
             return;
         }
@@ -1527,6 +1587,7 @@ public final class JsPluginManager {
             if (suspended.contains(pluginId)) {
                 return;
             }
+            dispatchAccount = account >= 0 ? account : UserConfig.selectedAccount;
             org.mozilla.javascript.Context cx = null;
             try {
                 cx = enterContext();
@@ -1571,6 +1632,14 @@ public final class JsPluginManager {
      */
     public static void invokePluginCallbackWithArg(final String pluginId, final Object fnObject,
                                                    final CallbackArgFactory factory) {
+        invokePluginCallbackWithArg(pluginId, fnObject, factory, -1);
+    }
+
+    /** Account-carrying variant (audit P1-9) — same contract as
+     *  {@link #invokePluginCallback(String, Object, Object, int)}. */
+    public static void invokePluginCallbackWithArg(final String pluginId, final Object fnObject,
+                                                   final CallbackArgFactory factory,
+                                                   final int account) {
         if (!(fnObject instanceof Function)) {
             return;
         }
@@ -1583,6 +1652,7 @@ public final class JsPluginManager {
             if (suspended.contains(pluginId)) {
                 return;
             }
+            dispatchAccount = account >= 0 ? account : UserConfig.selectedAccount;
             org.mozilla.javascript.Context cx = null;
             try {
                 cx = enterContext();
@@ -1723,9 +1793,17 @@ public final class JsPluginManager {
      *  run (missing/broken source — logged once per session). */
     private static Runtime ensureRuntime(org.mozilla.javascript.Context cx,
                                          Context context, JsPlugin plugin) {
-        Runtime runtime = runtimes.get(plugin.id);
-        if (runtime != null) {
-            return runtime;
+        // Check-and-create under the map's own monitor (P1-8): the
+        // build itself (source eval + onLoad) stays OUTSIDE the
+        // lock so a UI-thread runtimeState() read never waits on a
+        // plugin load; the put is re-checked inside the lock, so a
+        // runtime built concurrently can never be overwritten or
+        // have onLoad run twice.
+        synchronized (runtimes) {
+            Runtime existing = runtimes.get(plugin.id);
+            if (existing != null) {
+                return existing;
+            }
         }
         if (broken.contains(plugin.id)) {
             return null;
@@ -1736,7 +1814,7 @@ public final class JsPluginManager {
             broken.add(plugin.id);
             return null;
         }
-        runtime = new Runtime();
+        Runtime runtime = new Runtime();
         runtime.plugin = plugin;
         try {
             runtime.scope = newScope(cx, plugin.id, plugin.capabilities);
@@ -1751,7 +1829,13 @@ public final class JsPluginManager {
             broken.add(plugin.id);
             return null;
         }
-        runtimes.put(plugin.id, runtime);
+        synchronized (runtimes) {
+            Runtime raced = runtimes.get(plugin.id);
+            if (raced != null) {
+                return raced;
+            }
+            runtimes.put(plugin.id, runtime);
+        }
         if (!runtime.onLoadCalled) {
             runtime.onLoadCalled = true;
             callHook(cx, runtime, "onLoad", new Object[0]);

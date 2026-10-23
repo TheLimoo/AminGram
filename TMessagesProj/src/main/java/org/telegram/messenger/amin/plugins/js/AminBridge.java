@@ -1285,11 +1285,16 @@ public class AminBridge {
         final Function fn = (Function) callback;
         final String urlString = urlObject == null ? null : String.valueOf(urlObject);
         final Map<String, String> headers = snapshotHeaders(headersObject);
+        // Captured HERE, on the plugin thread, where dispatchAccount
+        // is this call's account (P1-9) — the completion lands on a
+        // pool thread where the field may already name another
+        // account's dispatch.
+        final int account = JsPluginManager.dispatchAccount();
         HttpExecutorHolder.INSTANCE.execute(() -> {
             HttpResult result = urlString == null
                     ? new HttpResult(0, null)
                     : httpGetCore(pluginId, urlString, headers);
-            deliverHttpResult(fn, result);
+            deliverHttpResult(fn, result, account);
         });
     }
 
@@ -1307,11 +1312,13 @@ public class AminBridge {
         final String urlString = urlObject == null ? null : String.valueOf(urlObject);
         final String bodyString = bodyObject == null ? null : String.valueOf(bodyObject);
         final Map<String, String> headers = snapshotHeaders(headersObject);
+        // Registration-time account capture (P1-9), as in httpGetAsync.
+        final int account = JsPluginManager.dispatchAccount();
         HttpExecutorHolder.INSTANCE.execute(() -> {
             HttpResult result = urlString == null
                     ? new HttpResult(0, null)
                     : httpPostCore(pluginId, urlString, bodyString, headers);
-            deliverHttpResult(fn, result);
+            deliverHttpResult(fn, result, account);
         });
     }
 
@@ -1319,14 +1326,14 @@ public class AminBridge {
      *  fresh {status: Number, body: String|null} object, built
      *  inside the callback's own Rhino context/scope by the
      *  manager's factory mechanism. */
-    private void deliverHttpResult(final Function fn, final HttpResult result) {
+    private void deliverHttpResult(final Function fn, final HttpResult result, final int account) {
         try {
             JsPluginManager.invokePluginCallbackWithArg(pluginId, fn, (cx, scope) -> {
                 Scriptable value = cx.newObject(scope);
                 value.put("status", value, Double.valueOf(result.status));
                 value.put("body", value, result.body);
                 return value;
-            });
+            }, account);
         } catch (Throwable t) {
             JsPluginManager.appendLog(pluginId, "[error] amin http async delivery failed: " + t);
         }
@@ -1806,22 +1813,26 @@ public class AminBridge {
                 return;
             }
             final Function fn = (Function) callback;
+            // Registration-time account capture (P1-9): the token
+            // callback lands on an auth thread, long after this
+            // dispatch may have been superseded by another account's.
+            final int account = JsPluginManager.dispatchAccount();
             try {
                 Context context = ApplicationLoader.applicationContext;
                 if (context == null) {
-                    JsPluginManager.invokePluginCallback(pluginId, fn, null);
+                    JsPluginManager.invokePluginCallback(pluginId, fn, null, account);
                     return;
                 }
                 GoogleAuthManager.getValidToken(context, (token, error) -> {
                     if (token == null && error != null) {
                         JsPluginManager.appendLog(pluginId, "[google] " + error);
                     }
-                    JsPluginManager.invokePluginCallback(pluginId, fn, token);
+                    JsPluginManager.invokePluginCallback(pluginId, fn, token, account);
                 });
             } catch (Throwable t) {
                 JsPluginManager.appendLog(pluginId,
                         "[error] amin.google.getAccessToken failed: " + t);
-                JsPluginManager.invokePluginCallback(pluginId, fn, null);
+                JsPluginManager.invokePluginCallback(pluginId, fn, null, account);
             }
         }
 
@@ -1835,10 +1846,12 @@ public class AminBridge {
                 return;
             }
             final Function fn = (Function) callback;
+            // Registration-time account capture (P1-9), as above.
+            final int account = JsPluginManager.dispatchAccount();
             try {
                 Context context = ApplicationLoader.applicationContext;
                 if (context == null) {
-                    JsPluginManager.invokePluginCallback(pluginId, fn, Boolean.FALSE);
+                    JsPluginManager.invokePluginCallback(pluginId, fn, Boolean.FALSE, account);
                     return;
                 }
                 GoogleAuthManager.startInteractiveAuth(context, (success, error) -> {
@@ -1846,12 +1859,12 @@ public class AminBridge {
                         JsPluginManager.appendLog(pluginId, "[google] sign-in: " + error);
                     }
                     JsPluginManager.invokePluginCallback(pluginId, fn,
-                            success ? Boolean.TRUE : Boolean.FALSE);
+                            success ? Boolean.TRUE : Boolean.FALSE, account);
                 });
             } catch (Throwable t) {
                 JsPluginManager.appendLog(pluginId,
                         "[error] amin.google.signIn failed: " + t);
-                JsPluginManager.invokePluginCallback(pluginId, fn, Boolean.FALSE);
+                JsPluginManager.invokePluginCallback(pluginId, fn, Boolean.FALSE, account);
             }
         }
 
@@ -1918,12 +1931,16 @@ public class AminBridge {
             }
         }
         android.content.Context context = ApplicationLoader.applicationContext;
+        // Registration-time account capture (P1-9): the picker's
+        // result returns through an activity callback, on no
+        // particular dispatch.
+        final int account = JsPluginManager.dispatchAccount();
         if (context == null) {
-            JsPluginManager.invokePluginCallback(pluginId, fn, null);
+            JsPluginManager.invokePluginCallback(pluginId, fn, null, account);
             return;
         }
         PluginFilePickerActivity.request(context, accept, copy, pluginId,
-                path -> JsPluginManager.invokePluginCallback(pluginId, fn, path));
+                path -> JsPluginManager.invokePluginCallback(pluginId, fn, path, account));
     }
 
     /** The `amin.db` surface (Phase B, §1.4): per-plugin KV in
