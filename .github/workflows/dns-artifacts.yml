@@ -74,11 +74,11 @@ jobs:
           export PATH="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
           curl -fsSL "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VER/openssl-$OPENSSL_VER.tar.gz" | tar xz -C "$GITHUB_WORKSPACE"
           build_one() {
-            target="$1"; abi="$2"; oarch="$3"; clang="$4"
+            target="$1"; abi="$2"; oarch="$3"; clang="$4"; xflags="$5"
             ssl="$GITHUB_WORKSPACE/openssl-$OPENSSL_VER/out-$abi"
             if [ ! -f "$ssl/lib/libssl.a" ]; then
               ( cd "$GITHUB_WORKSPACE/openssl-$OPENSSL_VER" && \
-                ./Configure "$oarch" -D__ANDROID_API__=23 --prefix="$ssl" no-shared no-tests && \
+                ./Configure "$oarch" -D__ANDROID_API__=23 --prefix="$ssl" no-shared no-tests $xflags && \
                 make -j"$(nproc)" build_libs && make install_dev )
             fi
             # slipstream-ffi compiles its C sources by invoking $CC
@@ -92,7 +92,15 @@ jobs:
             # incompatible with the target link in runs 3-4, so build
             # with plain cargo: per-ABI NDK clang wrappers under the
             # gradle-plugin variable names + an explicit cargo linker.
-            WRAP="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/${clang}23-clang"
+            # The ffi build invokes $CC with no flags of its own, so
+            # per-ABI flags (armv7 float ABI!) ride in a wrapper.
+            REALCC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/${clang}23-clang"
+            WRAP="$GITHUB_WORKSPACE/ccwrap-$abi"
+            printf '#!/bin/sh\nexec %s %s "$@"\n' "$REALCC" "$xflags" > "$WRAP"
+            chmod +x "$WRAP"
+            WRAPXX="$GITHUB_WORKSPACE/cxxwrap-$abi"
+            printf '#!/bin/sh\nexec %s++ %s "$@"\n' "$REALCC" "$xflags" > "$WRAPXX"
+            chmod +x "$WRAPXX"
             LINKER_ENV="CARGO_TARGET_$(echo "$target" | tr 'a-z-' 'A-Z_')_LINKER"
             OPENSSL_DIR="$ssl" OPENSSL_STATIC=1 \
             OPENSSL_ROOT_DIR="$ssl" OPENSSL_INCLUDE_DIR="$ssl/include" \
@@ -100,19 +108,19 @@ jobs:
             ANDROID_ABI="$abi" ANDROID_PLATFORM=23 \
             RUST_ANDROID_GRADLE_CC="$WRAP" \
             RUST_ANDROID_GRADLE_AR="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" \
-            CC="$WRAP" CXX="${WRAP}++" \
+            CC="$WRAP" CXX="$WRAPXX" \
             AR="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" \
-            env "$LINKER_ENV=$WRAP" \
+            env "$LINKER_ENV=$REALCC" \
               cargo build --release --target "$target" -p slipstream-client --features picoquic-minimal-build
             find "target/$target/release/build" -name "slipstream_server_cc.c.o" -exec file {} \; | head -2 || true
             mkdir -p "$GITHUB_WORKSPACE/out/jniLibs/$abi"
             cp "target/$target/release/slipstream-client" \
                "$GITHUB_WORKSPACE/out/jniLibs/$abi/libslipstream_client.so"
           }
-          build_one aarch64-linux-android arm64-v8a android-arm64 aarch64-linux-android
-          build_one armv7-linux-androideabi armeabi-v7a android-arm armv7a-linux-androideabi
-          build_one i686-linux-android x86 android-x86 i686-linux-android
-          build_one x86_64-linux-android x86_64 android-x86_64 x86_64-linux-android
+          build_one aarch64-linux-android arm64-v8a android-arm64 aarch64-linux-android ""
+          build_one armv7-linux-androideabi armeabi-v7a android-arm armv7a-linux-androideabi "-march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard"
+          build_one i686-linux-android x86 android-x86 i686-linux-android ""
+          build_one x86_64-linux-android x86_64 android-x86_64 x86_64-linux-android ""
 
       - name: Upload jniLibs artifact
         uses: actions/upload-artifact@v4
