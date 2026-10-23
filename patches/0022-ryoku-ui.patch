@@ -122,6 +122,14 @@ index b56ee0d..6862cb0 100644
          ShapeDrawable defaultDrawable = new ShapeDrawable(new RoundRectShape(new float[]{topRad, topRad, topRad, topRad, bottomRad, bottomRad, bottomRad, bottomRad}, null, null));
          defaultDrawable.getPaint().setColor(defaultColor);
          return defaultDrawable;
+@@ -7795,6 +7795,7 @@
+ 
+         dialogs_countTextPaint.setTextSize(dp(12));
+         dialogs_countTextPaint2.setTextSize(dp(13));
++        org.telegram.messenger.amin.ui.RyokuUi.applyToThemePaints();
+     }
+ 
+     public static void createDialogsResources(Context context) {
 @@ -7906,6 +7939,7 @@ public class Theme {
          dialogs_tagTextPaint.setTextSize(dp(10));
          dialogs_searchNamePaint.setTextSize(dp(16));
@@ -138,3 +146,16 @@ index b56ee0d..6862cb0 100644
      }
  
      public static void createChatResources(Context context, boolean fontsOnly) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
+@@ -193,6 +193,9 @@
+             return;
+         }
+         applicationInited = true;
++        // AminGram: validate/repair Ryoku's persisted theme + wallpaper state
++        // before Theme reads it; a bad override must never brick startup.
++        org.telegram.messenger.amin.ui.RyokuUi.healAtStartup();
+         // AminGram: if the process died while the DNS tunnel was on, restore the
+         // user's pre-tunnel proxy before any connection uses the dead local port.
+         org.telegram.messenger.amin.dns.AminDnsController.recoverIfStale(ApplicationLoader.applicationContext);
