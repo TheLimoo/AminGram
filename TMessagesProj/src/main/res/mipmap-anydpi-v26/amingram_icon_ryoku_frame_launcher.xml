@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AminGram custom icon "Ryoku Frame": adaptive icon (background + foreground + monochrome). -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/amingram_icon_ryoku_frame_background" />
+    <foreground android:drawable="@drawable/amingram_foreground_ryoku_frame" />
+    <monochrome android:drawable="@drawable/amingram_ryoku_frame_mono" />
+</adaptive-icon>

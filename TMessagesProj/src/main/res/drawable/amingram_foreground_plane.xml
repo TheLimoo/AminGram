@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AminGram custom icon "Plane": hairline bone paper-plane outline with the lower facet filled burnt orange, on the near-black background. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#CE5E32"
+        android:pathData="M44.82,61.02L58.86,91.26L91.26,18.9Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#CDC4BA"
+        android:strokeWidth="3.19"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M91.26,18.9L18.9,46.98L44.82,61.02L58.86,91.26ZM44.82,61.02L91.26,18.9" />
+</vector>

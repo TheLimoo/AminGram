@@ -1014,23 +1014,77 @@ public class AminPluginsActivity extends BaseFragment {
     }
 
     private void pickAppIcon() {
+        Context context = getContext();
         org.telegram.ui.LauncherIconController.LauncherIcon[] icons =
                 org.telegram.ui.LauncherIconController.LauncherIcon.values();
-        CharSequence[] items = new CharSequence[icons.length];
-        for (int i = 0; i < icons.length; i++) {
-            String title = org.telegram.messenger.LocaleController.getString(icons[i].title);
-            boolean active = org.telegram.ui.LauncherIconController.isEnabled(icons[i]);
-            items[i] = active ? title + "  ✓" : title;
+
+        LinearLayout list = new LinearLayout(context);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setPadding(0, AndroidUtilities.dp(8), 0, AndroidUtilities.dp(8));
+
+        AlertDialog[] dialogHolder = new AlertDialog[1];
+        for (org.telegram.ui.LauncherIconController.LauncherIcon icon : icons) {
+            boolean active = org.telegram.ui.LauncherIconController.isEnabled(icon);
+
+            LinearLayout row = new LinearLayout(context);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(AndroidUtilities.dp(20), AndroidUtilities.dp(4),
+                    AndroidUtilities.dp(20), AndroidUtilities.dp(4));
+            row.setBackground(Theme.createSimpleSelectorRoundRectDrawable(
+                    AndroidUtilities.dp(10), android.graphics.Color.TRANSPARENT,
+                    Theme.getColor(Theme.key_listSelector), android.graphics.Color.BLACK));
+
+            // preview composed exactly like upstream's own icon picker
+            // (AppIconsSelectorCell): background drawable as the image,
+            // foreground drawable drawn over it, circular clip
+            org.telegram.ui.Cells.AppIconsSelectorCell.AdaptiveIconImageView preview =
+                    new org.telegram.ui.Cells.AppIconsSelectorCell.AdaptiveIconImageView(context);
+            preview.setPadding(AndroidUtilities.dp(8), AndroidUtilities.dp(8),
+                    AndroidUtilities.dp(8), AndroidUtilities.dp(8));
+            preview.setImageResource(icon.background);
+            preview.setForeground(icon.foreground);
+            row.addView(preview, new LinearLayout.LayoutParams(
+                    AndroidUtilities.dp(52), AndroidUtilities.dp(52)));
+
+            TextView name = new TextView(context);
+            name.setText(org.telegram.messenger.LocaleController.getString(icon.title));
+            name.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, 16);
+            name.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText));
+            LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            nameParams.leftMargin = AndroidUtilities.dp(14);
+            row.addView(name, nameParams);
+
+            if (active) {
+                TextView check = new TextView(context);
+                check.setText("✓");
+                check.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, 18);
+                check.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteValueText));
+                row.addView(check);
+            }
+
+            row.setOnClickListener(v -> {
+                org.telegram.ui.LauncherIconController.setIcon(icon);
+                bulletin(R.raw.contact_check, "App icon changed");
+                rebuild();
+                if (dialogHolder[0] != null) {
+                    dialogHolder[0].dismiss();
+                }
+            });
+            list.addView(row, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         }
+
+        android.widget.ScrollView scroll = new android.widget.ScrollView(context);
+        scroll.addView(list);
+
         AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
         builder.setTitle("App Icon");
-        builder.setItems(items, (dialog, which) -> {
-            org.telegram.ui.LauncherIconController.setIcon(icons[which]);
-            bulletin(R.raw.contact_check, "App icon changed");
-            rebuild();
-        });
+        builder.setView(scroll);
         builder.setNegativeButton("Cancel", null);
-        showDialog(builder.create());
+        dialogHolder[0] = builder.create();
+        showDialog(dialogHolder[0]);
     }
 
     private void pickAppFont() {
