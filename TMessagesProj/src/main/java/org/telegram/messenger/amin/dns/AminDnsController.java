@@ -18,6 +18,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -48,6 +49,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *    readiness gate): a dead tunnel degrades to an ERROR state
  *    with the user's proxy untouched, never to a blackholed
  *    Telegram.
+ *  - The module owns exactly ONE entry in Telegram's proxy
+ *    list: recorded by identity in the amingram_dns prefs,
+ *    updated in place on start (the local port changes), and
+ *    REMOVED on stop, when the snapshot selection is restored.
+ *    A startup sweep collects module entries left behind by
+ *    older builds or crashes. The user's own entries are never
+ *    added, edited, or removed.
  *  - All engine + proxy work is serialized on one worker thread.
  *
  * The engines themselves run under AminDnsTunnelService (a
@@ -67,6 +75,20 @@ public final class AminDnsController {
     private static final String KEY_TUNNEL_PORT = "tunnel_port";
     private static final String KEY_SNAP_HAS = "snap_has_proxy";
     private static final String KEY_SNAP_ENABLED = "snap_proxy_enabled";
+
+    // Identity of THE one proxy-list entry this module owns,
+    // recorded in the amingram_dns prefs at creation (address +
+    // port + username as created). The module reuses/updates that
+    // entry on start and removes it on stop; the identity is also
+    // how the startup sweep recognises a stale module entry after
+    // a crash. Never used to match any other entry.
+    private static final String KEY_MOD_IP = "mod_entry_ip";
+    private static final String KEY_MOD_PORT = "mod_entry_port";
+    private static final String KEY_MOD_USER = "mod_entry_user";
+
+    /** Slipstream's fixed local listen range (SlipstreamBridge). */
+    private static final int SLIPSTREAM_PORT_MIN = 18080;
+    private static final int SLIPSTREAM_PORT_MAX = 18089;
 
     /** Liveness probe target: a Telegram DC on 443 (plan §4.4). */
     private static final String PROBE_HOST = "91.108.56.130";
@@ -593,7 +615,26 @@ public final class AminDnsController {
                         .setSecret("")
                         .setType(ProxySettings.Type.SOCKS5)
                         .build();
-                SharedConfig.ProxyInfo info = SharedConfig.addProxy(new SharedConfig.ProxyInfo(settings));
+                SharedConfig.loadProxyList();
+                // Exactly ONE proxy-list entry belongs to this
+                // module: the one whose identity was recorded when
+                // it was created. Soar's local port is ephemeral,
+                // so building a fresh settings object and calling
+                // addProxy() on every start (the old behavior)
+                // appended a brand-new entry on every connect and
+                // the user's proxy list grew without bound. Update
+                // the recorded entry's settings in place instead;
+                // create the entry only when there is none.
+                SharedConfig.ProxyInfo info = findModuleEntry();
+                if (info != null) {
+                    if (!Objects.equals(info.settings, settings)) {
+                        info.settings = settings;
+                        SharedConfig.saveProxyList();
+                    }
+                } else {
+                    info = SharedConfig.addProxy(new SharedConfig.ProxyInfo(settings));
+                }
+                recordModuleIdentity(settings);
                 SharedConfig.currentProxy = info;
                 SharedPreferences.Editor e = MessagesController.getGlobalMainSettings().edit();
                 settings.toSharedPreferences(e);
@@ -614,44 +655,68 @@ public final class AminDnsController {
     }
 
     /**
-     * Restores the snapshotted proxy exactly. Safe to call when no
-     * snapshot exists (no-op beyond bookkeeping) and never overrides
-     * a different proxy the user picked manually in the meantime.
+     * Restores the snapshotted proxy exactly and REMOVES the
+     * module's own entry from the proxy list, so after any number
+     * of on/off cycles the list holds exactly the user's own
+     * entries, unchanged. Safe to call when no snapshot exists and
+     * never overrides a different proxy the user picked manually
+     * in the meantime (that pick stays selected; our entry is
+     * still removed, since it is not the selected one then).
      */
     void restoreProxy() {
         runOnUiSync(() -> {
             try {
+                SharedConfig.loadProxyList();
                 SharedPreferences snap = snapPrefs();
                 boolean has = snap.getBoolean(KEY_SNAP_HAS, false);
                 boolean enabled = snap.getBoolean(KEY_SNAP_ENABLED, false);
+                ProxySettings prev = has ? ProxySettings.fromSharedPreferences(snap) : null;
+                SharedConfig.ProxyInfo moduleEntry = findModuleEntry();
                 SharedConfig.ProxyInfo current = SharedConfig.currentProxy;
-                boolean currentIsTunnel = isTunnelProxy(current);
-                boolean userPickedOther = current != null && !currentIsTunnel;
-                if (has && !userPickedOther) {
-                    ProxySettings prev = ProxySettings.fromSharedPreferences(snap);
-                    SharedConfig.ProxyInfo prevInfo = findOrCreate(prev);
-                    SharedConfig.currentProxy = prevInfo;
-                    SharedPreferences.Editor e = MessagesController.getGlobalMainSettings().edit();
-                    prev.toSharedPreferences(e);
-                    e.putBoolean("proxy_enabled", enabled);
-                    e.commit();
-                    ConnectionsManager.setProxySettings(enabled && prev.isValid(), prev);
-                } else if (!has && currentIsTunnel) {
-                    // No previous proxy: switch proxying off the way
-                    // ProxyListActivity's toggle-off branch does.
-                    ConnectionsManager.setProxySettings(false, current.settings);
-                    SharedConfig.currentProxy = null;
-                    SharedPreferences.Editor e = MessagesController.getGlobalMainSettings().edit();
-                    e.putString("proxy_ip", "");
-                    e.putString("proxy_pass", "");
-                    e.putString("proxy_user", "");
-                    e.putString("proxy_secret", "");
-                    e.putInt("proxy_type", 0);
-                    e.putInt("proxy_port", 1080);
-                    e.putBoolean("proxy_enabled", false);
-                    e.commit();
+                boolean currentIsModule = moduleEntry != null && current == moduleEntry;
+                boolean userPickedOther = current != null && !currentIsModule;
+                boolean changed = false;
+                if (!userPickedOther) {
+                    // Decide and apply the post-restore selection
+                    // FIRST, while the module entry is still in the
+                    // list: re-select the snapshot entry by its
+                    // recorded identity (address + port + username),
+                    // re-adding it only if it vanished from the
+                    // list while the tunnel was up. If there is no
+                    // snapshot, select no proxy at all.
+                    boolean restoredToSnapshot = false;
+                    if (prev != null) {
+                        SharedConfig.ProxyInfo target = findByIdentity(prev);
+                        if (target != null && target != moduleEntry) {
+                            selectProxy(target, prev, enabled);
+                            restoredToSnapshot = true;
+                        } else if (target == null) {
+                            target = SharedConfig.addProxy(new SharedConfig.ProxyInfo(prev));
+                            selectProxy(target, prev, enabled);
+                            restoredToSnapshot = true;
+                        }
+                        // target == moduleEntry: the snapshot IS
+                        // the tunnel entry (recovery was skipped
+                        // while a stale entry was current) — never
+                        // select the entry being removed; fall
+                        // through to no-proxy.
+                    }
+                    if (!restoredToSnapshot) {
+                        selectNoProxy(moduleEntry != null ? moduleEntry.settings
+                                : current != null ? current.settings : null);
+                    }
+                    changed = true;
                 }
-                if (has || currentIsTunnel) {
+                if (moduleEntry != null) {
+                    // The selection has been moved off the module
+                    // entry above (or it was never selected): safe
+                    // to take ours out of the list.
+                    SharedConfig.proxyList.remove(moduleEntry);
+                    SharedConfig.saveProxyList();
+                    clearModuleIdentity();
+                    changed = true;
+                }
+                if (changed) {
                     NotificationCenter.getGlobalInstance()
                             .postNotificationName(NotificationCenter.proxySettingsChanged);
                 }
@@ -666,24 +731,169 @@ public final class AminDnsController {
         });
     }
 
-    private SharedConfig.ProxyInfo findOrCreate(ProxySettings settings) {
+    /** Selects an existing list entry and re-applies its flat prefs + connection state. */
+    private void selectProxy(SharedConfig.ProxyInfo info, ProxySettings settings, boolean enabled) {
+        SharedConfig.currentProxy = info;
+        SharedPreferences.Editor e = MessagesController.getGlobalMainSettings().edit();
+        settings.toSharedPreferences(e);
+        e.putBoolean("proxy_enabled", enabled);
+        e.commit();
+        ConnectionsManager.setProxySettings(enabled && settings.isValid(), settings);
+    }
+
+    /**
+     * Selects "no proxy": clears the flat proxy prefs the way
+     * ProxyListActivity's toggle-off branch and
+     * SharedConfig.deleteProxy do.
+     */
+    private void selectNoProxy(ProxySettings previousSettings) {
+        SharedConfig.currentProxy = null;
+        SharedPreferences.Editor e = MessagesController.getGlobalMainSettings().edit();
+        e.putString("proxy_ip", "");
+        e.putString("proxy_pass", "");
+        e.putString("proxy_user", "");
+        e.putString("proxy_secret", "");
+        e.putInt("proxy_type", 0);
+        e.putInt("proxy_port", 1080);
+        e.putBoolean("proxy_enabled", false);
+        e.commit();
+        ConnectionsManager.setProxySettings(false, previousSettings);
+    }
+
+    /** Finds a list entry by recorded identity: address + port + username. */
+    private SharedConfig.ProxyInfo findByIdentity(ProxySettings settings) {
+        if (settings == null) {
+            return null;
+        }
         for (SharedConfig.ProxyInfo info : SharedConfig.proxyList) {
-            if (Objects.equals(info.settings, settings)) {
+            ProxySettings s = info.settings;
+            if (s != null
+                    && Objects.equals(s.getAddress(), settings.getAddress())
+                    && s.getPort() == settings.getPort()
+                    && Objects.equals(s.getUser(), settings.getUser())) {
                 return info;
             }
         }
-        return SharedConfig.addProxy(new SharedConfig.ProxyInfo(settings));
+        return null;
     }
 
-    private boolean isTunnelProxy(SharedConfig.ProxyInfo info) {
-        if (info == null || info.settings == null) {
-            return false;
+    // ---------------------------------------------------------------
+    // The module's own proxy-list entry (identity-tracked)
+    // ---------------------------------------------------------------
+
+    /**
+     * Finds THE proxy-list entry this module owns, by the identity
+     * recorded at creation. Fallback for entries created before
+     * identity recording existed (the append-per-connect build):
+     * the last tunnel port it wrote, on 127.0.0.1 SOCKS5.
+     */
+    private SharedConfig.ProxyInfo findModuleEntry() {
+        SharedPreferences prefs = DnsProfiles.prefs(appContext);
+        String ip = prefs.getString(KEY_MOD_IP, null);
+        int port = prefs.getInt(KEY_MOD_PORT, -1);
+        String user = prefs.getString(KEY_MOD_USER, "");
+        if (ip != null && port > 0) {
+            for (SharedConfig.ProxyInfo info : SharedConfig.proxyList) {
+                ProxySettings s = info.settings;
+                if (s != null && ip.equals(s.getAddress()) && s.getPort() == port
+                        && Objects.equals(user, s.getUser())) {
+                    return info;
+                }
+            }
         }
-        int tunnelPort = DnsProfiles.prefs(appContext).getInt(KEY_TUNNEL_PORT, -1);
-        return info.settings.getType() == ProxySettings.Type.SOCKS5
-                && "127.0.0.1".equals(info.settings.getAddress())
-                && tunnelPort > 0
-                && info.settings.getPort() == tunnelPort;
+        int legacyPort = prefs.getInt(KEY_TUNNEL_PORT, -1);
+        if (legacyPort > 0) {
+            for (SharedConfig.ProxyInfo info : SharedConfig.proxyList) {
+                ProxySettings s = info.settings;
+                if (s != null && s.getType() == ProxySettings.Type.SOCKS5
+                        && "127.0.0.1".equals(s.getAddress()) && s.getPort() == legacyPort) {
+                    return info;
+                }
+            }
+        }
+        return null;
+    }
+
+    private void recordModuleIdentity(ProxySettings settings) {
+        DnsProfiles.prefs(appContext).edit()
+                .putString(KEY_MOD_IP, settings.getAddress())
+                .putInt(KEY_MOD_PORT, settings.getPort())
+                .putString(KEY_MOD_USER, settings.getUser() == null ? "" : settings.getUser())
+                .commit();
+    }
+
+    private void clearModuleIdentity() {
+        DnsProfiles.prefs(appContext).edit()
+                .remove(KEY_MOD_IP)
+                .remove(KEY_MOD_PORT)
+                .remove(KEY_MOD_USER)
+                .commit();
+    }
+
+    /**
+     * Housekeeping sweep, run from the same once-per-process
+     * recovery point as the stale-tunnel restore, and only while
+     * the tunnel is off in this process. Collects entries the
+     * module owns but no live tunnel is using:
+     *   - the entry matching the recorded module identity (covers
+     *     anything the fixed build ever created, e.g. after a
+     *     crash that skipped the restore), and the legacy
+     *     last-tunnel-port fallback inside findModuleEntry();
+     *   - any 127.0.0.1 SOCKS5 entry on Slipstream's fixed local
+     *     port range (18080–18089) — that range exists only for
+     *     this module's tunnels.
+     * NOTHING else is touched: a user's own local proxies on any
+     * other port are theirs. If a collected entry is the current
+     * selection, the selection is first moved to "no proxy" —
+     * the selected entry is never deleted out from under
+     * Telegram.
+     */
+    private void sweepStaleModuleProxies() {
+        if (state != State.OFF) {
+            return;
+        }
+        runOnUiSync(() -> {
+            try {
+                if (state != State.OFF
+                        || DnsProfiles.prefs(appContext).getBoolean(KEY_TUNNEL_ON, false)) {
+                    return;
+                }
+                SharedConfig.loadProxyList();
+                List<SharedConfig.ProxyInfo> victims = new ArrayList<>();
+                SharedConfig.ProxyInfo recorded = findModuleEntry();
+                if (recorded != null) {
+                    victims.add(recorded);
+                }
+                for (SharedConfig.ProxyInfo info : SharedConfig.proxyList) {
+                    if (info.settings == null || victims.contains(info)) {
+                        continue;
+                    }
+                    ProxySettings s = info.settings;
+                    if (s.getType() == ProxySettings.Type.SOCKS5
+                            && "127.0.0.1".equals(s.getAddress())
+                            && s.getPort() >= SLIPSTREAM_PORT_MIN
+                            && s.getPort() <= SLIPSTREAM_PORT_MAX) {
+                        victims.add(info);
+                    }
+                }
+                if (victims.isEmpty()) {
+                    return;
+                }
+                for (SharedConfig.ProxyInfo victim : victims) {
+                    if (SharedConfig.currentProxy == victim) {
+                        selectNoProxy(victim.settings);
+                    }
+                    SharedConfig.proxyList.remove(victim);
+                }
+                SharedConfig.saveProxyList();
+                if (recorded != null && victims.contains(recorded)) {
+                    clearModuleIdentity();
+                }
+                NotificationCenter.getGlobalInstance()
+                        .postNotificationName(NotificationCenter.proxySettingsChanged);
+            } catch (Throwable ignored) {
+            }
+        });
     }
 
     private void clearSnapshot() {
@@ -714,15 +924,20 @@ public final class AminDnsController {
         }
         try {
             SharedPreferences prefs = DnsProfiles.prefs(context);
-            if (!prefs.getBoolean(KEY_TUNNEL_ON, false)) {
-                return;
-            }
             AminDnsController controller = get(context);
-            // This process just started: nothing is applied yet from
-            // our side, but Telegram reloaded the persisted tunnel
-            // entry as its current proxy. Restore from the snapshot.
-            controller.restoreProxy();
-            controller.state = State.OFF;
+            if (prefs.getBoolean(KEY_TUNNEL_ON, false)) {
+                // This process just started: nothing is applied yet
+                // from our side, but Telegram reloaded the persisted
+                // tunnel entry as its current proxy. Restore from
+                // the snapshot — which also removes the module's
+                // entry from the proxy list.
+                controller.restoreProxy();
+                controller.state = State.OFF;
+            }
+            // Housekeeping: collect any module-owned entries left
+            // behind (older builds appended one per connect) while
+            // the tunnel is off in this process.
+            controller.sweepStaleModuleProxies();
         } catch (Throwable ignored) {
         }
     }

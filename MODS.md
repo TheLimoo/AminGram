@@ -1785,3 +1785,75 @@ disclosed in the UI copy).
   ProxyListActivity/ApplicationLoader from the replay tree);
   Rhino suite 676/676 (no JS touched); overlay == repo
   byte-identical for everything touched.
+
+## Ryoku UI (2026-10-23, on top of 9ec5fff) — dossier identity layer, app-wide
+
+Amin approved the ryoku.dev-inspired redesign ("Tier 1+2", then
+expanded app-wide the same evening): bone-on-black dossier look —
+Fraunces display serif, Space Grotesk sans, Space Mono mono, accent
+#CE5E32, sharp corners, hairline dividers, numbered mono section
+labels, dithered marble art. Hard boundary kept: NO re-layout or
+flow changes anywhere; identity-level hooks only. Design record:
+~/workspace/amingram/RYOKU-DESIGN.md; asset credits:
+~/workspace/amingram/design/ryoku/CREDITS.md.
+
+- NEW overlay class `amin.ui.RyokuUi`: the master toggle
+  (prefs `amingram_ryoku`, default ON, first hub open bootstraps
+  the ON side effects) + lazy cached font loaders + the typeface
+  remap table + `applyToThemePaints()` (29 Theme paints re-stamped:
+  bold-family via `AndroidUtilities.bold()`, body paints → Grotesk,
+  time/code paints → Space Mono; stock restore on OFF) +
+  `clampRadius()`/`dialogRadiusDp()` geometry gates + theme
+  find/apply/restore (records `prev_theme_key`) + bubble radius
+  3-while-ON (records `prev_bubble_radius`, SharedConfig.saveConfig)
+  + `applyWallpaper()` (standard OverrideWallpaperInfo path on the
+  Ryoku theme, intensity 0.5).
+- Patch 0022-ryoku-ui (series 19 -> 20; build.yml apply list
+  updated — NOTE: overlay has no .github; the GitHub workflow is
+  repo-only): AndroidUtilities (getTypeface top → RyokuUi
+  .typefaceFor; bold() top → RyokuUi.boldTypeface; gram.ttf left
+  stock), Theme (built-in "Ryoku" ThemeInfo registration after
+  Night — assetName ryoku.attheme, sortIndex 6, Day-shaped accent
+  options in the Ryoku palette; clampRadius in all five
+  createRoundRect*Drawable factories; applyToThemePaints() line at
+  the end of createDialogsResources + createCommonChatResources),
+  AlertDialog (background radius 18/20dp → dialogRadiusDp).
+  Upstream files touched total grows by these three (Theme +
+  AndroidUtilities were previously untouched by the series).
+- NEW assets: `assets/ryoku.attheme` (generated from night.attheme's
+  key set, ~186 palette overrides incl. avatar/name colors re-toned
+  to a muted warm monochrome family), `assets/fonts/ryoku/` (7 OFL
+  static cuts, ~607 KB — Fraunces 600/700 instanced from the VF at
+  opsz 100, Space Grotesk 400/500/700 instanced, Space Mono
+  400/700), `assets/ryoku/wallpaper_{1,2,3}.webp` (1080x2400
+  Floyd-Steinberg-dithered marble: Marcus Aurelius CC0, Laocoon
+  CC0, Socrates PD — Wikimedia Commons; masters + sources in
+  ~/workspace/amingram/design/ryoku/).
+- Hub (AminPluginsActivity): NEW "System" section (06 // SYSTEM)
+  between Add Plugin and Developer — KIND_RYOKU CardHeaderView
+  master-toggle card + status info row + "Ryoku theme" action
+  (applies on tap regardless of toggle) + "Ryoku wallpapers"
+  action (AlertDialog setItems picker over the 3 bundled).
+  HubHeaderView gains the dossier masthead (力 mark, AMINGRAM in
+  Fraunces, mono SYSTEM DOSSIER label, 2x2 live stat grid:
+  Plugins / Active / DNS Tunnel / Theme) shown while ON; stock
+  shield header while OFF. SectionLabelView renders numbered mono
+  labels while ON; segmentDrawable goes 2dp + hairline stroke;
+  chip radii via chipRadius(); CardHeaderView + PluginCardView
+  names take Fraunces while ON. DNS page untouched (inherits via
+  HeaderCell/theme/fonts).
+- Known limits (in RYOKU-DESIGN.md): BottomSheet nine-patch
+  corners stay rounded (asset, no central drawable); raw
+  Typeface.DEFAULT call sites outside the hooks keep system sans;
+  already-laid-out messages keep metrics until reopen; light
+  themes untouched; input bar restyle is color-level only.
+- Verified locally: patch replay 20/20 vs a fresh git-archive
+  extraction of pinned f32ffee (0022 last in CI order); JDK 17
+  parse clean for RyokuUi, AminPluginsActivity and the three
+  patched upstream files (byte-equal to the replay tree);
+  repo == overlay byte-identical (TMessagesProj + patches);
+  Builder audit: only new Builder use is the hub wallpaper picker
+  (setTitle/setItems/setNegativeButton — mirrors the in-file
+  showPluginOverflow pattern). Full compile + on-device pass
+  (fonts on chat list/chat, stat grid, x3 toggle cycle restore)
+  remain CI/device-side.

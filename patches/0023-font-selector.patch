@@ -1,0 +1,53 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/AndroidUtilities.java b/TMessagesProj/src/main/java/org/telegram/messenger/AndroidUtilities.java
+index efa8e29..bb56013 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/AndroidUtilities.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/AndroidUtilities.java
+@@ -260,6 +260,10 @@ public class AndroidUtilities {
+     public static ThreadLocal<byte[]> bufferLocal = new ThreadLocal<>();
+ 
+     public static Typeface bold() {
++        Typeface aminBold = org.telegram.messenger.amin.ui.AminFonts.boldTypeface();
++        if (aminBold != null) {
++            return aminBold;
++        }
+         if (mediumTypeface == null) {
+             if (SharedConfig.useSystemBoldFont && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                 mediumTypeface = Typeface.create(null, 500, false);
+@@ -2390,6 +2394,10 @@ public class AndroidUtilities {
+     }
+ 
+     public static Typeface getTypeface(String assetPath) {
++        Typeface aminTypeface = org.telegram.messenger.amin.ui.AminFonts.typefaceFor(assetPath);
++        if (aminTypeface != null) {
++            return aminTypeface;
++        }
+         synchronized (typefaceCache) {
+             if (!typefaceCache.containsKey(assetPath)) {
+                 try {
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
+index 4c6fbba..40c1819 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
+@@ -81,6 +81,10 @@ public class ApplicationLoader extends Application {
+     @Override
+     protected void attachBaseContext(Context base) {
+         super.attachBaseContext(base);
++        // AminGram: scrub the removed Ryoku UI system's persisted theme /
++        // wallpaper state before Theme's static init can consume any of
++        // it. Raw prefs/files only; never throws.
++        org.telegram.messenger.amin.ui.AminCleanup.migrate(base);
+     }
+ 
+     public static ILocationServiceProvider getLocationServiceProvider() {
+@@ -293,6 +297,11 @@ public class ApplicationLoader extends Application {
+ 
+         super.onCreate();
+ 
++        // AminGram: load the font selector's latch once, here where the
++        // application context is guaranteed; the AndroidUtilities
++        // typeface hooks read only this latch afterwards.
++        org.telegram.messenger.amin.ui.AminFonts.initLatch();
++
+         // AndroidUtilities must be initialized before FileLog
+         final String helloWorld = AndroidUtilities.getHelloWorld();
+ 

@@ -533,6 +533,7 @@ public class AminPluginsActivity extends BaseFragment {
             action("backup_export", "Export AminGram backup", "JSON file");
             action("backup_import", "Import backup", null);
             action("app_icon", "App Icon", currentIconTitle());
+            action("app_font", "App font", AminFonts.familyTitle());
         }
     }
 
@@ -801,6 +802,9 @@ public class AminPluginsActivity extends BaseFragment {
             case "app_icon":
                 pickAppIcon();
                 break;
+            case "app_font":
+                pickAppFont();
+                break;
             case "manage_hidden_chats":
                 presentFragment(new AminHiddenChatsActivity());
                 break;
@@ -939,6 +943,23 @@ public class AminPluginsActivity extends BaseFragment {
         builder.setItems(items, (dialog, which) -> {
             org.telegram.ui.LauncherIconController.setIcon(icons[which]);
             bulletin(R.raw.contact_check, "App icon changed");
+            rebuild();
+        });
+        builder.setNegativeButton("Cancel", null);
+        showDialog(builder.create());
+    }
+
+    private void pickAppFont() {
+        CharSequence[] items = new CharSequence[AminFonts.FAMILY_TITLES.length];
+        for (int i = 0; i < items.length; i++) {
+            items[i] = AminFonts.family() == i
+                    ? AminFonts.FAMILY_TITLES[i] + "  \u2713" : AminFonts.FAMILY_TITLES[i];
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle("App font");
+        builder.setItems(items, (dialog, which) -> {
+            AminFonts.setFamily(getContext(), which);
+            bulletin(R.raw.contact_check, "Font changed");
             rebuild();
         });
         builder.setNegativeButton("Cancel", null);
