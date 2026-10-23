@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/amingram_icon_ryoku_background" />
+    <foreground android:drawable="@drawable/amingram_foreground_ryoku" />
+    <monochrome android:drawable="@drawable/amingram_ryoku_mono" />
+</adaptive-icon>
