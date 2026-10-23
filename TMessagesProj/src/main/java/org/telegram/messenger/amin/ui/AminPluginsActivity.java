@@ -4,7 +4,6 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.PorterDuff;
-import android.graphics.Typeface;
 import android.graphics.PorterDuffColorFilter;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -129,7 +128,6 @@ public class AminPluginsActivity extends BaseFragment {
     private static final int KIND_HUB_HEADER = 7;
     private static final int KIND_ENGINE = 8;
     private static final int KIND_PLUGIN_CARD = 9;
-    private static final int KIND_RYOKU = 10;
 
     // v1.3.2 card presentation: consecutive rows that belong together
     // (a module header + its subtitle/status + its action rows, a
@@ -204,7 +202,6 @@ public class AminPluginsActivity extends BaseFragment {
         layout.addView(listView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        RyokuUi.bootstrapIfNeeded(context);
         rebuild();
         fragmentView = layout;
         return layout;
@@ -266,26 +263,6 @@ public class AminPluginsActivity extends BaseFragment {
             action("dns_open", "DNS Tunnel profiles", dnsProfileName);
         }
         addPluginsSection(context);
-        // System section: the Ryoku UI identity layer — one master
-        // toggle card (fonts + theme + geometry, app-wide) plus the
-        // theme and wallpaper actions. The theme and the wallpapers
-        // stay available even while the toggle is off.
-        sectionHeader(context, "System", "system", 3);
-        if (!isSectionCollapsed(context, "system")) {
-            Row ryoku = new Row();
-            ryoku.kind = KIND_RYOKU;
-            rows.add(ryoku);
-            Row ryokuInfo = new Row();
-            ryokuInfo.kind = KIND_INFO;
-            ryokuInfo.title = "Fraunces · Space Grotesk · Space Mono — bone on black, "
-                    + "one orange accent, sharp corners. App-wide while on.";
-            boolean ryokuOn = RyokuUi.isEnabled(context);
-            ryokuInfo.statusText = ryokuOn ? "On" : "Off";
-            ryokuInfo.statusTone = ryokuOn ? TONE_ACTIVE : TONE_MUTED;
-            rows.add(ryokuInfo);
-            action("ryoku_theme", "Ryoku theme", RyokuUi.currentThemeName());
-            action("ryoku_wallpapers", "Ryoku wallpapers", "3 bundled");
-        }
         // Developer section (§3.5): the session Developer-mode
         // toggle. Off by default; turning it on unlocks the
         // Developer section on every plugin page (eval console,
@@ -381,7 +358,6 @@ public class AminPluginsActivity extends BaseFragment {
                         mode = "note".equals(row.action) ? 1 : 0;
                         break;
                     case KIND_MODULE:
-                    case KIND_RYOKU:
                         mode = 0;
                         break;
                     default: // KIND_HEADER, KIND_HUB_HEADER, KIND_FOOTER
@@ -557,6 +533,7 @@ public class AminPluginsActivity extends BaseFragment {
             action("backup_export", "Export AminGram backup", "JSON file");
             action("backup_import", "Import backup", null);
             action("app_icon", "App Icon", currentIconTitle());
+            action("app_font", "App font", AminFonts.familyTitle());
         }
     }
 
@@ -656,14 +633,6 @@ public class AminPluginsActivity extends BaseFragment {
                         !JsPluginManager.isEngineEnabled(context));
                 rebuild();
                 break;
-            case KIND_RYOKU: {
-                boolean now = !RyokuUi.isEnabled(context);
-                RyokuUi.setEnabled(context, now);
-                bulletin(R.raw.contact_check, now
-                        ? "Ryoku UI on" : "Ryoku UI off — stock look restored");
-                rebuild();
-                break;
-            }
             case KIND_PLUGIN_CARD:
                 presentFragment(new AminJsPluginActivity(row.plugin.id));
                 break;
@@ -833,6 +802,9 @@ public class AminPluginsActivity extends BaseFragment {
             case "app_icon":
                 pickAppIcon();
                 break;
+            case "app_font":
+                pickAppFont();
+                break;
             case "manage_hidden_chats":
                 presentFragment(new AminHiddenChatsActivity());
                 break;
@@ -845,17 +817,6 @@ public class AminPluginsActivity extends BaseFragment {
                 break;
             case "dns_open":
                 presentFragment(new AminDnsTunnelActivity());
-                break;
-            case "ryoku_theme":
-                if (RyokuUi.applyRyokuTheme(context)) {
-                    bulletin(R.raw.contact_check, "Ryoku theme applied");
-                } else {
-                    bulletin(R.raw.error, "Ryoku theme not found");
-                }
-                rebuild();
-                break;
-            case "ryoku_wallpapers":
-                showRyokuWallpapers(context);
                 break;
             case "search_plugins":
                 searchPlugins(context);
@@ -920,25 +881,6 @@ public class AminPluginsActivity extends BaseFragment {
         BulletinFactory.of(this).createSimpleBulletin(icon, text).show();
     }
 
-    /** Ryoku wallpaper picker: three bundled dithered-marble
-     *  wallpapers, applied through Telegram's standard per-theme
-     *  wallpaper override on the Ryoku theme. */
-    private void showRyokuWallpapers(Context context) {
-        if (getParentActivity() == null) {
-            return;
-        }
-        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
-        builder.setTitle("Ryoku wallpapers");
-        builder.setItems(RyokuUi.WALLPAPER_NAMES, (dialog, which) -> {
-            boolean ok = RyokuUi.applyWallpaper(context, which);
-            bulletin(ok ? R.raw.contact_check : R.raw.error,
-                    ok ? "Wallpaper applied" : "Could not apply wallpaper");
-            rebuild();
-        });
-        builder.setNegativeButton("Cancel", null);
-        showDialog(builder.create());
-    }
-
     private void showError(String error) {
         AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
         builder.setTitle("Plugin not installed");
@@ -1001,6 +943,23 @@ public class AminPluginsActivity extends BaseFragment {
         builder.setItems(items, (dialog, which) -> {
             org.telegram.ui.LauncherIconController.setIcon(icons[which]);
             bulletin(R.raw.contact_check, "App icon changed");
+            rebuild();
+        });
+        builder.setNegativeButton("Cancel", null);
+        showDialog(builder.create());
+    }
+
+    private void pickAppFont() {
+        CharSequence[] items = new CharSequence[AminFonts.FAMILY_TITLES.length];
+        for (int i = 0; i < items.length; i++) {
+            items[i] = AminFonts.family() == i
+                    ? AminFonts.FAMILY_TITLES[i] + "  \u2713" : AminFonts.FAMILY_TITLES[i];
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle("App font");
+        builder.setItems(items, (dialog, which) -> {
+            AminFonts.setFamily(getContext(), which);
+            bulletin(R.raw.contact_check, "Font changed");
             rebuild();
         });
         builder.setNegativeButton("Cancel", null);
@@ -1345,11 +1304,9 @@ public class AminPluginsActivity extends BaseFragment {
 
     /** Background for one card segment: white (or the accent-tinted
      *  fill for the add-plugin card), corners rounded only where the
-     *  segment touches the card's outer edge. Ryoku mode: sharp 2dp
-     *  corners + a 1px hairline stroke in the theme divider color. */
+     *  segment touches the card's outer edge. */
     private static GradientDrawable segmentDrawable(int seg, int fillColor) {
-        boolean ryoku = RyokuUi.isEnabled(null);
-        float r = AndroidUtilities.dp(ryoku ? 2 : 22);
+        float r = AndroidUtilities.dp(22);
         float[] radii;
         switch (seg) {
             case SEG_ONLY:
@@ -1369,15 +1326,7 @@ public class AminPluginsActivity extends BaseFragment {
         drawable.setShape(GradientDrawable.RECTANGLE);
         drawable.setColor(fillColor);
         drawable.setCornerRadii(radii);
-        if (ryoku) {
-            drawable.setStroke(1, Theme.getColor(Theme.key_divider));
-        }
         return drawable;
-    }
-
-    /** Chip corner radius: sharp 2dp in Ryoku mode, stock otherwise. */
-    private static float chipRadius(float stockDp) {
-        return AndroidUtilities.dp(RyokuUi.isEnabled(null) ? 2 : stockDp);
     }
 
     private static int cardFill() {
@@ -1446,10 +1395,7 @@ public class AminPluginsActivity extends BaseFragment {
     /** Section label in the extera language (v1.3.3): theme ACCENT
      *  color (key_windowBackgroundWhiteBlueText — the same key as
      *  upstream's blue section headers), medium weight, natural
-     *  case; NOT the gray uppercase of the v1.3.2 hub. Ryoku mode:
-     *  numbered mono micro-label ("01 // PRIVACY") in the gray text
-     *  color, letter-spaced — the dossier treatment. Styling is
-     *  applied in setLabel so recycled holders restyle on toggle. */
+     *  case; NOT the gray uppercase of the v1.3.2 hub. */
     private static class SectionLabelView extends TextView {
         SectionLabelView(Context context) {
             super(context);
@@ -1461,62 +1407,7 @@ public class AminPluginsActivity extends BaseFragment {
         }
 
         void setLabel(String title) {
-            if (RyokuUi.isEnabled(getContext())) {
-                Typeface mono = RyokuUi.mono();
-                if (mono != null) {
-                    setTypeface(mono);
-                }
-                setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText));
-                setLetterSpacing(0.08f);
-                setText(dossierLabel(title));
-            } else {
-                setTypeface(AndroidUtilities.getTypeface("fonts/rmedium.ttf"));
-                setTextColor(accentColor());
-                setLetterSpacing(0);
-                setText(title == null ? "" : title);
-            }
-        }
-
-        /** "Privacy  ·  3  ▾" -> "01 // PRIVACY  ·  3  ▾". */
-        private static String dossierLabel(String title) {
-            if (title == null) {
-                return "";
-            }
-            String head = title;
-            String tail = "";
-            int split = title.indexOf("  ·  ");
-            if (split >= 0) {
-                head = title.substring(0, split);
-                tail = title.substring(split);
-            }
-            String mapped;
-            switch (head) {
-                case "Privacy":
-                    mapped = "01 // PRIVACY";
-                    break;
-                case "Media":
-                    mapped = "02 // MEDIA";
-                    break;
-                case "Tools":
-                    mapped = "03 // TOOLS";
-                    break;
-                case "Your Plugins":
-                    mapped = "04 // YOUR PLUGINS";
-                    break;
-                case "Add Plugin":
-                    mapped = "05 // ADD PLUGIN";
-                    break;
-                case "System":
-                    mapped = "06 // SYSTEM";
-                    break;
-                case "Developer":
-                    mapped = "07 // DEVELOPER";
-                    break;
-                default:
-                    mapped = head.toUpperCase(Locale.US);
-                    break;
-            }
-            return mapped + tail;
+            setText(title == null ? "" : title);
         }
     }
 
@@ -1577,14 +1468,11 @@ public class AminPluginsActivity extends BaseFragment {
 
         void bind(String title, int iconRes, boolean checked, int seg) {
             titleView.setText(title);
-            Typeface titleFace = RyokuUi.isEnabled(getContext()) ? RyokuUi.display() : null;
-            titleView.setTypeface(titleFace != null ? titleFace
-                    : AndroidUtilities.getTypeface("fonts/rmedium.ttf"));
             switchView.setChecked(checked, false);
             GradientDrawable chipBg = new GradientDrawable();
             chipBg.setShape(GradientDrawable.RECTANGLE);
             chipBg.setColor(chipFill());
-            chipBg.setCornerRadius(chipRadius(12));
+            chipBg.setCornerRadius(AndroidUtilities.dp(12));
             chip.setBackground(chipBg);
             if (iconRes != 0) {
                 glyph.setImageResource(iconRes);
@@ -1689,34 +1577,18 @@ public class AminPluginsActivity extends BaseFragment {
         }
     }
 
-    /** Hub header block. Stock mode (v1.3.3): the AminGram shield
-     *  (the launcher icon's own foreground vector on its navy), the
-     *  app name and the package version, centered. Ryoku mode: a
-     *  left-aligned dossier masthead — the 力 mark, "AMINGRAM" in
-     *  Fraunces, a mono SYSTEM DOSSIER label, and a 2x2 stat grid
-     *  in hairline-bordered cells with live values, refreshed on
-     *  every bind. Both layouts are built once; bind() flips
-     *  visibility so recycled holders follow the toggle. */
+    /** Hub header block (v1.3.3): the AminGram shield (the launcher
+     *  icon's own foreground vector on its navy), the app name and
+     *  the package version, centered at the very top of the hub. */
     private static class HubHeaderView extends LinearLayout {
-        private final LinearLayout stockBox;
         private final TextView versionView;
-        private final LinearLayout dossierBox;
-        private final TextView dossierVersion;
-        private final TextView statPlugins;
-        private final TextView statActive;
-        private final TextView statDns;
-        private final TextView statTheme;
 
         HubHeaderView(Context context) {
             super(context);
             setOrientation(VERTICAL);
+            setGravity(Gravity.CENTER_HORIZONTAL);
             setPadding(AndroidUtilities.dp(16), AndroidUtilities.dp(24),
                     AndroidUtilities.dp(16), AndroidUtilities.dp(2));
-
-            // ---- stock masthead ----------------------------------
-            stockBox = new LinearLayout(context);
-            stockBox.setOrientation(VERTICAL);
-            stockBox.setGravity(Gravity.CENTER_HORIZONTAL);
 
             FrameLayout badge = new FrameLayout(context);
             GradientDrawable badgeBg = new GradientDrawable();
@@ -1729,7 +1601,7 @@ public class AminPluginsActivity extends BaseFragment {
             shield.setScaleType(ImageView.ScaleType.FIT_CENTER);
             badge.addView(shield, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-            stockBox.addView(badge, new LinearLayout.LayoutParams(
+            addView(badge, new LinearLayout.LayoutParams(
                     AndroidUtilities.dp(72), AndroidUtilities.dp(72)));
 
             TextView nameView = new TextView(context);
@@ -1740,7 +1612,7 @@ public class AminPluginsActivity extends BaseFragment {
             LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             nameParams.topMargin = AndroidUtilities.dp(12);
-            stockBox.addView(nameView, nameParams);
+            addView(nameView, nameParams);
 
             versionView = new TextView(context);
             versionView.setTextSize(13.5f);
@@ -1748,180 +1620,20 @@ public class AminPluginsActivity extends BaseFragment {
             LinearLayout.LayoutParams versionParams = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             versionParams.topMargin = AndroidUtilities.dp(3);
-            stockBox.addView(versionView, versionParams);
-            addView(stockBox, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-            // ---- dossier masthead --------------------------------
-            dossierBox = new LinearLayout(context);
-            dossierBox.setOrientation(VERTICAL);
-            dossierBox.setPadding(AndroidUtilities.dp(12), AndroidUtilities.dp(2),
-                    AndroidUtilities.dp(12), 0);
-
-            LinearLayout markRow = new LinearLayout(context);
-            markRow.setOrientation(HORIZONTAL);
-            markRow.setGravity(Gravity.CENTER_VERTICAL);
-            TextView mark = new TextView(context);
-            mark.setText("力");
-            mark.setTextSize(38);
-            mark.setTextColor(accentColor());
-            markRow.addView(mark, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-            LinearLayout titles = new LinearLayout(context);
-            titles.setOrientation(VERTICAL);
-            LinearLayout.LayoutParams titlesParams = new LinearLayout.LayoutParams(
-                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-            titlesParams.leftMargin = AndroidUtilities.dp(14);
-            TextView appName = new TextView(context);
-            appName.setText("AMINGRAM");
-            appName.setTextSize(25);
-            Typeface displayFace = RyokuUi.display();
-            appName.setTypeface(displayFace != null ? displayFace
-                    : AndroidUtilities.getTypeface("fonts/rmedium.ttf"));
-            appName.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText));
-            appName.setLetterSpacing(0.03f);
-            titles.addView(appName, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-            TextView dossierLabel = new TextView(context);
-            dossierLabel.setText("SYSTEM DOSSIER — PLUGINS & MODULES");
-            dossierLabel.setTextSize(10.5f);
-            Typeface monoFace = RyokuUi.mono();
-            dossierLabel.setTypeface(monoFace != null ? monoFace : Typeface.MONOSPACE);
-            dossierLabel.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText));
-            dossierLabel.setLetterSpacing(0.10f);
-            LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            labelParams.topMargin = AndroidUtilities.dp(4);
-            titles.addView(dossierLabel, labelParams);
-            markRow.addView(titles, titlesParams);
-            dossierBox.addView(markRow, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-            LinearLayout gridRow1 = new LinearLayout(context);
-            gridRow1.setOrientation(HORIZONTAL);
-            LinearLayout.LayoutParams grid1Params = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            grid1Params.topMargin = AndroidUtilities.dp(16);
-            statPlugins = addStatCell(context, gridRow1, "PLUGINS", true);
-            statActive = addStatCell(context, gridRow1, "ACTIVE", false);
-            dossierBox.addView(gridRow1, grid1Params);
-            LinearLayout gridRow2 = new LinearLayout(context);
-            gridRow2.setOrientation(HORIZONTAL);
-            LinearLayout.LayoutParams grid2Params = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            grid2Params.topMargin = AndroidUtilities.dp(8);
-            statDns = addStatCell(context, gridRow2, "DNS TUNNEL", true);
-            statTheme = addStatCell(context, gridRow2, "THEME", false);
-            dossierBox.addView(gridRow2, grid2Params);
-
-            dossierVersion = new TextView(context);
-            dossierVersion.setTextSize(10.5f);
-            dossierVersion.setTypeface(monoFace != null ? monoFace : Typeface.MONOSPACE);
-            dossierVersion.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText));
-            dossierVersion.setLetterSpacing(0.10f);
-            LinearLayout.LayoutParams dossierVersionParams = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            dossierVersionParams.topMargin = AndroidUtilities.dp(12);
-            dossierBox.addView(dossierVersion, dossierVersionParams);
-            View hairline = new View(context);
-            hairline.setBackgroundColor(Theme.getColor(Theme.key_divider));
-            LinearLayout.LayoutParams hairlineParams = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, 1);
-            hairlineParams.topMargin = AndroidUtilities.dp(10);
-            dossierBox.addView(hairline, hairlineParams);
-            dossierBox.setVisibility(GONE);
-            addView(dossierBox, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            addView(versionView, versionParams);
             bind();
         }
 
-        /** One bordered stat cell: mono micro-label + live value.
-         *  Returns the value view so bind() can refresh it. */
-        private TextView addStatCell(Context context, LinearLayout row,
-                                     String label, boolean leftCell) {
-            LinearLayout cell = new LinearLayout(context);
-            cell.setOrientation(VERTICAL);
-            cell.setPadding(AndroidUtilities.dp(10), AndroidUtilities.dp(8),
-                    AndroidUtilities.dp(10), AndroidUtilities.dp(8));
-            GradientDrawable cellBg = new GradientDrawable();
-            cellBg.setShape(GradientDrawable.RECTANGLE);
-            cellBg.setColor(cardFill());
-            cellBg.setStroke(1, Theme.getColor(Theme.key_divider));
-            cellBg.setCornerRadius(0);
-            cell.setBackground(cellBg);
-            TextView labelView = new TextView(context);
-            labelView.setText(label);
-            labelView.setTextSize(9.5f);
-            Typeface monoFace = RyokuUi.mono();
-            labelView.setTypeface(monoFace != null ? monoFace : Typeface.MONOSPACE);
-            labelView.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText));
-            labelView.setLetterSpacing(0.12f);
-            cell.addView(labelView, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-            TextView valueView = new TextView(context);
-            valueView.setTextSize(15);
-            Typeface valueFace = RyokuUi.sansMedium();
-            valueView.setTypeface(valueFace != null ? valueFace
-                    : AndroidUtilities.getTypeface("fonts/rmedium.ttf"));
-            valueView.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText));
-            valueView.setSingleLine(true);
-            valueView.setEllipsize(TextUtils.TruncateAt.END);
-            LinearLayout.LayoutParams valueParams = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            valueParams.topMargin = AndroidUtilities.dp(2);
-            cell.addView(valueView, valueParams);
-            LinearLayout.LayoutParams cellParams = new LinearLayout.LayoutParams(
-                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-            if (leftCell) {
-                cellParams.rightMargin = AndroidUtilities.dp(8);
-            }
-            row.addView(cell, cellParams);
-            return valueView;
-        }
-
         void bind() {
-            Context context = getContext();
             String version = null;
             try {
+                Context context = getContext();
                 version = context.getPackageManager()
                         .getPackageInfo(context.getPackageName(), 0).versionName;
             } catch (Throwable ignored) {
             }
             versionView.setText(version == null || version.isEmpty()
                     ? "" : "Version " + version);
-            boolean ryoku = RyokuUi.isEnabled(context);
-            stockBox.setVisibility(ryoku ? GONE : VISIBLE);
-            dossierBox.setVisibility(ryoku ? VISIBLE : GONE);
-            if (!ryoku) {
-                return;
-            }
-            dossierVersion.setText("VERSION " + (version == null || version.isEmpty()
-                    ? "—" : version.toUpperCase(Locale.US)));
-            try {
-                List<JsPlugin> plugins = JsPluginManager.plugins(context);
-                statPlugins.setText(String.valueOf(plugins.size()));
-                int active = 0;
-                for (JsPlugin plugin : plugins) {
-                    if (plugin.enabled) {
-                        active++;
-                    }
-                }
-                for (ModModule module : PluginRegistry.modules()) {
-                    if (PluginRegistry.isEnabled(context, module)) {
-                        active++;
-                    }
-                }
-                statActive.setText(String.valueOf(active));
-            } catch (Throwable ignored) {
-                statPlugins.setText("—");
-                statActive.setText("—");
-            }
-            try {
-                statDns.setText(AminDnsController.proxyRowValue(context));
-            } catch (Throwable ignored) {
-                statDns.setText("Off");
-            }
-            statTheme.setText(RyokuUi.currentThemeName());
         }
     }
 
@@ -2124,7 +1836,7 @@ public class AminPluginsActivity extends BaseFragment {
             GradientDrawable chipBg = new GradientDrawable();
             chipBg.setShape(GradientDrawable.RECTANGLE);
             chipBg.setColor(chipFill());
-            chipBg.setCornerRadius(chipRadius(12));
+            chipBg.setCornerRadius(AndroidUtilities.dp(12));
             chip.setBackground(chipBg);
             chipLetter.setText(plugin.name == null || plugin.name.isEmpty() ? "?"
                     : plugin.name.substring(0, 1).toUpperCase(Locale.US));
@@ -2132,9 +1844,6 @@ public class AminPluginsActivity extends BaseFragment {
 
             switchView.setChecked(plugin.enabled, false);
             nameView.setText(plugin.name);
-            Typeface nameFace = RyokuUi.isEnabled(getContext()) ? RyokuUi.display() : null;
-            nameView.setTypeface(nameFace != null ? nameFace
-                    : AndroidUtilities.getTypeface("fonts/rmedium.ttf"));
 
             String meta = "Version " + (plugin.version == null ? "?" : plugin.version);
             // v2.1 watchdog badge on the meta (subtitle/status) line:
@@ -2196,7 +1905,7 @@ public class AminPluginsActivity extends BaseFragment {
                     GradientDrawable chipDrawable = new GradientDrawable();
                     chipDrawable.setShape(GradientDrawable.RECTANGLE);
                     chipDrawable.setColor(chipFill());
-                    chipDrawable.setCornerRadius(chipRadius(8));
+                    chipDrawable.setCornerRadius(AndroidUtilities.dp(8));
                     chipView.setBackground(chipDrawable);
                     LinearLayout.LayoutParams chipParams = new LinearLayout.LayoutParams(
                             ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -2262,9 +1971,6 @@ public class AminPluginsActivity extends BaseFragment {
                 case KIND_ENGINE:
                     view = new CardHeaderView(context);
                     break;
-                case KIND_RYOKU:
-                    view = new CardHeaderView(context);
-                    break;
                 case KIND_MODULE:
                     view = new CardHeaderView(context);
                     break;
@@ -2317,11 +2023,6 @@ public class AminPluginsActivity extends BaseFragment {
                     ((CardHeaderView) holder.itemView).bind("Plugins Engine",
                             R.drawable.msg_settings,
                             JsPluginManager.isEngineEnabled(context), row.seg);
-                    break;
-                case KIND_RYOKU:
-                    ((CardHeaderView) holder.itemView).bind("Ryoku UI",
-                            R.drawable.msg_background,
-                            RyokuUi.isEnabled(context), row.seg);
                     break;
                 case KIND_FOOTER:
                     ((TextInfoPrivacyCell) holder.itemView).setText(row.title);
