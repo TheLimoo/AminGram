@@ -38,6 +38,14 @@ public final class SendWhenOnlineStore {
     private static final String KEY_ITEMS = "items";
     private static final int CAP = 100;
 
+    /** Serializes the whole-list read-modify-write mutators
+     *  (audit P1-2): add()/remove() run on the hub UI thread while
+     *  markSent() runs on the update thread — unsynchronized, one
+     *  writer's save could overwrite the other's and silently lose
+     *  a queued message (or its sent mark). getAll()/saveAll() stay
+     *  lock-free primitives, called under this lock. */
+    private static final Object LOCK = new Object();
+
     public static final class Entry {
         public long peer;
         public String name;
@@ -114,19 +122,21 @@ public final class SendWhenOnlineStore {
     }
 
     public static void add(Context context, int account, long peer, String name, String text) {
-        List<Entry> entries = getAll(context);
-        Entry e = new Entry();
-        e.peer = peer;
-        e.name = name;
-        e.text = text;
-        e.date = (int) (System.currentTimeMillis() / 1000L);
-        e.state = "pending";
-        e.account = account;
-        entries.add(e);
-        while (entries.size() > CAP) {
-            entries.remove(0);
+        synchronized (LOCK) {
+            List<Entry> entries = getAll(context);
+            Entry e = new Entry();
+            e.peer = peer;
+            e.name = name;
+            e.text = text;
+            e.date = (int) (System.currentTimeMillis() / 1000L);
+            e.state = "pending";
+            e.account = account;
+            entries.add(e);
+            while (entries.size() > CAP) {
+                entries.remove(0);
+            }
+            saveAll(context, entries);
         }
-        saveAll(context, entries);
     }
 
     public static int pendingCount(Context context) {
@@ -172,27 +182,29 @@ public final class SendWhenOnlineStore {
         if (dispatched == null || dispatched.isEmpty()) {
             return 0;
         }
-        List<Entry> entries = getAll(context);
-        int now = (int) (System.currentTimeMillis() / 1000L);
-        int changed = 0;
-        for (Entry e : entries) {
-            if (!e.isPending()) {
-                continue;
-            }
-            for (Entry d : dispatched) {
-                if (e.peer == d.peer && e.account == d.account && e.date == d.date
-                        && e.text != null && e.text.equals(d.text)) {
-                    e.state = "sent";
-                    e.sentDate = now;
-                    changed++;
-                    break;
+        synchronized (LOCK) {
+            List<Entry> entries = getAll(context);
+            int now = (int) (System.currentTimeMillis() / 1000L);
+            int changed = 0;
+            for (Entry e : entries) {
+                if (!e.isPending()) {
+                    continue;
+                }
+                for (Entry d : dispatched) {
+                    if (e.peer == d.peer && e.account == d.account && e.date == d.date
+                            && e.text != null && e.text.equals(d.text)) {
+                        e.state = "sent";
+                        e.sentDate = now;
+                        changed++;
+                        break;
+                    }
                 }
             }
+            if (changed > 0) {
+                saveAll(context, entries);
+            }
+            return changed;
         }
-        if (changed > 0) {
-            saveAll(context, entries);
-        }
-        return changed;
     }
 
     // Lightweight change listeners so an open hub can refresh itself
@@ -218,15 +230,17 @@ public final class SendWhenOnlineStore {
     }
 
     public static void remove(Context context, Entry target) {
-        List<Entry> entries = getAll(context);
-        for (int i = 0; i < entries.size(); i++) {
-            Entry e = entries.get(i);
-            if (e.peer == target.peer && e.account == target.account && e.date == target.date
-                    && e.text != null && e.text.equals(target.text)) {
-                entries.remove(i);
-                break;
+        synchronized (LOCK) {
+            List<Entry> entries = getAll(context);
+            for (int i = 0; i < entries.size(); i++) {
+                Entry e = entries.get(i);
+                if (e.peer == target.peer && e.account == target.account && e.date == target.date
+                        && e.text != null && e.text.equals(target.text)) {
+                    entries.remove(i);
+                    break;
+                }
             }
+            saveAll(context, entries);
         }
-        saveAll(context, entries);
     }
 }

@@ -45,6 +45,14 @@ public final class AutoSaverStore {
     public static final String ITEMS_V2_KEY = "items_v2";
     private static final int CAP = 500;
 
+    /** Serializes every whole-list read-modify-write (audit P1-1):
+     *  record() runs on the update thread, the durable-copy
+     *  re-pointer on stageQueue and remove() on the UI thread —
+     *  without one common lock, whichever writer saves last wins
+     *  with a stale snapshot: fresh entries are lost and deleted
+     *  entries resurrect. */
+    private static final Object LOCK = new Object();
+
     public static final class Entry {
         public long dialogId;
         public int id;
@@ -67,18 +75,20 @@ public final class AutoSaverStore {
     }
 
     public static void record(Context context, Entry entry) {
-        List<Entry> entries = getEntries(context);
-        for (int i = entries.size() - 1; i >= 0; i--) {
-            Entry old = entries.get(i);
-            if (old.dialogId == entry.dialogId && old.id == entry.id) {
-                entries.remove(i);
+        synchronized (LOCK) {
+            List<Entry> entries = getEntries(context);
+            for (int i = entries.size() - 1; i >= 0; i--) {
+                Entry old = entries.get(i);
+                if (old.dialogId == entry.dialogId && old.id == entry.id) {
+                    entries.remove(i);
+                }
             }
+            entries.add(entry);
+            while (entries.size() > CAP) {
+                entries.remove(0);
+            }
+            save(context, entries);
         }
-        entries.add(entry);
-        while (entries.size() > CAP) {
-            entries.remove(0);
-        }
-        save(context, entries);
         ensureDurableCopy(context, entry);
     }
 
@@ -130,17 +140,24 @@ public final class AutoSaverStore {
                 if (!copyFile(source, target)) {
                     return; // record keeps pointing at the original
                 }
-                List<Entry> entries = getEntries(appContext);
-                boolean changed = false;
-                for (Entry e : entries) {
-                    if (e.dialogId == dialogId && e.id == id
-                            && e.path != null && !e.path.isEmpty()) {
-                        e.path = target.getAbsolutePath();
-                        changed = true;
+                // Merge under the same lock as record()/remove()
+                // (P1-1): re-read the CURRENT list inside the lock
+                // and re-point only this entry, so a record() or
+                // remove() that landed while the copy ran is never
+                // overwritten by a stale snapshot.
+                synchronized (LOCK) {
+                    List<Entry> entries = getEntries(appContext);
+                    boolean changed = false;
+                    for (Entry e : entries) {
+                        if (e.dialogId == dialogId && e.id == id
+                                && e.path != null && !e.path.isEmpty()) {
+                            e.path = target.getAbsolutePath();
+                            changed = true;
+                        }
                     }
-                }
-                if (changed) {
-                    saveV2Only(appContext, entries);
+                    if (changed) {
+                        saveV2Only(appContext, entries);
+                    }
                 }
             } catch (Throwable ignored) {
             }
@@ -262,29 +279,31 @@ public final class AutoSaverStore {
     }
 
     public static void remove(Context context, Entry target) {
-        List<Entry> entries = getEntries(context);
-        boolean changed = false;
-        for (int i = entries.size() - 1; i >= 0; i--) {
-            Entry e = entries.get(i);
-            if (e.dialogId == target.dialogId && e.id == target.id) {
-                entries.remove(i);
-                changed = true;
-            }
-        }
-        if (changed) {
-            saveV2Only(context, entries);
-            // Also scrub the legacy log line, or the entry would reappear.
-            List<String> legacy = VaultStore.getAll(context, PREFS, MessagePipeline.AUTOSAVER_ITEMS_KEY);
-            String prefix = target.dialogId + "|" + target.id + "|";
-            boolean legacyChanged = false;
-            for (int i = legacy.size() - 1; i >= 0; i--) {
-                if (legacy.get(i).startsWith(prefix)) {
-                    legacy.remove(i);
-                    legacyChanged = true;
+        synchronized (LOCK) {
+            List<Entry> entries = getEntries(context);
+            boolean changed = false;
+            for (int i = entries.size() - 1; i >= 0; i--) {
+                Entry e = entries.get(i);
+                if (e.dialogId == target.dialogId && e.id == target.id) {
+                    entries.remove(i);
+                    changed = true;
                 }
             }
-            if (legacyChanged) {
-                VaultStore.putAll(context, PREFS, MessagePipeline.AUTOSAVER_ITEMS_KEY, legacy);
+            if (changed) {
+                saveV2Only(context, entries);
+                // Also scrub the legacy log line, or the entry would reappear.
+                List<String> legacy = VaultStore.getAll(context, PREFS, MessagePipeline.AUTOSAVER_ITEMS_KEY);
+                String prefix = target.dialogId + "|" + target.id + "|";
+                boolean legacyChanged = false;
+                for (int i = legacy.size() - 1; i >= 0; i--) {
+                    if (legacy.get(i).startsWith(prefix)) {
+                        legacy.remove(i);
+                        legacyChanged = true;
+                    }
+                }
+                if (legacyChanged) {
+                    VaultStore.putAll(context, PREFS, MessagePipeline.AUTOSAVER_ITEMS_KEY, legacy);
+                }
             }
         }
     }
