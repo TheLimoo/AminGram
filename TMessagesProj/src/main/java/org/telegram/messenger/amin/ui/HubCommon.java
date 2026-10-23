@@ -938,7 +938,7 @@ public final class HubCommon {
             return;
         }
         listView.scrollToPosition(0);
-        AndroidUtilities.runOnUIThreadDelayed(() -> {
+        AndroidUtilities.runOnUIThread(() -> {
             if (listView == null) {
                 return;
             }
@@ -984,7 +984,7 @@ public final class HubCommon {
                 if (adapter != null) {
                     adapter.notifyDataSetChanged();
                 }
-                AndroidUtilities.runOnUIThreadDelayed(() -> {
+                AndroidUtilities.runOnUIThread(() -> {
                     if (key.equals(flashingKey)) {
                         flashingKey = null;
                         if (adapter != null) {
@@ -2705,7 +2705,7 @@ public final class HubCommon {
             addView(tick, tickParams);
 
             LinearLayout content = new LinearLayout(context);
-            content.setOrientation(HORIZONTAL);
+            content.setOrientation(LinearLayout.HORIZONTAL);
             content.setGravity(Gravity.CENTER_VERTICAL);
             content.setPadding(0, AndroidUtilities.dp(4), AndroidUtilities.dp(40),
                     AndroidUtilities.dp(4));
@@ -2721,7 +2721,7 @@ public final class HubCommon {
                     0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
             toggleGroup = new LinearLayout(context);
-            toggleGroup.setOrientation(HORIZONTAL);
+            toggleGroup.setOrientation(LinearLayout.HORIZONTAL);
             toggleGroup.setGravity(Gravity.CENTER_VERTICAL);
             content.addView(toggleGroup);
             stateView = hubText(context, 9.5f, HubSkin.FAINT, HubSkin.mono(context));
@@ -2736,7 +2736,7 @@ public final class HubCommon {
                     AndroidUtilities.dp(56), AndroidUtilities.dp(40)));
 
             pickGroup = new LinearLayout(context);
-            pickGroup.setOrientation(HORIZONTAL);
+            pickGroup.setOrientation(LinearLayout.HORIZONTAL);
             pickGroup.setGravity(Gravity.CENTER_VERTICAL);
             content.addView(pickGroup);
             valueView = hubText(context, 10.5f, HubSkin.SECONDARY, HubSkin.mono(context));
