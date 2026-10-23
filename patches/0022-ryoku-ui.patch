@@ -1,0 +1,140 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/AndroidUtilities.java b/TMessagesProj/src/main/java/org/telegram/messenger/AndroidUtilities.java
+index efa8e29..a800b68 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/AndroidUtilities.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/AndroidUtilities.java
+@@ -260,6 +260,10 @@ public class AndroidUtilities {
+     public static ThreadLocal<byte[]> bufferLocal = new ThreadLocal<>();
+ 
+     public static Typeface bold() {
++        Typeface ryokuBold = org.telegram.messenger.amin.ui.RyokuUi.boldTypeface();
++        if (ryokuBold != null) {
++            return ryokuBold;
++        }
+         if (mediumTypeface == null) {
+             if (SharedConfig.useSystemBoldFont && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                 mediumTypeface = Typeface.create(null, 500, false);
+@@ -2390,6 +2394,10 @@ public class AndroidUtilities {
+     }
+ 
+     public static Typeface getTypeface(String assetPath) {
++        Typeface ryokuTypeface = org.telegram.messenger.amin.ui.RyokuUi.typefaceFor(assetPath);
++        if (ryokuTypeface != null) {
++            return ryokuTypeface;
++        }
+         synchronized (typefaceCache) {
+             if (!typefaceCache.containsKey(assetPath)) {
+                 try {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/AlertDialog.java b/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/AlertDialog.java
+index 369642d..e2ecf53 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/AlertDialog.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/AlertDialog.java
+@@ -564,7 +564,7 @@ public class AlertDialog extends Dialog implements Drawable.Callback, Notificati
+             if (blurredBackground && !blurredNativeBackground) {
+                 float r;
+                 if (progressViewStyle == ALERT_TYPE_SPINNER && progressViewContainer != null) {
+-                    r = dp(18);
++                    r = dp(org.telegram.messenger.amin.ui.RyokuUi.dialogRadiusDp(18));
+                     float w = progressViewContainer.getWidth() * progressViewContainer.getScaleX();
+                     float h = progressViewContainer.getHeight() * progressViewContainer.getScaleY();
+                     AndroidUtilities.rectTmp.set(
+@@ -574,7 +574,7 @@ public class AlertDialog extends Dialog implements Drawable.Callback, Notificati
+                             (getHeight() + h) / 2f
+                     );
+                 } else {
+-                    r = dp(20);
++                    r = dp(org.telegram.messenger.amin.ui.RyokuUi.dialogRadiusDp(20));
+                     AndroidUtilities.rectTmp.set(getPaddingLeft(), getPaddingTop(), getMeasuredWidth() - getPaddingRight(), getMeasuredHeight() - getPaddingBottom());
+                 }
+ 
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/Theme.java b/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/Theme.java
+index b56ee0d..6862cb0 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/Theme.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/Theme.java
+@@ -4016,6 +4016,30 @@ public class Theme {
+         themes.add(themeInfo);
+         themesDict.put("Night", themeInfo);
+ 
++        themeInfo = new ThemeInfo();
++        themeInfo.name = "Ryoku";
++        themeInfo.assetName = "ryoku.attheme";
++        themeInfo.previewBackgroundColor = 0xff0a0a0a;
++        themeInfo.previewInColor = 0xff1a1712;
++        themeInfo.previewOutColor = 0xff2e2013;
++        themeInfo.sortIndex = 6;
++        themeInfo.setAccentColorOptions(
++                new int[]    { 0xFFCE5E32, 0xFFA85B32, 0xFF8A6A5C, 0xFF9C8A4A, 0xFF6E7F56, 0xFF66707E, 0xFF7A6A86, 0xFF96606B, 0xFFB0A9A0, 0xFFA8481F, 0xFF7E3F1E, 0xFF5F7A72, 0xFF77662F, 0xFF3A362F },
++                new int[]    { 0xFF1A1712, 0xFF241A10, 0xFF14120F, 0xFF0A0A0A, 0xFF2A2723, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000 },
++                new int[]    { 0xFF2E2013, 0xFF1A1712, 0xFF241A10, 0xFF14120F, 0xFF0A0A0A, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000 },
++                new int[]    { 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000 },
++                new int[]    { 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000 },
++                null,
++                null,
++                new int[]    {          9,         10,         11,         12,         13,          0,          1,          2,          3,          4,          5,          6,          7,          8 },
++                new String[] {         "",         "",         "",         "",         "",         "",         "",         "",         "",         "",         "",         "",         "",         "" },
++                new int[]    {          0,          0,          0,          0,          0,          0,          0,          0,          0,          0,          0,          0,          0,          0 },
++                new int[]    {          0,          0,          0,          0,          0,          0,          0,          0,          0,          0,          0,          0,          0,          0 }
++                );
++        sortAccents(themeInfo);
++        themes.add(themeInfo);
++        themesDict.put("Ryoku", themeInfo);
++
+         String themesString = themeConfig.getString("themes2", null);
+ 
+         int remoteVersion = themeConfig.getInt("remote_version", 0);
+@@ -4675,11 +4699,13 @@ public class Theme {
+     }
+ 
+     public static ShapeDrawable createRoundRectDrawable(int rad, int defaultColor) {
++        rad = org.telegram.messenger.amin.ui.RyokuUi.clampRadius(rad);
+         ShapeDrawable defaultDrawable = new ShapeDrawable(new RoundRectShape(new float[]{rad, rad, rad, rad, rad, rad, rad, rad}, null, null));
+         defaultDrawable.getPaint().setColor(defaultColor);
+         return defaultDrawable;
+     }
+     public static InsetDrawable createRoundRectDrawableShadowed(int rad, int defaultColor) {
++        rad = org.telegram.messenger.amin.ui.RyokuUi.clampRadius(rad);
+         ShapeDrawable defaultDrawable = new ShapeDrawable(new RoundRectShape(new float[]{rad, rad, rad, rad, rad, rad, rad, rad}, null, null));
+         defaultDrawable.getPaint().setColor(defaultColor);
+         defaultDrawable.getPaint().setShadowLayer(dpf2(2), 0, dpf2(0.33f), multAlpha(0x11000000, Color.alpha(defaultColor) / 255.0f));
+@@ -4687,6 +4713,7 @@ public class Theme {
+     }
+ 
+     public static GradientDrawable createRoundRectGradientDrawable(int rad, int topColor, int bottomColor) {
++        rad = org.telegram.messenger.amin.ui.RyokuUi.clampRadius(rad);
+         GradientDrawable gd = new GradientDrawable(
+                 GradientDrawable.Orientation.RIGHT_LEFT,
+                 new int[]{ topColor, bottomColor }
+@@ -4697,12 +4724,18 @@ public class Theme {
+     }
+ 
+     public static ShapeDrawable createRoundRectDrawable(int topLeftRed, int topRightRad, int bottomRightRad, int bottomLeftRad, int defaultColor) {
++        topLeftRed = org.telegram.messenger.amin.ui.RyokuUi.clampRadius(topLeftRed);
++        topRightRad = org.telegram.messenger.amin.ui.RyokuUi.clampRadius(topRightRad);
++        bottomRightRad = org.telegram.messenger.amin.ui.RyokuUi.clampRadius(bottomRightRad);
++        bottomLeftRad = org.telegram.messenger.amin.ui.RyokuUi.clampRadius(bottomLeftRad);
+         ShapeDrawable defaultDrawable = new ShapeDrawable(new RoundRectShape(new float[]{topLeftRed, topLeftRed, topRightRad, topRightRad, bottomRightRad, bottomRightRad, bottomLeftRad, bottomLeftRad}, null, null));
+         defaultDrawable.getPaint().setColor(defaultColor);
+         return defaultDrawable;
+     }
+ 
+     public static ShapeDrawable createRoundRectDrawable(int topRad, int bottomRad, int defaultColor) {
++        topRad = org.telegram.messenger.amin.ui.RyokuUi.clampRadius(topRad);
++        bottomRad = org.telegram.messenger.amin.ui.RyokuUi.clampRadius(bottomRad);
+         ShapeDrawable defaultDrawable = new ShapeDrawable(new RoundRectShape(new float[]{topRad, topRad, topRad, topRad, bottomRad, bottomRad, bottomRad, bottomRad}, null, null));
+         defaultDrawable.getPaint().setColor(defaultColor);
+         return defaultDrawable;
+@@ -7906,6 +7939,7 @@ public class Theme {
+         dialogs_tagTextPaint.setTextSize(dp(10));
+         dialogs_searchNamePaint.setTextSize(dp(16));
+         dialogs_searchNameEncryptedPaint.setTextSize(dp(16));
++        org.telegram.messenger.amin.ui.RyokuUi.applyToThemePaints();
+     }
+ 
+     public static void applyDialogsTheme() {
+@@ -8158,6 +8192,7 @@ public class Theme {
+             addChatPaint(key_paint_chatComposeBackground, chat_composeBackgroundPaint, key_chat_messagePanelBackground);
+             addChatPaint(key_paint_chatTimeBackground, chat_timeBackgroundPaint, key_chat_mediaTimeBackground);
+         }
++        org.telegram.messenger.amin.ui.RyokuUi.applyToThemePaints();
+     }
+ 
+     public static void createChatResources(Context context, boolean fontsOnly) {

@@ -44,6 +44,7 @@ jobs:
           git apply ../patches/0019-screenshot-unlock.patch
           git apply ../patches/0020-context-menu-items.patch
           git apply ../patches/0021-dns-tunnel.patch
+          git apply ../patches/0022-ryoku-ui.patch
 
       - name: Register fork package in google-services.json
         run: |
