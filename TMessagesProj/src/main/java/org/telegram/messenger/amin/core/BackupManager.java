@@ -6,11 +6,14 @@ import android.util.Base64;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.telegram.messenger.amin.dns.DnsProfiles;
+import org.telegram.messenger.amin.modules.LocalPremiumModule;
 import org.telegram.messenger.amin.plugins.PluginRegistry;
 import org.telegram.messenger.amin.plugins.js.JsPlugin;
 import org.telegram.messenger.amin.plugins.js.JsPluginManager;
 import org.telegram.messenger.amin.plugins.js.PluginDb;
 import org.telegram.messenger.amin.plugins.js.PluginFiles;
+import org.telegram.messenger.amin.ui.AminFonts;
 import org.telegram.messenger.amin.ui.VideoBackgroundHelper;
 
 import java.io.ByteArrayInputStream;
@@ -35,6 +38,11 @@ import java.util.Map;
  * - plugin database state (amin.db / PluginDb rows), plugin file
  *   sandboxes (amin.files, base64 payloads) and the wallpaper
  *   library metadata (Stage 1, audit D1)
+ * - DNS Tunnel profiles + settings (prefs "amingram_dns"), the app
+ *   font choice (prefs "amingram_fonts") and the Local Premium
+ *   toggles (prefs "amingram_local_premium") — added at bundle
+ *   version 2 (pillar-4 audit §4); version-1 bundles simply lack
+ *   these sections and import with them untouched.
  *
  * Deliberately NOT exported: the Google auth token cache
  * (GoogleAuthManager) — credential material never enters a backup
@@ -45,8 +53,15 @@ import java.util.Map;
  * sections present in the file replace the matching local state,
  * sections absent leave local state untouched — except JS plugins,
  * which are reinstalled through the normal validated install path.
+ * Import REJECTS bundles whose version is newer than
+ * {@link #BACKUP_VERSION}: silently half-applying a future format
+ * would lose exactly the state the user is trying to restore.
  */
 public final class BackupManager {
+
+    /** Current bundle format version (see the class doc): v1 was
+     *  the original section set; v2 adds dns/fonts/local_premium. */
+    private static final int BACKUP_VERSION = 2;
 
     private BackupManager() {
     }
@@ -55,7 +70,7 @@ public final class BackupManager {
         JSONObject root = new JSONObject();
         try {
             root.put("app", "AminGram");
-            root.put("version", 1);
+            root.put("version", BACKUP_VERSION);
             root.put("created", System.currentTimeMillis());
 
             // Module states.
@@ -66,6 +81,13 @@ public final class BackupManager {
                 pluginPrefs.put(entry.getKey(), entry.getValue());
             }
             root.put("plugin_prefs", pluginPrefs);
+
+            // DNS Tunnel profiles + settings, app font choice and
+            // Local Premium toggles (bundle v2, pillar-4 audit §4).
+            // Whole prefs maps, same shape as plugin_prefs.
+            root.put("dns", prefsToJson(context, DnsProfiles.PREFS));
+            root.put("fonts", prefsToJson(context, "amingram_fonts"));
+            root.put("local_premium", prefsToJson(context, LocalPremiumModule.PREFS));
 
             // Keyword Radar.
             JSONObject radar = new JSONObject();
@@ -207,6 +229,16 @@ public final class BackupManager {
         if (!"AminGram".equals(root.optString("app"))) {
             return "That file is not an AminGram backup.";
         }
+        // Format gate (pillar-4 audit §4): a bundle from a NEWER
+        // AminGram may carry sections/semantics this build would
+        // silently drop — refuse it outright. Older bundles (v1,
+        // or a missing field) import normally; sections they lack
+        // are no-ops.
+        int version = root.optInt("version", 1);
+        if (version > BACKUP_VERSION) {
+            return "This backup was made by a newer version of AminGram (format v"
+                    + version + "); update the app to import it.";
+        }
         try {
             JSONObject pluginPrefs = root.optJSONObject("plugin_prefs");
             if (pluginPrefs != null) {
@@ -225,6 +257,20 @@ public final class BackupManager {
                 }
                 edit.apply();
             }
+
+            // Bundle v2 sections (absent in v1 bundles = no-op):
+            // DNS profiles/settings, app font, Local Premium.
+            applyPrefsJson(context, DnsProfiles.PREFS, root.optJSONObject("dns"));
+            JSONObject fonts = root.optJSONObject("fonts");
+            if (fonts != null) {
+                applyPrefsJson(context, "amingram_fonts", fonts);
+                // The font family is latched in memory at startup;
+                // re-read it so the restored choice applies without
+                // a restart.
+                AminFonts.initLatch();
+            }
+            applyPrefsJson(context, LocalPremiumModule.PREFS,
+                    root.optJSONObject("local_premium"));
 
             JSONObject radar = root.optJSONObject("radar");
             if (radar != null) {
@@ -488,6 +534,53 @@ public final class BackupManager {
             edit.apply();
         } catch (Exception ignored) {
         }
+    }
+
+    /** Whole-prefs-map → JSON (export side of the flat bundle
+     *  sections). Values are carried with their native types
+     *  (Boolean/String/Number) so import can restore them exactly. */
+    private static JSONObject prefsToJson(Context context, String prefsName) throws Exception {
+        JSONObject out = new JSONObject();
+        Map<String, ?> all = context.getSharedPreferences(prefsName,
+                Context.MODE_PRIVATE).getAll();
+        for (Map.Entry<String, ?> entry : all.entrySet()) {
+            out.put(entry.getKey(), entry.getValue());
+        }
+        return out;
+    }
+
+    /** Import side of {@link #prefsToJson}: writes the section's
+     *  typed values over the local prefs (merge, no clear — the
+     *  same per-section semantics as the plugin_prefs block).
+     *  Unknown value shapes are skipped. Null section = no-op. */
+    private static void applyPrefsJson(Context context, String prefsName, JSONObject section) {
+        if (section == null) {
+            return;
+        }
+        SharedPreferences.Editor edit = context.getSharedPreferences(prefsName,
+                Context.MODE_PRIVATE).edit();
+        JSONArray names = section.names();
+        if (names != null) {
+            for (int i = 0; i < names.length(); i++) {
+                String key = names.optString(i);
+                Object value = section.opt(key);
+                if (value instanceof Boolean) {
+                    edit.putBoolean(key, (Boolean) value);
+                } else if (value instanceof String) {
+                    edit.putString(key, (String) value);
+                } else if (value instanceof Integer) {
+                    // Width matters: several of these prefs are read
+                    // back with getInt (premium colors, DNS ports) —
+                    // a Long in their place would throw on read.
+                    edit.putInt(key, (Integer) value);
+                } else if (value instanceof Long) {
+                    edit.putLong(key, (Long) value);
+                } else if (value instanceof Number) {
+                    edit.putFloat(key, ((Number) value).floatValue());
+                }
+            }
+        }
+        edit.apply();
     }
 
     private static List<String> toStringList(JSONArray arr) {

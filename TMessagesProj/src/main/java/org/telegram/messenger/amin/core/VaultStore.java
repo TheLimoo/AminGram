@@ -50,6 +50,34 @@ public final class VaultStore {
         save(context, prefsName, key, items);
     }
 
+    /** Batch form of {@link #addUnique} for scan loops (pillar-4
+     *  audit S2): ONE synchronized read-modify-write for the whole
+     *  batch instead of one per hit — a live scan over a large chat
+     *  no longer rewrites the full JSON array once per matched
+     *  message (O(B × kept) → O(B + kept)). Same record format, cap
+     *  and trim semantics; duplicates inside the batch itself are
+     *  skipped. */
+    public static synchronized void addUniqueBatch(Context context, String prefsName, String key, List<String> values, int cap) {
+        if (values == null || values.isEmpty()) {
+            return;
+        }
+        List<String> items = getAll(context, prefsName, key);
+        boolean changed = false;
+        for (String value : values) {
+            if (value != null && !value.isEmpty() && !items.contains(value)) {
+                items.add(value);
+                changed = true;
+            }
+        }
+        if (!changed) {
+            return;
+        }
+        while (items.size() > cap) {
+            items.remove(0);
+        }
+        save(context, prefsName, key, items);
+    }
+
     /** Replaces the whole stored list (used by stores with upsert semantics). */
     public static synchronized void putAll(Context context, String prefsName, String key, List<String> items) {
         save(context, prefsName, key, items);

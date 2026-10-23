@@ -537,13 +537,31 @@ public final class AminHooks {
     }
 
     /** Freshly arrived messages feed (patch 0006, pushMessages):
-     *  KeywordRadar live scan / snapshots / Auto-Saver. */
+     *  KeywordRadar live scan / snapshots / Auto-Saver.
+     *
+     *  The pipeline no longer runs inline here (pillar-4 audit S2):
+     *  this hook sits inside MessagesController.processUpdateArray
+     *  on the update thread, and a slow store write would stall
+     *  upstream update application and, transitively, the
+     *  notification dispatch for the same batch. The batch is
+     *  copied and posted to Utilities.globalQueue — the same queue
+     *  the messagesDidLoad history path uses. globalQueue is a
+     *  single serial queue, so batches keep their arrival order
+     *  (per account included); MessagePipeline.process stays
+     *  exception-isolated per message on that thread. */
     public static void onNewMessages(ArrayList<MessageObject> messages, int account) {
         try {
             Context context = ApplicationLoader.applicationContext;
-            if (context != null) {
-                MessagePipeline.process(context, messages);
+            if (context == null || messages == null || messages.isEmpty()) {
+                return;
             }
+            final ArrayList<MessageObject> batch = new ArrayList<>(messages);
+            Utilities.globalQueue.postRunnable(() -> {
+                try {
+                    MessagePipeline.process(context, batch);
+                } catch (Throwable ignored) {
+                }
+            });
         } catch (Throwable ignored) {
         }
     }
@@ -713,12 +731,21 @@ public final class AminHooks {
 
     // ------------------------------------------------------------------
     // messagesDidLoad observer: scan-on-chat-open (Keyword Radar) and
-    // history snapshots (Anti-Delete / Edit History). Registered once,
-    // lazily, for every activated account. Event-driven — it only runs
-    // when Telegram itself loads a chat's messages.
+    // history snapshots (Anti-Delete / Edit History). Registered
+    // lazily, PER ACCOUNT: an account activated after the first
+    // registration pass gets its own subscription on the next
+    // ensureChatLoadObserver() call (audit P1-11 — the old one-shot
+    // flag left later-activated accounts unobserved forever).
+    // Event-driven — it only runs when Telegram itself loads a
+    // chat's messages.
     // ------------------------------------------------------------------
 
-    private static volatile boolean observerRegistered;
+    /** Account slots whose NotificationCenter already carries
+     *  CHAT_LOAD_OBSERVER. Slot NotificationCenters live for the
+     *  whole process, so a covered slot stays covered across
+     *  logout/login within the process. */
+    private static final java.util.Set<Integer> observerAccounts =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
     private static final NotificationCenter.NotificationCenterDelegate CHAT_LOAD_OBSERVER =
             new NotificationCenter.NotificationCenterDelegate() {
                 @Override
@@ -765,20 +792,21 @@ public final class AminHooks {
             };
 
     public static void ensureChatLoadObserver() {
-        if (observerRegistered) {
+        // Fast path (this runs on every moduleEnabled() call): all
+        // currently-activated accounts are already covered.
+        if (observerAccounts.size() >= UserConfig.getActivatedAccountsCount()) {
             return;
         }
         synchronized (AminHooks.class) {
-            if (observerRegistered) {
-                return;
-            }
-            observerRegistered = true;
             try {
-                int count = UserConfig.getActivatedAccountsCount();
-                for (int account = 0; account < count; account++) {
+                for (int account = 0; account < UserConfig.MAX_ACCOUNT_COUNT; account++) {
+                    if (observerAccounts.contains(account)) {
+                        continue;
+                    }
                     if (UserConfig.getInstance(account).isClientActivated()) {
                         NotificationCenter.getInstance(account)
                                 .addObserver(CHAT_LOAD_OBSERVER, NotificationCenter.messagesDidLoad);
+                        observerAccounts.add(account);
                     }
                 }
             } catch (Throwable ignored) {
