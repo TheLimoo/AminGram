@@ -300,7 +300,7 @@
     {
       "id": "article-composer",
       "name": "Article Composer",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "author": "Vesper",
       "description": "Compose a rich article with markdown-lite formatting and queued images, then post it to your @awminai DM via the bot bridge and forward it anywhere. /article writes the draft, /aimg queues an image URL, /apost posts it.",
       "category": "Tools",
@@ -312,13 +312,14 @@
         "file",
         "settings",
         "ui",
-        "http"
+        "http",
+        "act"
       ],
       "minPlatform": 2,
       "depends": [],
       "url": "https://raw.githubusercontent.com/TheLimoo/AminGram/main/TMessagesProj/src/main/assets/amingram_plugins/article-composer.js",
-      "sha256": "e1c6ba1d3452e4bc3dde9877879bbfc1cb5dd3bcedd65572f170b4182bc57554",
-      "size": 31239,
+      "sha256": "689af59fbc2d15b707bee494758460074565fa74083478deb611e792ab33b56b",
+      "size": 44659,
       "updatedAt": "2026-10-24"
     }
   ]

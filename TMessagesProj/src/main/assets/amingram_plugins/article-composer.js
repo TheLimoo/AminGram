@@ -1,10 +1,10 @@
 // ==AminGramPlugin==
 // @id          article-composer
 // @name        Article Composer
-// @version     1.0.0
+// @version     1.0.1
 // @author      Amin
 // @description Compose a rich article (markdown-lite text + up to 10 image URLs) and have @awminai post it into your DM with full Telegram formatting — then forward it anywhere. Posting happens only when you tap Post.
-// @capabilities observe, commands, send, menu, file, settings, ui, http
+// @capabilities observe, commands, send, menu, file, settings, ui, http, act
 // @icon        text
 // @menuLabel   Article
 // @minPlatform 2
@@ -49,10 +49,24 @@
 //    article that cannot fit is refused locally (draft kept).
 //  • `http` is declared ONLY for the budget tick (the gstatic 204
 //    ping media-dl uses); the plugin makes no other web requests.
+//  • 1.0.1 — DM CLEANUP + A JOB THAT CANNOT WEDGE. The bridge client
+//    (cleanup: true + the `act` capability) deletes consumed
+//    ⚡BRIDGE payload messages — replies, chunk parts, card-action
+//    receipts — once they are parsed and handled, and the uploaded
+//    image messages are deleted after a successful post. And the
+//    post job is PERSISTED (amin.db) with its state saved before
+//    every blocking send: in 1.0.0 the job lived only in runtime
+//    memory inside the hook that started it, so one lost
+//    continuation (hook-budget unwind — an Error JS try/catch
+//    cannot intercept — or a dropped budget tick) wedged it
+//    unfinished, and every later Post tap died silently on the
+//    "already in flight" guard. Now a stale or orphaned job is
+//    resumed by the next Post tap or revived by the next incoming
+//    message, and every step is logged.
 // =====================================================================
 
 // ============================================================================
-// bridge-client.js — AminGram Plugin ⇄ Bot Bridge, plugin-side client v1
+// bridge-client.js — AminGram Plugin ⇄ Bot Bridge, plugin-side client v1.1
 // ============================================================================
 // Embed this file in an AminGram plugin (paste it above your hooks, or
 // keep it as the top section of the plugin file) to offload work to the
@@ -84,6 +98,29 @@
 //     simply get a timeout error — always keep a local fallback.
 //   • Never put secrets in payloads: base64url is an encoding, not
 //     encryption, and payload messages are visible in the bot DM.
+//
+// CLEANUP (v1.1, opt-in per client instance)
+//   • Pass `cleanup: true` to create() and declare the `act`
+//     capability, and the client deletes the bridge's own payload
+//     messages from the DM once they have done their job: every
+//     ⚡BRIDGE reply part it consumed and every card-action receipt,
+//     deleted AFTER the payload is fully parsed and your callback /
+//     onAction has run. Partial chunk transfers are cleaned up when
+//     the request times out. This removes the base64 clutter that
+//     otherwise piles up in the DM.
+//   • The 🔗BRIDGE request message: the bot already deletes it on
+//     receipt (best effort — bridge.js). The plugin platform gives
+//     the client no way to learn its own sent message's id
+//     (amin.send returns nothing and own messages are not echoed to
+//     onMessage), so the client deletes the request too ONLY when a
+//     future platform returns a ref from amin.send; on today's
+//     platform that part is a no-op by necessity, not by choice.
+//   • Deletion is best-effort throughout: it needs amin.deleteMessage
+//     (the `act` capability); without it — or when a delete fails —
+//     the flow is completely unaffected. forEveryone is requested;
+//     for the bot's own messages the platform degrades that to a
+//     local delete, which still removes the clutter from the user's
+//     DM view.
 // ============================================================================
 
 var AminBridge = (function () {
@@ -168,8 +205,10 @@ var AminBridge = (function () {
     if (!ns) throw new Error("AminBridge.create: opts.ns (plugin id) is required");
     var timeoutMs = opts.timeout || 30000;
     var onAction = typeof opts.onAction === "function" ? opts.onAction : null;
+    var cleanupEnabled = opts.cleanup === true;
     var pending = {};   // id -> { cb, at }
     var chunkBuf = {};  // id -> { parts: {}, n }
+    var track = {};     // id -> { req: ref|null, refs: [ref], at } (cleanup only)
     var seq = 0;
 
     function botChatId() {
@@ -183,6 +222,61 @@ var AminBridge = (function () {
         + Math.floor(Math.random() * 1679616).toString(36);
     }
 
+    // ---------------------------------------------------------------
+    // Cleanup bookkeeping (v1.1). Refs are {chatId, id} pairs taken
+    // from the messages themselves. Everything here is best-effort:
+    // a missing amin.deleteMessage (no `act` capability) or a failed
+    // delete never affects the request flow.
+    // ---------------------------------------------------------------
+
+    function refOfMsg(msg) {
+      if (!msg || msg.chatId == null || !msg.id) return null;
+      return { chatId: msg.chatId, id: msg.id };
+    }
+
+    // amin.send returns nothing on the current platform; if a future
+    // platform hands back the new message's ref (object or bare id),
+    // capture it so the request message can be deleted too. Never
+    // guess an id — a wrong ref would delete a real user message.
+    function refOfSendReturn(r) {
+      if (r && typeof r === "object" && r.chatId != null && r.id != null) {
+        return { chatId: r.chatId, id: r.id };
+      }
+      if (typeof r === "number" && isFinite(r) && r > 0) {
+        return { chatId: botChatId(), id: r };
+      }
+      return null;
+    }
+
+    function safeDelete(ref) {
+      if (!cleanupEnabled || !ref) return;
+      try {
+        if (typeof amin !== "undefined" && amin && typeof amin.deleteMessage === "function") {
+          amin.deleteMessage(ref, { forEveryone: true });
+        }
+      } catch (e) { /* best-effort — deletion never breaks the flow */ }
+    }
+
+    function trackFor(id) {
+      var key = String(id);
+      var t = track[key];
+      if (!t) { t = track[key] = { req: null, refs: [], at: Date.now() }; }
+      return t;
+    }
+
+    // Delete everything tracked for one envelope id and forget it.
+    // Always called AFTER the payload was fully parsed and the
+    // host's callback / onAction has run.
+    function cleanupTrack(id) {
+      if (id == null) return;
+      var key = String(id);
+      var t = track[key];
+      if (!t) return;
+      delete track[key];
+      safeDelete(t.req);
+      for (var i = 0; i < t.refs.length; i++) safeDelete(t.refs[i]);
+    }
+
     function sweepTimeouts() {
       var now = Date.now();
       for (var id in pending) {
@@ -190,7 +284,22 @@ var AminBridge = (function () {
         if (now - pending[id].at > timeoutMs) {
           var p = pending[id];
           delete pending[id];
-          if (p.cb) p.cb({ code: "timeout", message: "no reply from @awminai within " + timeoutMs + "ms" }, null);
+          try {
+            if (p.cb) p.cb({ code: "timeout", message: "no reply from @awminai within " + timeoutMs + "ms" }, null);
+          } finally {
+            cleanupTrack(id);
+          }
+        }
+      }
+      // Prune cleanup refs of transfers that never settled (partial
+      // chunks of a reply that never completed, stray receipts):
+      // once the request that owned them is gone and they are older
+      // than the timeout, the messages are pure clutter.
+      if (cleanupEnabled) {
+        for (var key in track) {
+          if (!Object.prototype.hasOwnProperty.call(track, key)) continue;
+          if (pending[key]) continue;
+          if (now - track[key].at > timeoutMs) cleanupTrack(key);
         }
       }
     }
@@ -199,12 +308,15 @@ var AminBridge = (function () {
       var id = newId();
       var env = { v: 1, ns: ns, action: action, id: id, data: data || {} };
       pending[id] = { cb: typeof cb === "function" ? cb : null, at: Date.now() };
+      var sendRet;
       try {
-        amin.send(botChatId(), REQ_PREFIX + encodePayload(env));
+        sendRet = amin.send(botChatId(), REQ_PREFIX + encodePayload(env));
       } catch (e) {
         delete pending[id];
         if (cb) cb({ code: "send_failed", message: String(e) }, null);
+        return id;
       }
+      if (cleanupEnabled) trackFor(id).req = refOfSendReturn(sendRet);
       return id;
     }
 
@@ -212,15 +324,29 @@ var AminBridge = (function () {
       if (!env || typeof env !== "object") return;
       if (env.ns && env.ns !== ns) return;
       if (env.data && env.data.kind === "action") {
-        if (onAction) onAction(env.data.action, env.data.arg, env);
+        try {
+          if (onAction) onAction(env.data.action, env.data.arg, env);
+        } finally {
+          cleanupTrack(env.id);
+        }
         return;
       }
       var p = pending[env.id];
-      if (!p) return;
+      if (!p) {
+        // A complete reply for a request we no longer track (sent
+        // before an app restart, or a duplicate delivery): nothing
+        // to hand it to, but its payload messages are still clutter.
+        cleanupTrack(env.id);
+        return;
+      }
       delete pending[env.id];
-      if (!p.cb) return;
-      if (env.ok) p.cb(null, env.data || {});
-      else p.cb(env.error || { code: "unknown", message: "bridge error" }, null);
+      try {
+        if (!p.cb) return;
+        if (env.ok) p.cb(null, env.data || {});
+        else p.cb(env.error || { code: "unknown", message: "bridge error" }, null);
+      } finally {
+        cleanupTrack(env.id);
+      }
     }
 
     // Call from the host plugin's onMessage. Returns true when the
@@ -232,6 +358,14 @@ var AminBridge = (function () {
         var bc = botChatId();
         if (bc && msg.chatId && String(msg.chatId) !== String(bc)) return false;
         var head = decodePayload(msg.text.slice(RES_PREFIX.length).trim());
+        // Remember this message's ref for cleanup — but only for
+        // envelopes addressed to THIS namespace (other plugins share
+        // the DM; their payloads are theirs to clean).
+        if (cleanupEnabled && head && typeof head === "object" && head.id != null
+            && (!head.ns || head.ns === ns)) {
+          var ref = refOfMsg(msg);
+          if (ref) trackFor(head.id).refs.push(ref);
+        }
         if (head && head.chunk && typeof head.part === "string") {
           var key = String(head.id);
           var buf = chunkBuf[key] || (chunkBuf[key] = { parts: {}, n: head.chunk.n });
@@ -251,6 +385,13 @@ var AminBridge = (function () {
         sweepTimeouts();
         return true;
       } catch (e) {
+        // Never swallow a failure silently: a dropped reply used to
+        // be indistinguishable from "the bot never answered".
+        try {
+          if (typeof amin !== "undefined" && amin && typeof amin.debug === "function") {
+            amin.debug("bridge-client[" + ns + "]: dropped an unparseable bridge message: " + e);
+          }
+        } catch (e2) { /* logging is best-effort too */ }
         return false;
       }
     }
@@ -486,10 +627,14 @@ var bridge = AminBridge.create({
   ns: "article-composer",
   getBotChatId: getBotChatId,
   timeout: 60000,
+  cleanup: true,
   onAction: function (action, arg, env) {
+    amin.log("article-composer: card action received: " + action);
     if (action === "post") acStartPost();
     else if (action === "discard") {
       acClearDraft();
+      acClearJob();
+      acPostJob = null;
       if (typeof amin.toast === "function") amin.toast("🗑 Article draft discarded");
     }
   }
@@ -541,8 +686,54 @@ function acSendPreviewCard() {
 
 var AC_BUDGET_SOFT_LIMIT_MS = 3500;
 var AC_BUDGET_TICK_URL = "https://www.gstatic.com/generate_204";
+// A job whose last recorded step is older than this is treated as
+// stalled: its driving hook died or its budget tick never landed.
+// The plugin thread is serial, so a step that is genuinely still
+// executing can never be observed as stale by another hook — the
+// staleness check only ever fires after the fact.
+var AC_JOB_STALE_MS = 30000;
 var acWindowStartMs = 0;
 var acPostJob = null;
+
+// ---------------------------------------------------------------------
+// Job persistence (amin.db). The job is saved BEFORE every blocking
+// sendFile (with the counter already advanced), so a hook that dies
+// mid-step — budget Error, process death — loses nothing: the saved
+// state is enough to resume exactly where it stopped. An upload
+// whose outcome was never recorded is simply re-sent on resume;
+// that is safe because the bot consumes the mediaCount MOST RECENT
+// stashed items, so a duplicate older copy falls outside the window.
+// ---------------------------------------------------------------------
+
+function acSaveJob(job) {
+  try {
+    amin.db.put(AC_DB_NS, "postjob", {
+      urls: job.urls, idx: job.idx, sent: job.sent, failed: job.failed,
+      text: job.text, entities: job.entities,
+      uploadRefs: job.uploadRefs || [],
+      startedAt: job.startedAt || 0, stepAt: job.stepAt || 0,
+      awaitingReply: !!job.awaitingReply, finished: !!job.finished
+    });
+  } catch (e) { /* persistence is best-effort; the in-memory job still runs */ }
+}
+
+function acLoadJob() {
+  var j = null;
+  try { j = amin.db.get(AC_DB_NS, "postjob"); } catch (e) { j = null; }
+  if (!j || typeof j !== "object" || !Array.isArray(j.urls)) return null;
+  return {
+    urls: j.urls, idx: j.idx | 0, sent: j.sent | 0, failed: j.failed | 0,
+    text: typeof j.text === "string" ? j.text : "",
+    entities: Array.isArray(j.entities) ? j.entities : [],
+    uploadRefs: Array.isArray(j.uploadRefs) ? j.uploadRefs : [],
+    startedAt: j.startedAt || 0, stepAt: j.stepAt || 0,
+    awaitingReply: !!j.awaitingReply, finished: !!j.finished
+  };
+}
+
+function acClearJob() {
+  try { amin.db.del(AC_DB_NS, "postjob"); } catch (e) { /* already gone */ }
+}
 
 function acNowMs() { return Date.now(); }
 function acMarkWindowStart() { acWindowStartMs = acNowMs(); }
@@ -569,37 +760,101 @@ function acGuessImageType(url) {
   return "file";
 }
 
-function acTrySendImage(url) {
+// sendFile returns a boolean on the current platform — no message
+// ref — so normally there is nothing to record. If a future platform
+// hands back the posted message's ref (object, or a bare id), keep
+// it: after a successful post the upload messages are deleted again
+// (the bot already holds the file_ids in its stash). Never guess an
+// id — a wrong ref would delete a real user message.
+function acRefFromSendReturn(r) {
+  if (r && typeof r === "object" && r.chatId != null && r.id != null) {
+    return { chatId: r.chatId, id: r.id };
+  }
+  if (typeof r === "number" && isFinite(r) && r > 0) {
+    return { chatId: getBotChatId(), id: r };
+  }
+  return null;
+}
+
+function acDeleteUploads(refs) {
+  if (!refs || !refs.length) return;
+  if (typeof amin.deleteMessage !== "function") return;
+  for (var i = 0; i < refs.length; i++) {
+    try { amin.deleteMessage(refs[i], { forEveryone: true }); }
+    catch (e) { /* best-effort — a failed delete never breaks the flow */ }
+  }
+}
+
+function acTrySendImage(url, job) {
   // sendFile downloads + posts into the bot DM as real media; the bot
   // stashes it for the `post` that follows. BLOCKING — callers keep
   // the JS after this call to an elapsed-time check only.
   if (typeof amin.sendFile !== "function") return false;
+  var r;
   try {
-    return amin.sendFile(url, { type: acGuessImageType(url), chatId: getBotChatId() }) === true;
+    r = amin.sendFile(url, { type: acGuessImageType(url), chatId: getBotChatId() });
   } catch (e) {
     amin.error("article-composer sendFile error: " + e);
     return false;
   }
+  if (r === true) return true;
+  var ref = acRefFromSendReturn(r);
+  if (ref) {
+    if (job) job.uploadRefs.push(ref);
+    return true;
+  }
+  return false;
 }
 
 function acStartPost() {
+  // A previous job may still be on the books. In 1.0.0 an unfinished
+  // in-memory job blocked every later Post with a toast, forever —
+  // one lost continuation silenced the whole feature for the rest of
+  // the app session. Now: a FRESH job in this runtime is genuinely in
+  // flight (toast); a STALE or ORPHANED one (its hook died / its tick
+  // was dropped / the app restarted) is resumed from its persisted
+  // state instead — the user's tap is the intent, the job just
+  // continues from the step it reached.
+  var live = (acPostJob && !acPostJob.finished) ? acPostJob : acLoadJob();
+  if (live && !live.finished) {
+    if (live.awaitingReply) {
+      // The bridge request already went out; whether the bot posted
+      // is the bot's business now. Drop the husk and fall through to
+      // a fresh post from the current draft.
+      acClearJob();
+      acPostJob = null;
+    } else {
+      var age = acNowMs() - (live.stepAt || live.startedAt || 0);
+      if (acPostJob === live && age < AC_JOB_STALE_MS) {
+        if (typeof amin.toast === "function") amin.toast("⏳ A post is already in flight…");
+        return;
+      }
+      acPostJob = live;
+      amin.log("article-composer: resuming post job at image " + live.idx + "/" + live.urls.length
+        + " (sent " + live.sent + ", failed " + live.failed + ")");
+      acMarkWindowStart();
+      acAdvancePostJob();
+      return;
+    }
+  }
   var d = acLoadDraft();
   if (!acHasDraft(d)) {
     if (typeof amin.toast === "function") amin.toast("Nothing to post — the draft is empty");
-    return;
-  }
-  if (acPostJob && !acPostJob.finished) {
-    if (typeof amin.toast === "function") amin.toast("⏳ A post is already in flight…");
     return;
   }
   if (!getBotChatId()) {
     if (amin.ui) amin.ui.notify("Article Composer", "Open your @awminai DM once (send /start there) so I know where to post.");
     return;
   }
+  var now = acNowMs();
   acPostJob = {
     urls: d.images.slice(), idx: 0, sent: 0, failed: 0,
-    text: d.text, entities: d.entities, finished: false
+    text: d.text, entities: d.entities, finished: false,
+    uploadRefs: [], startedAt: now, stepAt: now, awaitingReply: false
   };
+  amin.log("article-composer: post job started — " + acPostJob.urls.length
+    + " image(s), " + acPostJob.text.length + " chars");
+  acSaveJob(acPostJob);
   acMarkWindowStart();
   acAdvancePostJob();
 }
@@ -612,7 +867,11 @@ function acAdvancePostJob() {
       if (acWindowElapsedMs() > AC_BUDGET_SOFT_LIMIT_MS) { acBudgetTick(acAdvancePostJob); return; }
       var url = job.urls[job.idx];
       job.idx++; // advance BEFORE the blocking call — nothing meaningful runs after it in this window
-      if (acTrySendImage(url)) job.sent++; else job.failed++;
+      job.stepAt = acNowMs();
+      acSaveJob(job); // persist BEFORE the send: if this hook dies inside sendFile, the resume knows this upload was attempted (and re-sends it — safe, see acSaveJob)
+      if (acTrySendImage(url, job)) job.sent++; else job.failed++;
+      job.stepAt = acNowMs();
+      acSaveJob(job); // persist the outcome too — a resume must not under-count mediaCount
       if (acWindowElapsedMs() > AC_BUDGET_SOFT_LIMIT_MS) { acBudgetTick(acAdvancePostJob); return; }
     }
     // Uploads done — the finish step (bridge request + reporting)
@@ -622,6 +881,7 @@ function acAdvancePostJob() {
   } catch (e) {
     amin.error("article-composer post job error: " + e);
     job.finished = true;
+    acClearJob();
     if (amin.ui) amin.ui.notify("Article Composer", "⚠️ Posting stopped midway — the draft is kept; check the plugin log.");
   }
 }
@@ -634,6 +894,7 @@ function acFinishPostJob() {
   // Bridge requests are never chunked: measure the exact envelope.
   var probe = AminBridge.encode({ v: 1, ns: "article-composer", action: "post", id: "probe", data: data });
   if (probe.length + "🔗BRIDGE ".length > 3900) {
+    acClearJob();
     if (amin.ui) amin.ui.notify("Article Composer",
       "⚠️ This article is too long for one bridge request (" + probe.length
       + " encoded chars). Shorten it or split it in two — the draft is kept.");
@@ -642,19 +903,53 @@ function acFinishPostJob() {
   if (job.failed && typeof amin.toast === "function") {
     amin.toast("⚠️ " + job.failed + " image(s) could not be uploaded and were skipped");
   }
+  // From here the request is the bot's to answer. Persist that state
+  // BEFORE sending, so a later Post tap can tell "already handed
+  // over" apart from "still uploading" (see acStartPost).
+  job.awaitingReply = true;
+  job.stepAt = acNowMs();
+  acSaveJob(job);
+  amin.log("article-composer: sending bridge post request (mediaCount " + job.sent + ")");
   bridge.request("post", data, function (err, res) {
     if (err) {
+      acClearJob();
       if (amin.ui) amin.ui.notify("Article Composer",
         "⚠️ Post failed (" + (err.code || "error") + "): " + (err.message || "")
         + " — the draft is kept, fix and /apost again.");
       return;
     }
+    var refs = (job.uploadRefs || []).slice();
     acClearDraft();
+    acClearJob();
     if (amin.ui) amin.ui.notify("Article Composer",
       "📰 Article posted to your @awminai DM"
       + (res && res.mediaUsed ? " with " + res.mediaUsed + " image(s)" : "")
       + " — forward it anywhere.");
+    // The uploads have done their job — the bot holds the file_ids
+    // and the article is posted. Remove the upload messages from the
+    // DM, from a FRESH budget window (the job-machine pattern: no
+    // meaningful work rides the tail of this callback). On failure
+    // above, the uploads stay — a retry needs them.
+    if (refs.length) acBudgetTick(function () { acDeleteUploads(refs); });
   });
+}
+
+// Lazy revival (the platform's lazy-timer idiom, same as bridge
+// timeouts): if a persisted job was left unfinished and stalled —
+// its hook was unwound or its tick dropped — the next incoming
+// message picks it up again. Costs one db read per message; a live
+// job in this runtime is never touched.
+function acPumpStalledJob() {
+  try {
+    if (acPostJob && !acPostJob.finished) return;
+    var j = acLoadJob();
+    if (!j || j.finished || j.awaitingReply) return;
+    if (acNowMs() - (j.stepAt || j.startedAt || 0) < AC_JOB_STALE_MS) return;
+    acPostJob = j;
+    amin.log("article-composer: reviving stalled post job at image " + j.idx + "/" + j.urls.length);
+    acMarkWindowStart();
+    acAdvancePostJob();
+  } catch (e) { /* revival is best-effort */ }
 }
 
 // =====================================================================
@@ -678,6 +973,8 @@ function onPluginAction(actionId) {
   else if (actionId === "post") acStartPost();
   else if (actionId === "discard") {
     acClearDraft();
+    acClearJob();
+    acPostJob = null;
     if (typeof amin.toast === "function") amin.toast("🗑 Article draft discarded");
   }
 }
@@ -693,6 +990,7 @@ function onMenuAction(ctx) {
 function onMessage(msg) {
   acLearnBotChat(msg);
   if (bridge.handleMessage(msg)) return true;
+  acPumpStalledJob();
 }
 
 var AC_HELP = "📰 *Article Composer*\n"
@@ -756,6 +1054,7 @@ function onCommand(ctx) {
   if (cmd === "apost") { acStartPost(); return; }
   if (cmd === "acancel") {
     acClearDraft();
+    acClearJob();
     acPostJob = null;
     amin.reply(ctx.msg, "🗑 Draft discarded.");
     return;
