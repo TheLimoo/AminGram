@@ -259,7 +259,7 @@ public class AminStoreListActivity extends BaseFragment {
             // Radar hits are raw too (dialogId|msgId|keyword|date|snippet).
             for (int i = 0; i < items.size(); i++) {
                 items.set(i, org.telegram.messenger.amin.core.MessagePipeline.formatRadarHit(
-                        currentAccount, items.get(i)));
+                        items.get(i), currentAccount));
             }
         }
     }

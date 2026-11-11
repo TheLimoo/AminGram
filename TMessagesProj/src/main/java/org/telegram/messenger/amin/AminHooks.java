@@ -740,17 +740,12 @@ public final class AminHooks {
     }
 
     /** Outgoing message hook (patch 0013, SendMessagesHelper.sendMessage
-     *  head):
-     *  1. Phase A.4: when an enabled JS plugin handles a '/'-command,
-     *     returns {@code true} so SendMessagesHelper suppresses the literal
-     *     command message from posting to the chat (fixes the /tpl wart).
-     *  2. Phase B.1 (AyuForward): when forwarding messages from a restricted
-     *     ("noforwards") source while AyuForward is enabled, intercepts the
-     *     forward and re-sends the messages/media as the user's own copy,
-     *     returning {@code true} so the server-rejected forward RPC is skipped.
-     *  3. Phase B.2 (Forward as Copy): when Forward as Copy is enabled on a
-     *     forward batch, strips attribution (drop_author) and optionally
-     *     captions (drop_caption). */
+     *  head): Phase A.4 — when an enabled JS plugin handles a '/'-command,
+     *  returns {@code true} so SendMessagesHelper suppresses the literal
+     *  command message from posting to the chat (fixes the /tpl wart).
+     *  Forwards do NOT flow through here: upstream sends them via
+     *  sendMessage(ArrayList, ...) with a direct forward RPC, so AyuForward
+     *  and Forward as Copy intercept in {@link #onForwardMessages} instead. */
     public static boolean onOutgoingMessage(SendMessagesHelper.SendMessageParams params) {
         try {
             Context context = ApplicationLoader.applicationContext;
@@ -762,47 +757,6 @@ public final class AminHooks {
                 if (JsPluginManager.hasEnabledPlugins(context)) {
                     if (JsPluginManager.dispatchOutgoingCommand(params)) {
                         return true;
-                    }
-                }
-            }
-            // 2. AyuForward & Forward-as-Copy on outgoing forwards (Phase B.1 & B.2)
-            if (params.forwardingMessages != null && !params.forwardingMessages.isEmpty()) {
-                int account = UserConfig.selectedAccount;
-                MessageObject first = params.forwardingMessages.get(0);
-                if (first != null) {
-                    account = first.currentAccount;
-                }
-                boolean hasRestricted = false;
-                for (MessageObject msg : params.forwardingMessages) {
-                    if (isRestrictedMessage(account, msg)) {
-                        hasRestricted = true;
-                        break;
-                    }
-                }
-                boolean ayuOn = ayuForwardEnabled();
-                boolean copyOn = forwardAsCopyEnabled();
-                if (hasRestricted && ayuOn) {
-                    boolean dropCap = copyOn && ForwardAsCopyModule.dropCaption(context);
-                    ArrayList<MessageObject> toSend = new ArrayList<>(params.forwardingMessages);
-                    final int accFinal = account;
-                    final long peerFinal = params.peer;
-                    AndroidUtilities.runOnUIThread(() ->
-                            forwardMessagesAsOwnCopy(null, accFinal, toSend, peerFinal, dropCap));
-                    return true;
-                }
-                if (copyOn) {
-                    boolean dropAuth = ForwardAsCopyModule.dropAuthor(context);
-                    boolean dropCap = ForwardAsCopyModule.dropCaption(context);
-                    if (dropAuth || dropCap) {
-                        boolean appliedToParams = applyForwardAsCopyFlags(params, dropAuth, dropCap);
-                        if (!appliedToParams && dropAuth) {
-                            ArrayList<MessageObject> toSend = new ArrayList<>(params.forwardingMessages);
-                            final int accFinal = account;
-                            final long peerFinal = params.peer;
-                            AndroidUtilities.runOnUIThread(() ->
-                                    forwardMessagesAsOwnCopy(null, accFinal, toSend, peerFinal, dropCap));
-                            return true;
-                        }
                     }
                 }
             }
@@ -858,26 +812,74 @@ public final class AminHooks {
         return null;
     }
 
-    private static boolean applyForwardAsCopyFlags(SendMessagesHelper.SendMessageParams params,
-                                                   boolean dropAuthor,
-                                                   boolean dropCaption) {
-        boolean any = false;
+    // Forward interception (patch 0013, head of the 12-arg
+    // sendMessage(ArrayList, ...) overload — the only overload that issues
+    // the TL_messages_forwardMessages RPC; the two short overloads delegate
+    // to it, and sendMessage(SendMessageParams) never sees a forward).
+    // Returns -1 when nothing was intercepted (caller continues normally),
+    // 0 when the forward was replaced by an as-own-copy re-send, or the
+    // send result when Forward-as-Copy re-invoked the forward with
+    // drop_author / drop_media_captions applied.
+    private static boolean forwardInterceptActive;
+
+    public static int onForwardMessages(int account,
+                                        ArrayList<MessageObject> messages,
+                                        long peer,
+                                        boolean forwardFromMyName,
+                                        boolean hideCaption,
+                                        boolean notify,
+                                        int scheduleDate,
+                                        int scheduleRepeatPeriod,
+                                        MessageObject replyToTopMsg,
+                                        int video_timestamp,
+                                        long payStars,
+                                        long monoForumPeerId,
+                                        org.telegram.messenger.MessageSuggestionParams suggestionParams) {
         try {
-            if (dropAuthor) {
-                Field f = SendMessagesHelper.SendMessageParams.class.getDeclaredField("hideForwardSendersName");
-                f.setAccessible(true);
-                f.setBoolean(params, true);
-                any = true;
+            if (forwardInterceptActive || messages == null || messages.isEmpty()) {
+                return -1;
             }
-            if (dropCaption) {
-                Field fCap = SendMessagesHelper.SendMessageParams.class.getDeclaredField("hideCaption");
-                fCap.setAccessible(true);
-                fCap.setBoolean(params, true);
-                any = true;
+            Context context = ApplicationLoader.applicationContext;
+            if (context == null) {
+                return -1;
+            }
+            boolean hasRestricted = false;
+            for (MessageObject msg : messages) {
+                if (isRestrictedMessage(account, msg)) {
+                    hasRestricted = true;
+                    break;
+                }
+            }
+            boolean ayuOn = ayuForwardEnabled();
+            boolean copyOn = forwardAsCopyEnabled();
+            if (hasRestricted && ayuOn) {
+                boolean dropCap = copyOn && ForwardAsCopyModule.dropCaption(context);
+                ArrayList<MessageObject> toSend = new ArrayList<>(messages);
+                final int accFinal = account;
+                final long peerFinal = peer;
+                AndroidUtilities.runOnUIThread(() ->
+                        forwardMessagesAsOwnCopy(null, accFinal, toSend, peerFinal, dropCap));
+                return 0;
+            }
+            if (copyOn) {
+                boolean dropAuth = ForwardAsCopyModule.dropAuthor(context);
+                boolean dropCap = ForwardAsCopyModule.dropCaption(context);
+                if ((dropAuth && !forwardFromMyName) || (dropCap && !hideCaption)) {
+                    forwardInterceptActive = true;
+                    try {
+                        return SendMessagesHelper.getInstance(account).sendMessage(
+                                messages, peer, dropAuth || forwardFromMyName,
+                                dropCap || hideCaption, notify, scheduleDate,
+                                scheduleRepeatPeriod, replyToTopMsg, video_timestamp,
+                                payStars, monoForumPeerId, suggestionParams);
+                    } finally {
+                        forwardInterceptActive = false;
+                    }
+                }
             }
         } catch (Throwable ignored) {
         }
-        return any;
+        return -1;
     }
 
     public static void promptForwardAsCopy(BaseFragment fragment,
@@ -1116,7 +1118,7 @@ public final class AminHooks {
             } else {
                 SendMessagesHelper.prepareSendingDocument(accountInstance,
                         path, path, null, caption, mime, targetPeer,
-                        null, null, null, null, entities,
+                        null, null, null, null, null,
                         true, 0, null, null, false);
             }
             return true;
@@ -1532,17 +1534,20 @@ public final class AminHooks {
             if (text == null || text.isEmpty()) {
                 return false;
             }
+            TLRPC.InputPeer peer = MessagesController.getInstance(fragment.getCurrentAccount())
+                    .getInputPeer(msg.getDialogId());
             TranslateAlert2.showAlert(
                     fragment.getContext(),
                     fragment,
                     fragment.getCurrentAccount(),
-                    msg.getDialogId(),
+                    peer,
                     msg.getId(),
+                    false,
                     null,
                     "en",
                     text,
                     null,
-                    false,
+                    isRestrictedMessage(fragment.getCurrentAccount(), msg),
                     null,
                     null);
             return true;

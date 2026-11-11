@@ -288,7 +288,7 @@ public final class MessagePipeline {
         TLRPC.Document doc = msg.getDocument();
         if (doc != null) {
             loader.loadFile(doc, msg, FileLoader.PRIORITY_HIGH, 1);
-            String name = MessageObject.getDocumentFileName(doc);
+            String name = MessageObject.getFileName(doc);
             if (name == null || name.isEmpty()) {
                 name = "doc_" + doc.id;
             }
@@ -296,8 +296,15 @@ public final class MessagePipeline {
             String path = target != null ? target.getAbsolutePath() : "";
             String attach = FileLoader.getAttachFileName(doc);
             String kind = MessageObject.isVideoDocument(doc) ? "video" : "doc";
-            AutoSaverStore.record(context, msg.getDialogId(), msg.getId(), date,
-                    kind, name, path, attach != null ? attach : "");
+            AutoSaverStore.Entry entry = new AutoSaverStore.Entry();
+            entry.dialogId = msg.getDialogId();
+            entry.id = msg.getId();
+            entry.date = date;
+            entry.kind = kind;
+            entry.name = name;
+            entry.path = path;
+            entry.attach = attach != null ? attach : "";
+            AutoSaverStore.record(context, entry);
             String logRecord = msg.getDialogId() + "|" + msg.getId() + "|" + date + "|" + name;
             if (saverBatch != null) {
                 saverBatch.add(logRecord);
@@ -317,9 +324,15 @@ public final class MessagePipeline {
                     File target = loader.getPathToMessage(msg.messageOwner);
                     String path = target != null ? target.getAbsolutePath() : "";
                     String attach = FileLoader.getAttachFileName(best);
-                    AutoSaverStore.record(context, msg.getDialogId(), msg.getId(), date,
-                            "photo", "photo_" + photo.id + ".jpg", path,
-                            attach != null ? attach : "");
+                    AutoSaverStore.Entry entry = new AutoSaverStore.Entry();
+                    entry.dialogId = msg.getDialogId();
+                    entry.id = msg.getId();
+                    entry.date = date;
+                    entry.kind = "photo";
+                    entry.name = "photo_" + photo.id + ".jpg";
+                    entry.path = path;
+                    entry.attach = attach != null ? attach : "";
+                    AutoSaverStore.record(context, entry);
                     String logRecord = msg.getDialogId() + "|" + msg.getId()
                             + "|" + date + "|photo";
                     if (saverBatch != null) {

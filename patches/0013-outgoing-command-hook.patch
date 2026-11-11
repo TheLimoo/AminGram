@@ -2,7 +2,21 @@ diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelp
 index c41c258..c62f94d 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
-@@ -4415,6 +4415,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+@@ -2230,11 +2230,13 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+         int scheduleDate,
+         int scheduleRepeatPeriod,
+         MessageObject replyToTopMsg,
+         int video_timestamp,
+         long payStars,
+         long monoForumPeerId,
+         MessageSuggestionParams suggestionParams
+     ) {
++        int aminForwardResult = org.telegram.messenger.amin.AminHooks.onForwardMessages(currentAccount, messages, peer, forwardFromMyName, hideCaption, notify, scheduleDate, scheduleRepeatPeriod, replyToTopMsg, video_timestamp, payStars, monoForumPeerId, suggestionParams);
++        if (aminForwardResult >= 0) return aminForwardResult;
+         if (messages == null || messages.isEmpty()) {
+             return 0;
+         }
+@@ -4417,6 +4417,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
      }
  
      public void sendMessage(SendMessageParams sendMessageParams) {

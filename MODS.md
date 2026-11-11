@@ -1883,6 +1883,14 @@ flow changes anywhere; identity-level hooks only. Design record:
 
 ## v2.4 — Stage 2 BIG Update (2026-11-11, on top of a5a3804)
 
+### v2.4.1 — Build fix (2026-11-12, after run 43089870239 failed javac)
+Gemini's Stage 2 code called 13.0.2 APIs that do not exist (12 errors in `compileReleaseJavaWithJavac`):
+- Forwards never flow through `sendMessage(SendMessageParams)` — upstream sends them via `sendMessage(ArrayList, ...)` with a direct `TL_messages_forwardMessages` RPC. Moved AyuForward / Forward-as-Copy interception to a new `AminHooks.onForwardMessages` hooked at the head of that 12-arg overload (patch 0013, second hunk); AyuForward re-sends restricted messages as own copy, Forward-as-Copy re-invokes the forward with `drop_author` / `drop_media_captions` (re-entry guarded). The reflection-based `applyForwardAsCopyFlags` (fields that do not exist) is deleted.
+- `prepareSendingDocument`: `entities` was passed where `editingMessageObject` belongs — now `null` (entities are derived from the caption internally).
+- `TranslateAlert2.showAlert`: now calls the real 13-arg overload with an `InputPeer` from `MessagesController.getInputPeer(dialogId)` (upstream passes `messageOwner.originalLanguage` as `fromLanguage`, which may be null — passing null is safe).
+- `MessagePipeline`: `MessageObject.getDocumentFileName` → `MessageObject.getFileName(doc)`; `AutoSaverStore.record` now takes `(Context, Entry)` — both call sites build an `Entry`; `formatRadarHit` takes `(String raw, int account)` — call site arg order fixed.
+- Patches 0001–0024 re-verified to apply cleanly in CI order on pristine f32ffee with the new 0013.
+
 ### Phase A — Optimization & Core/Engine Hardening
 - **A-01 (`AminBridge` / `JsPluginManager`)**: Set and clear `sCurrentDispatchChatId` (and `sCurrentDispatchReplyToMsg`) in `try/finally` across all dispatchers (`dispatchMessage`, `dispatchCommand`, `dispatchOutgoingCommand`, `dispatchMenuAction`, `dispatchContextAction`, `dispatchPluginAction`, and async callbacks) so `amin.sendFile` without `opts.chatId` never leaks to a stale chat.
 - **A-02, A-05, A-14, A-27 (`AminBridge`)**: Bounded `HTTP_POOL` (2–8 threads, 64 queue) and `SYNC_CALL_POOL`; sync `httpGet`/`httpPost` enforced under a hard 30 s wall-clock deadline with manual redirect cap (<= 5 hops); per-plugin async HTTP concurrency cap (8 in-flight); 2 MB POST body cap; `doSendFile` given a 120 s wall-clock deadline, 200 MB per-plugin staged cache quota, and 1 h sweep window.
