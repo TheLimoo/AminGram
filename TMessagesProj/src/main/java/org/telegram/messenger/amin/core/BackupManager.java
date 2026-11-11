@@ -8,6 +8,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import org.telegram.messenger.amin.dns.DnsProfiles;
 import org.telegram.messenger.amin.modules.LocalPremiumModule;
+import org.telegram.messenger.amin.modules.MessageFiltersModule;
 import org.telegram.messenger.amin.plugins.PluginRegistry;
 import org.telegram.messenger.amin.plugins.js.JsPlugin;
 import org.telegram.messenger.amin.plugins.js.JsPluginManager;
@@ -24,8 +25,9 @@ import java.util.Map;
 /**
  * AminGram Backup (v1.3): export/import of ALL AminGram-owned state to
  * a single JSON file:
- * - module on/off states (prefs "amingram_plugins")
+ * - module on/off states + sub-options (prefs "amingram_plugins")
  * - Keyword Radar keywords + hits
+ * - Message Filters keywords + sender IDs (prefs "amingram_filters")
  * - video background choice (the path — the video FILE itself is not
  *   embedded; if it still exists after a restore it just works,
  *   otherwise it must be re-picked once)
@@ -60,7 +62,7 @@ import java.util.Map;
 public final class BackupManager {
 
     /** Current bundle format version (see the class doc): v1 was
-     *  the original section set; v2 adds dns/fonts/local_premium. */
+     *  the original section set; v2 adds dns/fonts/local_premium/filters. */
     private static final int BACKUP_VERSION = 2;
 
     private BackupManager() {
@@ -73,21 +75,15 @@ public final class BackupManager {
             root.put("version", BACKUP_VERSION);
             root.put("created", System.currentTimeMillis());
 
-            // Module states.
-            JSONObject pluginPrefs = new JSONObject();
-            Map<String, ?> all = context.getSharedPreferences("amingram_plugins",
-                    Context.MODE_PRIVATE).getAll();
-            for (Map.Entry<String, ?> entry : all.entrySet()) {
-                pluginPrefs.put(entry.getKey(), entry.getValue());
-            }
-            root.put("plugin_prefs", pluginPrefs);
+            // Module states + sub-settings (Boolean / Integer / String).
+            root.put("plugin_prefs", prefsToJson(context, "amingram_plugins"));
 
-            // DNS Tunnel profiles + settings, app font choice and
-            // Local Premium toggles (bundle v2, pillar-4 audit §4).
-            // Whole prefs maps, same shape as plugin_prefs.
+            // DNS Tunnel profiles + settings, app font choice,
+            // Local Premium toggles, and Message Filters rules.
             root.put("dns", prefsToJson(context, DnsProfiles.PREFS));
             root.put("fonts", prefsToJson(context, "amingram_fonts"));
             root.put("local_premium", prefsToJson(context, LocalPremiumModule.PREFS));
+            root.put("filters", prefsToJson(context, MessageFiltersModule.PREFS));
 
             // Keyword Radar.
             JSONObject radar = new JSONObject();
@@ -240,26 +236,10 @@ public final class BackupManager {
                     + version + "); update the app to import it.";
         }
         try {
-            JSONObject pluginPrefs = root.optJSONObject("plugin_prefs");
-            if (pluginPrefs != null) {
-                SharedPreferences prefs = context.getSharedPreferences("amingram_plugins",
-                        Context.MODE_PRIVATE);
-                SharedPreferences.Editor edit = prefs.edit();
-                JSONArray names = pluginPrefs.names();
-                if (names != null) {
-                    for (int i = 0; i < names.length(); i++) {
-                        String key = names.optString(i);
-                        Object value = pluginPrefs.opt(key);
-                        if (value instanceof Boolean) {
-                            edit.putBoolean(key, (Boolean) value);
-                        }
-                    }
-                }
-                edit.apply();
-            }
+            applyPrefsJson(context, "amingram_plugins", root.optJSONObject("plugin_prefs"));
 
             // Bundle v2 sections (absent in v1 bundles = no-op):
-            // DNS profiles/settings, app font, Local Premium.
+            // DNS profiles/settings, app font, Local Premium, Message Filters.
             applyPrefsJson(context, DnsProfiles.PREFS, root.optJSONObject("dns"));
             JSONObject fonts = root.optJSONObject("fonts");
             if (fonts != null) {
@@ -271,6 +251,8 @@ public final class BackupManager {
             }
             applyPrefsJson(context, LocalPremiumModule.PREFS,
                     root.optJSONObject("local_premium"));
+            applyPrefsJson(context, MessageFiltersModule.PREFS,
+                    root.optJSONObject("filters"));
 
             JSONObject radar = root.optJSONObject("radar");
             if (radar != null) {

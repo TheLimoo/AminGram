@@ -45,6 +45,27 @@ jobs:
           git apply ../patches/0020-context-menu-items.patch
           git apply ../patches/0021-dns-tunnel.patch
           git apply ../patches/0023-font-selector.patch
+          git apply ../patches/0024-stage2-native-features.patch
+          python3 - <<'SPEEDEOF'
+          flo_path = "TMessagesProj/src/main/java/org/telegram/messenger/FileLoadOperation.java"
+          with open(flo_path, "r", encoding="utf-8") as f:
+              flo = f.read()
+          target = "maxDownloadRequestsBig = 8;"
+          hook = "maxDownloadRequestsBig = org.telegram.messenger.amin.AminHooks.downloadBoostMaxRequests(forceSmallChunk) > 0 ? org.telegram.messenger.amin.AminHooks.downloadBoostMaxRequests(forceSmallChunk) : 8; if (org.telegram.messenger.amin.AminHooks.downloadBoostBigChunkBytes(forceSmallChunk) > 0) { downloadChunkSizeBig = org.telegram.messenger.amin.AminHooks.downloadBoostBigChunkBytes(forceSmallChunk); }"
+          if target in flo and "downloadBoostMaxRequests" not in flo:
+              flo = flo.replace(target, hook, 1)
+              with open(flo_path, "w", encoding="utf-8") as f:
+                  f.write(flo)
+          fuo_path = "TMessagesProj/src/main/java/org/telegram/messenger/FileUploadOperation.java"
+          with open(fuo_path, "r", encoding="utf-8") as f:
+              fuo = f.read()
+          utarget = "uploadChunkSize = 64 * 1024;"
+          uhook = "uploadChunkSize = org.telegram.messenger.amin.AminHooks.uploadSpeedBoostEnabled() ? 512 * 1024 : 64 * 1024;"
+          if utarget in fuo and "uploadSpeedBoostEnabled" not in fuo:
+              fuo = fuo.replace(utarget, uhook, 1)
+              with open(fuo_path, "w", encoding="utf-8") as f:
+                  f.write(fuo)
+          SPEEDEOF
 
       - name: Register fork package in google-services.json
         run: |

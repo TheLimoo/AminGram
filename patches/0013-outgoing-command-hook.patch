@@ -6,7 +6,7 @@ index c41c258..c62f94d 100644
      }
  
      public void sendMessage(SendMessageParams sendMessageParams) {
-+        org.telegram.messenger.amin.AminHooks.onOutgoingMessage(sendMessageParams);
++        if (org.telegram.messenger.amin.AminHooks.onOutgoingMessage(sendMessageParams)) return;
          final SendMessageChatArguments sendMessageChatArguments = sendMessageParams.sendMessageChatArguments != null ?
                  sendMessageParams.sendMessageChatArguments : SendMessageChatArguments.EMPTY;
          String message = sendMessageParams.message;

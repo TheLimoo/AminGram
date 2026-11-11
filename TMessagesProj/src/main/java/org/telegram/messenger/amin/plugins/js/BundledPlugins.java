@@ -123,7 +123,9 @@ public final class BundledPlugins {
         LIST.add(new Bundled("ai-actions", "AI Actions", "amingram_plugins/ai-actions.js",
                 "AI on any message: reply to a message with /sum to summarize it, /explain to explain it simply, or /draft to draft a reply to it — or pass text directly (/sum <text>). Uses Gemini via your connected Google account (AI Studio or Vertex AI mode, see Plugins → Google Account). (v1.1: async requests, usage stats in amin.db on the plugin page.)"));
         LIST.add(new Bundled("quick-replies", "Quick Replies", "amingram_plugins/quick-replies.js",
-                "Text templates: /tpl set <name> <text> saves one, /tpl <name> posts it, /tpl list shows your templates, /tpl del <name> removes one, /tpl export posts them all in one message. Note: the /tpl command message itself also appears in the chat (the platform can't swallow outgoing commands yet)."));
+                "Text templates: /tpl set <name> <text> saves one, /tpl <name> posts it, /tpl list shows your templates, /tpl del <name> removes one, /tpl export posts them all in one message. Outgoing /tpl commands are suppressed automatically."));
+        LIST.add(new Bundled("sticker-dl", "Sticker Downloader", "amingram_plugins/sticker-dl.js",
+                "Exports stickers, custom emoji, and media messages into the chat as PNG images or raw .webp/.tgs/.webm files. Reply to a sticker with /sticker, /stpng, /straw, or /stinfo — or long-press a sticker and tap “Save Sticker / PNG”."));
     }
 
     private BundledPlugins() {

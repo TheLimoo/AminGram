@@ -11,29 +11,25 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
- * Per-plugin KV database (Platform v2 Phase B, blueprint §1.4):
- * the backing store for {@code amin.db}. One SQLite database for
- * all plugins ({@code filesDir/amingram_plugin_db.db}), one table
- * {@code kv(plugin_id, ns, key, value, updated_at)}; every access
- * is scoped by the plugin id taken from the bridge instance, so a
- * plugin can never name another plugin's rows. Values are JSON
- * text (the bridge converts at the boundary); the contract caps a
- * value at 256 KB and ns/key at 128 chars — enforced here as well
- * as at the bridge, and violations are refused (put returns
- * false), never thrown across the bridge.
+ * Per-plugin KV database (Platform v2 Phase B, blueprint §1.4).
  *
- * All calls happen on the plugin thread in practice (the bridge
- * is only reachable from plugin code); the single static handle is
- * additionally guarded by synchronizing on the class, which is
- * cheap at plugin call rates and removes any doubt.
+ * Phase A optimization (A-15):
+ * - Enforces a per-plugin total quota (MAX_PLUGIN_TOTAL_CHARS = 8 MB,
+ *   MAX_PLUGIN_ROWS = 2000) on new inserts while grandfathering existing
+ *   keys on update.
+ * - Pushes prefix filtering in keys() into SQLite LIKE queries.
+ * - Adds transactional putMulti() for batched writes.
  */
 public final class PluginDb {
 
     public static final int MAX_VALUE_CHARS = 256 * 1024;
     public static final int MAX_NAME_CHARS = 128;
+    public static final long MAX_PLUGIN_TOTAL_CHARS = 8L * 1024 * 1024;
+    public static final int MAX_PLUGIN_ROWS = 2000;
 
     private static SQLiteDatabase db;
 
@@ -66,7 +62,6 @@ public final class PluginDb {
         return name != null && !name.isEmpty() && name.length() <= MAX_NAME_CHARS;
     }
 
-    /** The stored JSON text, or null when absent/invalid names. */
     public static synchronized String get(String pluginId, String ns, String key) {
         if (!validName(ns) || !validName(key)) {
             return null;
@@ -93,8 +88,44 @@ public final class PluginDb {
         }
     }
 
-    /** Stores JSON text; false when a contract limit is violated
-     *  or the database is unavailable. */
+    private static boolean checkQuotaLocked(SQLiteDatabase handle, String pluginId,
+                                            String ns, String key, int newLen) {
+        Cursor c = null;
+        try {
+            // Grandfather updates to an existing key if within MAX_VALUE_CHARS
+            c = handle.query("kv", new String[]{"LENGTH(value)"},
+                    "plugin_id = ? AND ns = ? AND key = ?",
+                    new String[]{pluginId, ns, key}, null, null, null);
+            int existingLen = -1;
+            if (c.moveToFirst()) {
+                existingLen = c.getInt(0);
+            }
+            c.close();
+            c = null;
+            c = handle.rawQuery(
+                    "SELECT COUNT(*), COALESCE(SUM(LENGTH(value)), 0) FROM kv WHERE plugin_id = ?",
+                    new String[]{pluginId});
+            if (c.moveToFirst()) {
+                int count = c.getInt(0);
+                long totalChars = c.getLong(1);
+                if (existingLen < 0 && count >= MAX_PLUGIN_ROWS) {
+                    return false;
+                }
+                long projected = totalChars - (existingLen >= 0 ? existingLen : 0) + newLen;
+                if (projected > MAX_PLUGIN_TOTAL_CHARS) {
+                    return false;
+                }
+            }
+            return true;
+        } catch (Throwable t) {
+            return true;
+        } finally {
+            if (c != null) {
+                c.close();
+            }
+        }
+    }
+
     public static synchronized boolean put(String pluginId, String ns, String key, String json) {
         if (!validName(ns) || !validName(key) || json == null
                 || json.length() > MAX_VALUE_CHARS) {
@@ -105,6 +136,9 @@ public final class PluginDb {
             return false;
         }
         try {
+            if (!checkQuotaLocked(handle, pluginId, ns, key, json.length())) {
+                return false;
+            }
             ContentValues values = new ContentValues();
             values.put("plugin_id", pluginId);
             values.put("ns", ns);
@@ -113,6 +147,50 @@ public final class PluginDb {
             values.put("updated_at", System.currentTimeMillis());
             return handle.insertWithOnConflict("kv", null, values,
                     SQLiteDatabase.CONFLICT_REPLACE) >= 0;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** Batched transactional write of multiple keys in one namespace (A-15). */
+    public static synchronized boolean putMulti(String pluginId, String ns, Map<String, String> entries) {
+        if (!validName(ns) || entries == null || entries.isEmpty()) {
+            return false;
+        }
+        for (Map.Entry<String, String> e : entries.entrySet()) {
+            if (!validName(e.getKey()) || e.getValue() == null
+                    || e.getValue().length() > MAX_VALUE_CHARS) {
+                return false;
+            }
+        }
+        SQLiteDatabase handle = open();
+        if (handle == null) {
+            return false;
+        }
+        try {
+            handle.beginTransaction();
+            try {
+                long now = System.currentTimeMillis();
+                for (Map.Entry<String, String> e : entries.entrySet()) {
+                    if (!checkQuotaLocked(handle, pluginId, ns, e.getKey(), e.getValue().length())) {
+                        return false;
+                    }
+                    ContentValues values = new ContentValues();
+                    values.put("plugin_id", pluginId);
+                    values.put("ns", ns);
+                    values.put("key", e.getKey());
+                    values.put("value", e.getValue());
+                    values.put("updated_at", now);
+                    if (handle.insertWithOnConflict("kv", null, values,
+                            SQLiteDatabase.CONFLICT_REPLACE) < 0) {
+                        return false;
+                    }
+                }
+                handle.setTransactionSuccessful();
+                return true;
+            } finally {
+                handle.endTransaction();
+            }
         } catch (Throwable t) {
             return false;
         }
@@ -134,7 +212,20 @@ public final class PluginDb {
         }
     }
 
-    /** Keys in one namespace, optionally prefix-filtered, sorted. */
+    private static String escapeLikePrefix(String prefix) {
+        StringBuilder sb = new StringBuilder(prefix.length() + 4);
+        for (int i = 0; i < prefix.length(); i++) {
+            char c = prefix.charAt(i);
+            if (c == '\\' || c == '%' || c == '_') {
+                sb.append('\\');
+            }
+            sb.append(c);
+        }
+        sb.append('%');
+        return sb.toString();
+    }
+
+    /** Keys in one namespace, prefix-filtered in SQLite and sorted (A-15). */
     public static synchronized List<String> keys(String pluginId, String ns, String prefix) {
         List<String> out = new ArrayList<>();
         if (!validName(ns)) {
@@ -146,9 +237,16 @@ public final class PluginDb {
         }
         Cursor cursor = null;
         try {
-            cursor = handle.query("kv", new String[]{"key"},
-                    "plugin_id = ? AND ns = ?",
-                    new String[]{pluginId, ns}, null, null, "key ASC");
+            if (prefix == null || prefix.isEmpty()) {
+                cursor = handle.query("kv", new String[]{"key"},
+                        "plugin_id = ? AND ns = ?",
+                        new String[]{pluginId, ns}, null, null, "key ASC");
+            } else {
+                cursor = handle.query("kv", new String[]{"key"},
+                        "plugin_id = ? AND ns = ? AND key LIKE ? ESCAPE '\\'",
+                        new String[]{pluginId, ns, escapeLikePrefix(prefix)},
+                        null, null, "key ASC");
+            }
             while (cursor.moveToNext()) {
                 String key = cursor.getString(0);
                 if (prefix == null || prefix.isEmpty() || key.startsWith(prefix)) {
@@ -164,7 +262,6 @@ public final class PluginDb {
         return out;
     }
 
-    /** Removes every row of one namespace. */
     public static synchronized void clear(String pluginId, String ns) {
         if (!validName(ns)) {
             return;
@@ -180,7 +277,6 @@ public final class PluginDb {
         }
     }
 
-    /** Distinct namespaces a plugin has rows in (storage inspector). */
     public static synchronized List<String> namespaces(String pluginId) {
         List<String> out = new ArrayList<>();
         SQLiteDatabase handle = open();
@@ -203,10 +299,6 @@ public final class PluginDb {
         return out;
     }
 
-    /** Every row in the database as {pluginId, ns, key, valueJson}
-     *  (sorted). Backup export (Stage 1, audit D1) — the value is
-     *  the raw stored JSON text, carried verbatim so a restore is
-     *  lossless for every JSON shape the bridge can produce. */
     public static synchronized List<String[]> dumpAll() {
         List<String[]> out = new ArrayList<>();
         SQLiteDatabase handle = open();
@@ -231,12 +323,6 @@ public final class PluginDb {
         return out;
     }
 
-    /** Restores rows produced by {@link #dumpAll} (BackupManager
-     *  import): for each plugin present in {@code rows}, that
-     *  plugin's existing rows are replaced by the backup's rows;
-     *  plugins absent from the backup are untouched. Rows that
-     *  violate the store contract are skipped, as in put(). One
-     *  transaction — a failure leaves the previous state intact. */
     public static synchronized void restoreAll(List<String[]> rows) {
         if (rows == null || rows.isEmpty()) {
             return;
@@ -281,7 +367,6 @@ public final class PluginDb {
         }
     }
 
-    /** Drops ALL of a plugin's rows (true delete). */
     public static synchronized void deleteAllForPlugin(String pluginId) {
         SQLiteDatabase handle = open();
         if (handle == null) {

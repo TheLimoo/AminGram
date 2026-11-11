@@ -1,71 +1,43 @@
 package org.telegram.messenger.amin.plugins.js;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Parser/validator for the ==AminGramPlugin== manifest header, exactly
- * as documented in docs/PLUGIN-MASTER-PROMPT.md:
+ * Parser/validator for the ==AminGramPlugin== manifest header.
  *
- *   // ==AminGramPlugin==
- *   // @id          shout
- *   // @name        Shout
- *   // @version     1.0
- *   // @author      Amin
- *   // @description ...
- *   // @capabilities commands, send
- *   // @icon         music            (optional, v2.0)
- *   // @menuLabel    Play a song      (optional, v2.0)
- *   // ==/AminGramPlugin==
- *
- * All six fields are required. @id must be lowercase letters, digits
- * and '-'. @capabilities entries must come from the known set
- * (observe, commands, send, settings, http, menu, google, file) — an
- * unknown word makes the plugin invalid, per the master prompt.
- * `google` (v1.3.5) is the amin.google surface: the plugin's
- * bridge carries it only when this capability is declared.
- * `file` (v2.0) gates the bridge's file surface, like `google`.
- *
- * Optional fields (v2.0): @icon is an attach-menu icon SPEC —
- * either a set name (download, mail, sparkles, dice, text, link,
- * music, star, bolt, camera, globe, gear) or "emoji:<glyph>" —
- * and @menuLabel overrides the plugin name as the attach-menu
- * button label. Both default to "" (unset) and are per-user
- * overridable via the menu configuration (AminMenuConfig).
+ * Phase A additions (A-17, A-35):
+ * - Enforces MAX_SOURCE_CHARS (512 KB) before parsing/compiling.
+ * - Deduplicates @capabilities and @depends entries.
+ * - Supports optional @commands header and extracts handled slash-command
+ *   names from the plugin source/description so outgoing commands can be
+ *   suppressed synchronously when matched.
  */
 public final class JsManifest {
+
+    public static final int MAX_SOURCE_CHARS = 512 * 1024;
 
     public String id;
     public String name;
     public String version;
     public String author;
     public String description;
-    /** Optional manifest @icon ("" when unset). */
     public String icon = "";
-    /** Optional manifest @menuLabel ("" when unset). */
     public String menuLabel = "";
-    /** Optional manifest @dataVersion (Platform v2, A6); 1 when unset. */
     public int dataVersion = 1;
-    /** Optional manifest @minPlatform (Platform v2, A9); 1 when unset. */
     public int minPlatform = 1;
-    /** Optional manifest @contextMenu (Platform v2 Phase B, §1.8b):
-     *  the label of this plugin's message long-press menu item;
-     *  "" = no item. Only meaningful with the onContextAction hook. */
     public String contextMenu = "";
-    /** Optional manifest @exports (Phase B, §1.10): the PLUGIN_API
-     *  method names other plugins may relay-call. */
     public final List<String> exports = new ArrayList<>();
-    /** Optional manifest @topics (Phase B, §1.10): relay event
-     *  topics this plugin's onEvent wants; "*" = all topics. */
     public final List<String> topics = new ArrayList<>();
-    /** Optional manifest @depends (Phase B, §2.4): declared
-     *  dependencies, each "id" or "id@>=X.Y[.Z]". */
     public final List<Depends> depends = new ArrayList<>();
     public final List<String> capabilities = new ArrayList<>();
+    public final List<String> commands = new ArrayList<>();
 
-    /** One @depends entry: a plugin id plus an optional minimum
-     *  version (null = any installed version satisfies). */
     public static final class Depends {
         public final String id;
         public final String minVersion;
@@ -77,6 +49,11 @@ public final class JsManifest {
     }
 
     private static final Pattern ID_PATTERN = Pattern.compile("^[a-z0-9][a-z0-9-]*$");
+    private static final Pattern CMD_NAME_PATTERN = Pattern.compile("^[a-z0-9_]{1,32}$");
+    private static final Pattern CODE_CMD_EQ_PATTERN = Pattern.compile(
+            "(?:ctx\\.command|\\bcommand|\\bcmd)\\s*(?:===|!==|==|!=)\\s*[\"']([a-zA-Z0-9_]{1,32})[\"']");
+    private static final Pattern DESC_SLASH_CMD_PATTERN = Pattern.compile(
+            "(?:^|[\\s(])/([a-z][a-z0-9_]{1,23})(?=[\\s,.)|]|$)");
     private static final String[] KNOWN_CAPABILITIES = {
             "observe", "commands", "send", "settings", "http", "menu", "google", "file",
             "act", "ui", "relay"
@@ -89,11 +66,13 @@ public final class JsManifest {
         return capabilities.contains(capability);
     }
 
-    /** Returns the parsed manifest, or throws IllegalArgumentException
-     *  with a user-readable reason. */
     public static JsManifest parse(String source) {
         if (source == null) {
             throw new IllegalArgumentException("Empty plugin file.");
+        }
+        if (source.length() > MAX_SOURCE_CHARS) {
+            throw new IllegalArgumentException(
+                    "Plugin file is too large (" + (source.length() / 1024) + " KB; max 512 KB).");
         }
         int start = source.indexOf("// ==AminGramPlugin==");
         int end = source.indexOf("// ==/AminGramPlugin==");
@@ -103,6 +82,7 @@ public final class JsManifest {
         }
         String block = source.substring(start, end);
         JsManifest manifest = new JsManifest();
+        Set<String> seenDepends = new LinkedHashSet<>();
         for (String rawLine : block.split("\n")) {
             String line = rawLine.trim();
             if (!line.startsWith("//")) {
@@ -165,6 +145,18 @@ public final class JsManifest {
                         }
                     }
                     break;
+                case "commands":
+                    for (String cmd : value.split(",")) {
+                        String c = cmd.trim().toLowerCase(Locale.US);
+                        if (c.startsWith("/")) {
+                            c = c.substring(1).trim();
+                        }
+                        if (!c.isEmpty() && CMD_NAME_PATTERN.matcher(c).matches()
+                                && !manifest.commands.contains(c)) {
+                            manifest.commands.add(c);
+                        }
+                    }
+                    break;
                 case "depends":
                     for (String entry : value.split(",")) {
                         String e = entry.trim();
@@ -181,15 +173,15 @@ public final class JsManifest {
                                 depMin = null;
                             }
                         }
-                        if (ID_PATTERN.matcher(depId).matches()) {
+                        if (ID_PATTERN.matcher(depId).matches() && seenDepends.add(depId)) {
                             manifest.depends.add(new Depends(depId, depMin));
                         }
                     }
                     break;
                 case "capabilities":
                     for (String cap : value.split(",")) {
-                        String c = cap.trim().toLowerCase();
-                        if (!c.isEmpty()) {
+                        String c = cap.trim().toLowerCase(Locale.US);
+                        if (!c.isEmpty() && !manifest.capabilities.contains(c)) {
                             manifest.capabilities.add(c);
                         }
                     }
@@ -229,13 +221,37 @@ public final class JsManifest {
                 throw new IllegalArgumentException("Unknown capability: " + cap);
             }
         }
+        if (manifest.capabilities.contains("commands") && manifest.commands.isEmpty()) {
+            manifest.commands.addAll(extractCommandsFromSource(source, manifest.description));
+        }
         return manifest;
     }
 
-    /** Lenient int for the optional v2 fields: an unparsable or
-     *  non-positive value keeps the default instead of failing the
-     *  install (manifest evolution rule — new fields warn, never
-     *  brick). */
+    /** Extracts handled slash-command names from source & description when
+     *  @commands is not explicitly declared in the manifest header. */
+    public static List<String> extractCommandsFromSource(String source, String description) {
+        Set<String> out = new LinkedHashSet<>();
+        if (source != null) {
+            Matcher m = CODE_CMD_EQ_PATTERN.matcher(source);
+            while (m.find()) {
+                String c = m.group(1).toLowerCase(Locale.US);
+                if (CMD_NAME_PATTERN.matcher(c).matches()) {
+                    out.add(c);
+                }
+            }
+        }
+        if (description != null) {
+            Matcher dm = DESC_SLASH_CMD_PATTERN.matcher(description);
+            while (dm.find()) {
+                String c = dm.group(1).toLowerCase(Locale.US);
+                if (CMD_NAME_PATTERN.matcher(c).matches()) {
+                    out.add(c);
+                }
+            }
+        }
+        return new ArrayList<>(out);
+    }
+
     private static int parsePositiveInt(String value, int fallback) {
         try {
             int parsed = Integer.parseInt(value.trim());

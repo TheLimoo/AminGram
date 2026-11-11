@@ -262,7 +262,7 @@ list in filename order):
   -1000-index (no collision with upstream ids 1..12 / LAYOUT_TYPE_*)
   and a click branch right after the click tag is read dispatches
   `AminHooks.onPluginMenuAction(id, dialogId)` and dismisses.
-- 0015 design-startup-hook (v1.3.3, LaunchActivity.onCreate): one
+- 0015 design-startup-hook (v1.3.3, LaunchActivity.onCreate — DELETED in v2.0 along with DesignThemes/applyDesignOnStartup; no startup design work runs in current builds): one
   FQ line right after `ApplicationLoader.postInitApplication()` —
   `org.telegram.messenger.amin.AminHooks.applyDesignOnStartup();` —
   so an enabled design module (amin_design / ios_theme) owns the
@@ -658,7 +658,7 @@ no build).
 - Stories row: patch 0008's gates verified passthrough when
   Hide Stories is off (and dialogStoriesCellVisible is not
   gated at all); no other patch touches stories. As a
-  self-heal, AminHooks.applyDesignOnStartup schedules a
+  historical self-heal (v1.3.4 only — deleted in v2.0 when patch 0015 and applyDesignOnStartup were removed), it scheduled a
   one-shot +4s NotificationCenter.storiesUpdated post when
   Hide Stories is off (upstream posts the same from
   LaunchActivity; DialogsActivity's handler is a pure
@@ -1880,3 +1880,33 @@ flow changes anywhere; identity-level hooks only. Design record:
   showPluginOverflow pattern). Full compile + on-device pass
   (fonts on chat list/chat, stat grid, x3 toggle cycle restore)
   remain CI/device-side.
+
+## v2.4 — Stage 2 BIG Update (2026-11-11, on top of a5a3804)
+
+### Phase A — Optimization & Core/Engine Hardening
+- **A-01 (`AminBridge` / `JsPluginManager`)**: Set and clear `sCurrentDispatchChatId` (and `sCurrentDispatchReplyToMsg`) in `try/finally` across all dispatchers (`dispatchMessage`, `dispatchCommand`, `dispatchOutgoingCommand`, `dispatchMenuAction`, `dispatchContextAction`, `dispatchPluginAction`, and async callbacks) so `amin.sendFile` without `opts.chatId` never leaks to a stale chat.
+- **A-02, A-05, A-14, A-27 (`AminBridge`)**: Bounded `HTTP_POOL` (2–8 threads, 64 queue) and `SYNC_CALL_POOL`; sync `httpGet`/`httpPost` enforced under a hard 30 s wall-clock deadline with manual redirect cap (<= 5 hops); per-plugin async HTTP concurrency cap (8 in-flight); 2 MB POST body cap; `doSendFile` given a 120 s wall-clock deadline, 200 MB per-plugin staged cache quota, and 1 h sweep window.
+- **A-03, A-04, A-06, A-11, A-13 (`DeletedStore`)**: Replaced linear list scans (`O(N * 1000)`) with an insertion-ordered `LinkedHashMap<String, String>` keyed by `dialogId|msgId` (`O(1)` `upsertSnapshot`, `findSnapshotText`, `updateSnapshotText`, `takeSnapshotLocked`); moved `flushSnapshots` JSON serialization outside `DeletedStore.class` lock with a generation counter; offloaded `markDeleted` and batched `recordEdits` disk writes to `Utilities.stageQueue`; reused `ThreadLocal<SimpleDateFormat>`.
+- **A-07, A-20 (`VaultStore`)**: Added in-memory cache per `(prefsName, key)`, `VaultStore.count(...)`, `HashSet` `O(B + kept)` deduplication in `addUniqueBatch`, and lock-free JSON serialization.
+- **A-10 (`AutoSaverStore`)**: Added in-memory `cachedEntries` and automatic deletion of durable files under `filesDir/amin_autosaver/` on `CAP` eviction and `remove()`.
+- **A-12, A-16, A-18, A-22 (`JsPluginManager`)**: Cached `isEngineEnabled` and `hasEnabledPlugins` via `SharedPreferences.OnSharedPreferenceChangeListener`; capped `pendingMessageDispatches` at 64; shared a single Rhino `Context` across `relayEmit` targets; reused `ThreadLocal<SimpleDateFormat>` + cached `todayString()`; debounced error-storm `persistMetaOnly` writes; reused `sharedFallbackScope`.
+- **A-15 (`PluginDb` / `AminBridge`)**: Pushed `keys()` prefix filtering into SQL (`LIKE ? ESCAPE '\'`); enforced per-plugin total quota (8 MB / 2,000 rows, grandfathering updates to existing keys); added transactional `amin.db.putMulti(ns, obj)` and `amin.storage.setMulti(obj)`.
+- **A-17, A-25 (`JsManifest` / `PluginFiles`)**: Added 512 KB source size cap (`MAX_SOURCE_CHARS`), deduplicated `@capabilities`/`@depends`, and capped `PluginFiles.readBytes`/`readText` at 4 MB.
+- **A-19, A-20, A-22, A-24, A-32, A-33 (`HubCommon` / `AminCleanup` / `AminPluginEditorActivity`)**: Removed dead `KIND_INFO`, write-only `Row.multiline`, and dead `JsPluginManager.suspendReason` / `MessagePipeline.scanOne`; cached `FooterView` package `versionName` and `StatsView` DNS profile name; recycled chip `TextView`s and `PorterDuffColorFilter`s in `PluginCardView`; added `_ryoku_scrubbed_v1` marker in `AminCleanup`; switched `AminPluginEditorActivity` and `HubCommon` bundled installs to `installAsync`.
+- **Phase A.4 Plugin Engine Additions**:
+  - Outgoing command text suppression (`patches/0013-outgoing-command-hook.patch` + `AminHooks.onOutgoingMessage` + `JsPluginManager.dispatchOutgoingCommand`): when an enabled command plugin matches an outgoing `/command` (via manifest `@commands` or source scan), `SendMessagesHelper.sendMessage` returns immediately after dispatching to the plugin so literal command text (e.g. `/tpl`) does not post to the chat.
+  - Raw message inspection (`msg.raw` on every dispatched `msg` + `amin.getMessageRaw(chatId, id)` on the base bridge) + enriched `msg.media` (`id`, `dcId`, `stickerSetId`, `stickerSetShortName`, `stickerEmoji`, `isAnimatedSticker`, `isVideoSticker`, `isCached`, `localPath`) + `amin.sendMessageMedia(ref, opts)` on `file`-capable bridges.
+  - Relay hardening (`@depends` runtime enforcement + 256 KB payload cap).
+
+### Phase B — New Native Features (`patches/0024-stage2-native-features.patch`)
+- **AyuForward (`amin.modules.AyuForwardModule`, id `ayu_forward`)**: Forwards, copies, and saves messages/media from restricted (`noforwards`) channels and groups by re-sending them as a fresh user-owned copy (`AminHooks.onOutgoingMessage`, `AminHooks.forwardMessagesAsOwnCopy`, and message menu options `OPTION_AYU_FORWARD_COPY`, `OPTION_AYU_SAVE_SELF`, `OPTION_AYU_COPY_TEXT`). Cached media is staged and re-uploaded via `SendMessagesHelper.prepareSending*`; uncached media is fetched via `FileLoader` and sent once cached.
+- **Forward as Copy (`amin.modules.ForwardAsCopyModule`, id `forward_as_copy`)**: Strips the `"Forwarded from"` header (`drop_author`) and optionally media captions (`drop_caption`) on forwards, plus adds `"Forward as Copy (No Quote)"` (`OPTION_FORWARD_AS_COPY`) to the message menu.
+- **Message Filters (`amin.modules.MessageFiltersModule`, id `message_filters`, prefs `amingram_filters`)**: Collapses incoming/loaded messages matching stop-word keywords or sender IDs behind `"🚫 Filtered (...) — tap to reveal"`. Rules sit right next to Keyword Radar in the hub. Tapping `"Reveal filtered message"` (`OPTION_REVEAL_FILTERED`) or double-tapping the filtered bubble restores the original text in-place.
+- **Folder & Chat QoL Pack (`amin.modules.FolderChatQolModule`, id `folder_chat_qol`)**: Adds `"Mark folder as read…"` (`OPTION_MARK_FOLDER_READ` + hub action), `"Jump to beginning"` (`OPTION_JUMP_TO_BEGINNING`, scrolling/opening message ID 1), and horizontal folder filter tabs inside `AminDialogPickerActivity` + `DialogsActivity` forward-folder hidden-chat filtering.
+- **Configurable Double-Tap & Swipe Actions (`amin.modules.GestureActionsModule`, id `gesture_actions`)**: Attaches a non-intrusive double-tap detector on `ChatMessageCell` (`AminHooks.onCellAttached`, patch 0024) supporting Quick React (`👍`), Reply, Save to Saved Messages, Translate, or Forward as Copy, plus double-tap own message = Edit and configurable swipe action.
+- **Download & Upload Speed Boost (`amin.modules.SpeedBoostModule`, id `speed_boost`, default OFF)**: Hub setting with Download levels Off / Balanced (`512 KB × 8`) / Extreme (`1024 KB × 12`) and separate Upload Speed Boost (`512 KB` chunks). Syncs `MessagesController.getfileExperimentalParams` and hooks `FileLoadOperation.updateParams()` (preserving `!forceSmallChunk` / `LIMIT_INVALID` fallback) and `FileUploadOperation`.
+
+### Phase C — Bundled & Catalog Plugins
+- **Sticker Downloader (`sticker-dl.js`, v1.0.0, bundled #13 + catalog)**: Exports any sticker, custom emoji, or media message as a PNG image or raw `.webp`/`.tgs`/`.webm` file via `/sticker`, `/stpng`, `/straw`, or long-press `"Save Sticker / PNG"` using `amin.sendMessageMedia`.
+- **Downloader Pro (`media-dl.js`, v3.0.3)**: Fixed X/Twitter URL matching (`/i/web/status/`, `mobile.twitter.com`, `vxtwitter.com`, `fxtwitter.com`, `fixupx.com`), added TikTok short-link fallback (`vm.tiktok.com` / `vt.tiktok.com`), and aligned timeouts/caps.
+- **Quick Replies (`quick-replies.js`, v1.1.1)**: Updated description and notes now that outgoing `/tpl` commands are suppressed by the platform.

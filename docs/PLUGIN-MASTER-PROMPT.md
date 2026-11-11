@@ -248,6 +248,10 @@ amin.platform                       // v2.1 feature detection — see below
 amin.getChatInfo(chatId)            // v2.1 lazy lookups — see below
 amin.getUserInfo(userId)
 amin.getMessage(chatId, id)
+amin.getMessageRaw(chatId, id)      // v2.4 raw TLRPC.Message metadata snapshot
+amin.sendMessageMedia(ref, opts)    // `file` ONLY (v2.4) — export/send sticker or message media
+amin.storage.setMulti(obj)          // v2.4 batched storage write in one apply()
+amin.db.putMulti(ns, obj)           // v2.4 batched SQLite write in one transaction
 amin.editMessage(ref, text)         // `act` capability ONLY — see below
 amin.react(ref, emoji)              // `act` capability ONLY — see below
 amin.deleteMessage(ref, opts)       // `act` ONLY (v2.2) — see Acting

@@ -9,17 +9,17 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Sandboxed per-plugin file storage (Platform v2 Phase B, §1.6):
- * the backing helpers for {@code amin.files} and for the file
- * picker's durable copies. Root: {@code filesDir/jsplugins-data/<id>/}.
- * Names are BARE file names — any path separator, ".." or empty
- * name is rejected natively, so a plugin can never escape its
- * sandbox. Per-plugin quota is 50 MB of file content; writes that
- * would exceed it fail cleanly (false), never partially.
+ * Sandboxed per-plugin file storage (Platform v2 Phase B, §1.6).
+ *
+ * Phase A optimization (A-25):
+ * - Caps single in-heap reads (readBytes / readText) at MAX_READ_BYTES
+ *   (4 MB) so a large sandbox file cannot spike heap by 100 MB on the
+ *   plugin thread.
  */
 public final class PluginFiles {
 
     public static final long QUOTA_BYTES = 50L * 1024 * 1024;
+    public static final long MAX_READ_BYTES = 4L * 1024 * 1024;
 
     private PluginFiles() {
     }
@@ -40,15 +40,13 @@ public final class PluginFiles {
                 && !name.contains("..") && name.indexOf('\0') < 0;
     }
 
-    static File file(Context context, String pluginId, String name) {
+    public static File file(Context context, String pluginId, String name) {
         if (!validName(name)) {
             return null;
         }
         return new File(dir(context, pluginId), name);
     }
 
-    /** Ids of all plugins that have a sandbox directory (Backup
-     *  export, Stage 1). Sorted; empty when no sandbox exists yet. */
     public static List<String> pluginIds(Context context) {
         List<String> out = new ArrayList<>();
         File root = new File(context.getFilesDir(), "jsplugins-data");
@@ -64,18 +62,15 @@ public final class PluginFiles {
         return out;
     }
 
-    /** Raw bytes of a stored file (Backup export), or null. The
-     *  text API above cannot carry binary payloads, hence this
-     *  twin; same sandbox validation applies. */
     public static byte[] readBytes(Context context, String pluginId, String name) {
         File file = file(context, pluginId, name);
-        if (file == null || !file.isFile()) {
+        if (file == null || !file.isFile() || file.length() > MAX_READ_BYTES) {
             return null;
         }
         FileInputStream in = null;
         try {
             in = new FileInputStream(file);
-            byte[] data = new byte[(int) Math.min(file.length(), Integer.MAX_VALUE - 8)];
+            byte[] data = new byte[(int) Math.min(file.length(), MAX_READ_BYTES)];
             int read = 0;
             while (read < data.length) {
                 int n = in.read(data, read, data.length - read);
@@ -102,7 +97,6 @@ public final class PluginFiles {
         }
     }
 
-    /** Total bytes currently stored for the plugin. */
     public static long usedBytes(Context context, String pluginId) {
         long total = 0;
         File[] files = dir(context, pluginId).listFiles();
@@ -121,10 +115,15 @@ public final class PluginFiles {
         if (file == null || !file.isFile()) {
             return null;
         }
+        if (file.length() > MAX_READ_BYTES) {
+            JsPluginManager.appendLog(pluginId,
+                    "[warn] amin.files.readText refused: '" + name + "' exceeds 4 MB read cap");
+            return null;
+        }
         FileInputStream in = null;
         try {
             in = new FileInputStream(file);
-            byte[] data = new byte[(int) Math.min(file.length(), Integer.MAX_VALUE - 8)];
+            byte[] data = new byte[(int) Math.min(file.length(), MAX_READ_BYTES)];
             int read = 0;
             while (read < data.length) {
                 int n = in.read(data, read, data.length - read);
@@ -146,7 +145,6 @@ public final class PluginFiles {
         }
     }
 
-    /** Writes text (UTF-8) under the quota; false on any failure. */
     public static boolean writeText(Context context, String pluginId, String name, String text) {
         File file = file(context, pluginId, name);
         if (file == null || text == null) {
@@ -190,7 +188,6 @@ public final class PluginFiles {
         return file != null && file.isFile() && file.delete();
     }
 
-    /** [{name, sizeBytes, modifiedAt}] for every stored file. */
     public static List<FileInfo> list(Context context, String pluginId) {
         List<FileInfo> out = new ArrayList<>();
         File[] files = dir(context, pluginId).listFiles();
@@ -205,10 +202,6 @@ public final class PluginFiles {
         return out;
     }
 
-    /** Copies a stream's content into the sandbox under name,
-     *  honouring the quota; returns the absolute path or null.
-     *  Used by the file picker (durable copy) — the caller owns
-     *  and closes the stream. */
     public static String copyInto(Context context, String pluginId, String name,
                                   java.io.InputStream in, long declaredSize) {
         File file = file(context, pluginId, name);
@@ -255,7 +248,6 @@ public final class PluginFiles {
         }
     }
 
-    /** Drops the plugin's whole sandbox (true delete). */
     public static void deleteAllForPlugin(Context context, String pluginId) {
         File dir = new File(new File(context.getFilesDir(), "jsplugins-data"), pluginId);
         File[] files = dir.listFiles();

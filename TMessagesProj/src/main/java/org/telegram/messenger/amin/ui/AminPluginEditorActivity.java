@@ -21,19 +21,12 @@ import org.telegram.ui.ActionBar.Theme;
 import org.telegram.ui.Components.BulletinFactory;
 
 /**
- * In-app code editor for one JS plugin (v2.2): change a plugin's
- * code and save it in place — no delete-and-reinstall dance.
+ * In-app code editor for one JS plugin (v2.2).
  *
- * Saving routes through {@link JsPluginManager#install}, the same
- * validated update-in-place path as file import and paste-code:
- * the manifest is parsed, the JavaScript is compile-checked and
- * probe-evaluated, and the SETTINGS schema is validated BEFORE the
- * code file on disk is touched, so a broken edit can never clobber
- * the working plugin — the editor just shows install's readable
- * error and stays open. A successful save preserves the plugin's
- * storage, settings, enabled state and log, hot-reloads the
- * runtime, and (via install) keeps the previous code as a rollback
- * copy the "Restore" action can bring back in one tap.
+ * Phase A optimization (A-32): routes save() and confirmRestore()
+ * through JsPluginManager.installAsync so Rhino compilation and
+ * top-level probe evaluation run on the plugin thread instead of
+ * freezing the UI thread.
  */
 public class AminPluginEditorActivity extends BaseFragment {
 
@@ -44,6 +37,7 @@ public class AminPluginEditorActivity extends BaseFragment {
     private final String pluginName;
     private String originalSource = "";
     private EditText editText;
+    private boolean saving;
 
     public AminPluginEditorActivity(String pluginId, String pluginName) {
         super();
@@ -123,31 +117,40 @@ public class AminPluginEditorActivity extends BaseFragment {
     }
 
     private void save(Context context) {
+        if (saving) {
+            return;
+        }
         String source = editText.getText().toString();
         if (source.equals(originalSource)) {
             BulletinFactory.of(this)
                     .createSimpleBulletin(R.raw.info, "No changes to save").show();
             return;
         }
-        // Validated update-in-place: install returns null on success
-        // or a readable error, and the on-disk code is only replaced
-        // after every check has passed.
-        String error = JsPluginManager.installWithSource(context, source, "editor");
-        if (error != null) {
-            AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
-            builder.setTitle("Couldn't update the plugin");
-            builder.setMessage(error
-                    + "\n\nYour current code is unchanged — the plugin on disk is untouched.");
-            builder.setPositiveButton("OK", null);
-            showDialog(builder.create());
-            return;
-        }
-        BulletinFactory.of(this)
-                .createSimpleBulletin(R.raw.contact_check, "Plugin updated").show();
-        finishFragment();
+        saving = true;
+        JsPluginManager.installAsync(context, source, "editor", error -> {
+            saving = false;
+            if (getParentActivity() == null) {
+                return;
+            }
+            if (error != null) {
+                AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+                builder.setTitle("Couldn't update the plugin");
+                builder.setMessage(error
+                        + "\n\nYour current code is unchanged — the plugin on disk is untouched.");
+                builder.setPositiveButton("OK", null);
+                showDialog(builder.create());
+                return;
+            }
+            BulletinFactory.of(AminPluginEditorActivity.this)
+                    .createSimpleBulletin(R.raw.contact_check, "Plugin updated").show();
+            finishFragment();
+        });
     }
 
     private void confirmRestore(Context context) {
+        if (saving) {
+            return;
+        }
         AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
         builder.setTitle("Restore previous version?");
         builder.setMessage("The code from before the last update replaces the current code. "
@@ -159,18 +162,24 @@ public class AminPluginEditorActivity extends BaseFragment {
                         .createSimpleBulletin(R.raw.info, "No previous version saved").show();
                 return;
             }
-            String error = JsPluginManager.installWithSource(context, prev, "editor");
-            if (error != null) {
-                AlertDialog.Builder errorBuilder = new AlertDialog.Builder(getParentActivity());
-                errorBuilder.setTitle("Couldn't restore");
-                errorBuilder.setMessage(error);
-                errorBuilder.setPositiveButton("OK", null);
-                showDialog(errorBuilder.create());
-                return;
-            }
-            BulletinFactory.of(AminPluginEditorActivity.this)
-                    .createSimpleBulletin(R.raw.contact_check, "Previous version restored").show();
-            finishFragment();
+            saving = true;
+            JsPluginManager.installAsync(context, prev, "editor", error -> {
+                saving = false;
+                if (getParentActivity() == null) {
+                    return;
+                }
+                if (error != null) {
+                    AlertDialog.Builder errorBuilder = new AlertDialog.Builder(getParentActivity());
+                    errorBuilder.setTitle("Couldn't restore");
+                    errorBuilder.setMessage(error);
+                    errorBuilder.setPositiveButton("OK", null);
+                    showDialog(errorBuilder.create());
+                    return;
+                }
+                BulletinFactory.of(AminPluginEditorActivity.this)
+                        .createSimpleBulletin(R.raw.contact_check, "Previous version restored").show();
+                finishFragment();
+            });
         });
         builder.setNegativeButton("Cancel", null);
         showDialog(builder.create());

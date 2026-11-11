@@ -7,13 +7,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * An installed user plugin: manifest data + install state. The source
- * code itself lives in the app-private files dir (jsplugins/<id>.js);
- * this metadata lives in prefs "amingram_jsplugins"/"meta_<id>".
- *
- * The has* flags (which hooks the plugin defines) are detected at
- * install time by evaluating the file in a throwaway Rhino scope;
- * they drive the hub (and the attach-menu listing) without re-parsing.
+ * An installed user plugin: manifest data + install state.
  */
 public final class JsPlugin {
 
@@ -22,8 +16,6 @@ public final class JsPlugin {
         public String type; // "bool" | "text" | "number" | "slider" | "select" | "header"
         public String title;
         public Object def;   // Boolean, String or Double (number/slider)
-        // Settings schema v2 (Platform v2, A5) — all additive;
-        // defaults below are exactly what a pre-v2 meta parses to.
         public String help = "";
         public int maxLength = 0;
         public boolean multiline;
@@ -34,14 +26,9 @@ public final class JsPlugin {
         public final List<String> optionLabels = new ArrayList<>();
         public String dependsOnKey = "";
         public String dependsOnEquals = "";
-        /** Settings schema v2 rest (Phase B, §1.5): for type
-         *  "file", the SAF accept pattern ("" = any). */
         public String accept = "";
     }
 
-    /** One PLUGIN_PAGE row (Phase B, §1.8a), probe-parsed at
-     *  install: type is "info" (static text) or "action" (a
-     *  tappable row dispatched to onPluginAction(id)). */
     public static final class PageRow {
         public String type = "info";
         public String id = "";
@@ -55,11 +42,7 @@ public final class JsPlugin {
     public String version;
     public String author;
     public String description;
-    /** Manifest @icon ("" when unset): an icon spec — a set name
-     *  (download, mail, sparkles, dice, text, link, music, star,
-     *  bolt, camera, globe, gear) or "emoji:<glyph>". */
     public String icon = "";
-    /** Manifest @menuLabel ("" when unset): attach-menu label override. */
     public String menuLabel = "";
     public final List<String> capabilities = new ArrayList<>();
     public boolean enabled = true;
@@ -68,53 +51,37 @@ public final class JsPlugin {
     public boolean hasCommand;
     public boolean hasMenu;
     public long installedAt;
-    // Lifecycle hooks detected at probe time (Platform v2, A6).
     public boolean hasEnable;
     public boolean hasDisable;
     public boolean hasSettingsChanged;
     public boolean hasMigrate;
-    /** Manifest @dataVersion (declared by the installed code, A6). */
     public int dataVersion = 1;
-    /** Data version the plugin's stored data has been migrated
-     *  to; 0 = never recorded (pre-v2 metas, fresh installs adopt
-     *  the declared version silently). Persisted. */
     public int dataVersionStored = 0;
-    /** Manifest @minPlatform (A9); 1 when undeclared. Persisted. */
     public int minPlatform = 1;
-    /** Watchdog counters (A7): errDay is "yyyy-MM-dd"; errCount is
-     *  the number of hook errors recorded that day. Persisted. */
     public String errDay = "";
     public int errCount = 0;
-    // Platform Phase B additive fields (§1.8b/§1.10/§2.4/§2.7).
-    /** Manifest @contextMenu label ("" = no menu item). */
     public String contextMenu = "";
-    /** Manifest @exports method names (relay providers). */
     public final List<String> exports = new ArrayList<>();
-    /** Manifest @topics relay subscriptions ("*" allowed). */
     public final List<String> topics = new ArrayList<>();
-    /** Manifest @depends raw entries ("id" or "id@>=X.Y"). */
     public final List<String> depends = new ArrayList<>();
+    /** Handled slash commands (lowercase, without leading '/'), used
+     *  to suppress outgoing command messages when matched (A-35). */
+    public final List<String> commands = new ArrayList<>();
     public boolean hasContext;
     public boolean hasEvent;
     public boolean hasPluginAction;
-    /** Probe-parsed PLUGIN_PAGE rows (§1.8a). */
     public final List<PageRow> pageRows = new ArrayList<>();
-    /** Install source (§2.7): bundled|file|paste|catalog|pack|editor. */
     public String installSource = "";
-    /** SHA-256 short fingerprint of the installed code (§2.7). */
     public String fingerprint = "";
 
     public boolean hasCapability(String capability) {
         return capabilities.contains(capability);
     }
 
-    /** The attach-menu label before any per-user override:
-     *  @menuLabel when set, else the plugin name. */
     public String defaultMenuLabel() {
         return menuLabel != null && !menuLabel.isEmpty() ? menuLabel : name;
     }
 
-    /** The attach-menu icon before any per-user override ("" = unset). */
     public String defaultMenuIcon() {
         return icon == null ? "" : icon;
     }
@@ -138,9 +105,6 @@ public final class JsPlugin {
             o.put("version", version);
             o.put("author", author);
             o.put("description", description);
-            // v2.0 optional fields: always written ("" when unset);
-            // older readers ignore unknown keys, older files simply
-            // lack them and fromJson defaults them to "".
             o.put("icon", icon == null ? "" : icon);
             o.put("menuLabel", menuLabel == null ? "" : menuLabel);
             JSONArray caps = new JSONArray();
@@ -156,7 +120,6 @@ public final class JsPlugin {
                 d.put("type", def.type);
                 d.put("title", def.title);
                 d.put("def", def.def == null ? "" : def.def);
-                // Schema v2 additive keys (A5).
                 d.put("help", def.help == null ? "" : def.help);
                 d.put("maxLength", def.maxLength);
                 d.put("multiline", def.multiline);
@@ -189,7 +152,6 @@ public final class JsPlugin {
             o.put("hasCommand", hasCommand);
             o.put("hasMenu", hasMenu);
             o.put("installedAt", installedAt);
-            // Platform v2 additive keys (A6/A7/A9).
             o.put("hasEnable", hasEnable);
             o.put("hasDisable", hasDisable);
             o.put("hasSettingsChanged", hasSettingsChanged);
@@ -199,7 +161,6 @@ public final class JsPlugin {
             o.put("minPlatform", minPlatform);
             o.put("errDay", errDay == null ? "" : errDay);
             o.put("errCount", errCount);
-            // Platform Phase B additive keys (§1.8/§1.10/§2.7).
             o.put("contextMenu", contextMenu == null ? "" : contextMenu);
             JSONArray ex = new JSONArray();
             for (String s : exports) {
@@ -216,6 +177,11 @@ public final class JsPlugin {
                 dp.put(s);
             }
             o.put("depends", dp);
+            JSONArray cmds = new JSONArray();
+            for (String s : commands) {
+                cmds.put(s);
+            }
+            o.put("commands", cmds);
             o.put("hasContext", hasContext);
             o.put("hasEvent", hasEvent);
             o.put("hasPluginAction", hasPluginAction);
@@ -270,9 +236,7 @@ public final class JsPlugin {
                 def.key = d.optString("key", "");
                 def.type = d.optString("type", "text");
                 def.title = d.optString("title", def.key);
-                Object rawDef = d.opt("def");
-                def.def = rawDef;
-                // Schema v2 additive keys (A5); absent in old metas.
+                def.def = d.opt("def");
                 def.help = d.optString("help", "");
                 def.maxLength = d.optInt("maxLength", 0);
                 def.multiline = d.optBoolean("multiline", false);
@@ -307,7 +271,6 @@ public final class JsPlugin {
         plugin.hasCommand = o.optBoolean("hasCommand");
         plugin.hasMenu = o.optBoolean("hasMenu");
         plugin.installedAt = o.optLong("installedAt");
-        // Platform v2 additive keys; absent in pre-v2 metas.
         plugin.hasEnable = o.optBoolean("hasEnable");
         plugin.hasDisable = o.optBoolean("hasDisable");
         plugin.hasSettingsChanged = o.optBoolean("hasSettingsChanged");
@@ -317,7 +280,6 @@ public final class JsPlugin {
         plugin.minPlatform = o.optInt("minPlatform", 1);
         plugin.errDay = o.optString("errDay", "");
         plugin.errCount = o.optInt("errCount", 0);
-        // Platform Phase B additive keys; absent in pre-B metas.
         plugin.contextMenu = o.optString("contextMenu", "");
         JSONArray ex = o.optJSONArray("exports");
         if (ex != null) {
@@ -335,6 +297,15 @@ public final class JsPlugin {
         if (dp != null) {
             for (int i = 0; i < dp.length(); i++) {
                 plugin.depends.add(dp.optString(i));
+            }
+        }
+        JSONArray cmds = o.optJSONArray("commands");
+        if (cmds != null) {
+            for (int i = 0; i < cmds.length(); i++) {
+                String c = cmds.optString(i);
+                if (c != null && !c.isEmpty()) {
+                    plugin.commands.add(c);
+                }
             }
         }
         plugin.hasContext = o.optBoolean("hasContext");

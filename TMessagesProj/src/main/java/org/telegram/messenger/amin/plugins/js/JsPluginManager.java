@@ -14,121 +14,100 @@ import org.mozilla.javascript.Scriptable;
 import org.mozilla.javascript.ScriptableObject;
 import org.telegram.messenger.ApplicationLoader;
 import org.telegram.messenger.DialogObject;
+import org.telegram.messenger.FileLoader;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.MessageObject;
 import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.SendMessagesHelper;
 import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.UserObject;
-import org.telegram.messenger.Utilities;
 import org.telegram.messenger.amin.core.VaultStore;
 import org.telegram.tgnet.TLRPC;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * JS plugin system (v1.3 flagship): installs, stores and runs
- * single-file JavaScript plugins exactly as specified in
- * docs/PLUGIN-MASTER-PROMPT.md.
+ * JS plugin system (v1.3–v2.3): installs, stores and runs single-file
+ * JavaScript plugins as specified in docs/PLUGIN-MASTER-PROMPT.md.
  *
- * Engine: Mozilla Rhino (org.mozilla:rhino), interpreted mode
- * (optimization level -1, required on Android), language version ES6.
- * A ClassShutter whitelists ONLY the AminBridge classes — plugin code
- * gets the `amin` bridge object and pure JavaScript, nothing else:
- * no Java classes, no Android APIs, no file or network access except
- * amin.httpGet.
- *
- * Execution model: all plugin code runs on ONE dedicated plugin
- * thread (a private HandlerThread — see PluginQueue below). v1.3.2
- * audit fix: dispatch used to ride Telegram's shared
- * Utilities.globalQueue, where one plugin's blocking amin.httpGet
- * (up to ~30 s) stalled Telegram's own background work. The private
- * thread keeps Rhino's single-thread confinement AND takes plugins
- * off the shared queue. No timers, no polling.
- * Events are dispatched from Telegram's own update flow via AminHooks.
- * A plugin that throws is caught and logged; it can never crash the
- * app, and it is NOT auto-disabled — its hooks simply fail until the
- * plugin is fixed or removed (per the v1.3 power/behavior rules).
- * A plugin whose source fails to EVALUATE is remembered as broken for
- * the session so a syntax-broken plugin is not re-evaluated on every
- * message; reinstalling or toggling clears that.
- *
- * Storage layout:
- * - prefs "amingram_jsplugins": "order" (JSONArray of ids — the
- *   plugin order; movePlugin/movePluginTo/reorder rewrite it),
- *   "meta_<id>" (JsPlugin JSON), logs under "log_<id>" (VaultStore),
- *   "bundled_seen" (BundledPlugins' pre-install delivery set),
- *   "bundled_user_deleted" (BundledPlugins' explicit v2.0 deletion
- *   set), "menu_config_v1" (AminMenuConfig's attach-menu config).
- * - code: app-private files dir, jsplugins/<id>.js.
- * - per-plugin storage: prefs "amingram_jsstore_<id>" — this one
- *   file holds BOTH amin.storage values and the hub-written
- *   SETTINGS values (storageSetRaw). delete() removes the whole
- *   file, so no setting or storage value survives a delete.
+ * Phase A & C updates:
+ * - A-01: Sets and resets AminBridge.setCurrentDispatchChatId and
+ *   setCurrentDispatchReplyToMsg around every chat-scoped hook.
+ * - A-12: Caches engineEnabled and hasAnyEnabledPlugin in memory so
+ *   hot-path update-thread checks are zero-allocation volatile reads.
+ * - A-14 / A-18: Caps pending dispatchMessage backlog and shares a
+ *   single Rhino Context across relayEmit targets.
+ * - A-16 / A-22: Reuses ThreadLocal SimpleDateFormat, caches todayString()
+ *   per calendar day, and debounces error-counter persistMeta writes.
+ * - A-17: Enforces 512 KB source cap in installInternal and readCodeFile.
+ * - A-27: Reuses a shared fallback scope in lookupScope.
+ * - A-33: Removed dead suspendReason/suspendReasons and unused params.
+ * - A-35 / Phase A.4 / Phase C.1:
+ *   - Outgoing command suppression (dispatchOutgoingCommand returns boolean).
+ *   - Raw message object exposure (msg.raw and lookupMessageRaw).
+ *   - Rich sticker/document fields on msg.media + ctx.replyTo.msg.
+ *   - Relay payload caps and runtime @depends verification.
  */
 public final class JsPluginManager {
 
     public static final String PREFS = "amingram_jsplugins";
-    /** Plugin platform API level of this build (A9). Plugins
-     *  negotiate via @minPlatform in their manifest and (via the
-     *  bridge) amin.platform; installs never block on it. */
     public static final int PLATFORM_API_VERSION = 2;
     private static final String KEY_ORDER = "order";
     private static final String KEY_META_PREFIX = "meta_";
     private static final String KEY_LOG_PREFIX = "log_";
     private static final String KEY_ENGINE = "engine_enabled";
     private static final int LOG_CAP = 500;
+    private static final int MAX_PENDING_MESSAGE_DISPATCHES = 64;
+    private static final int MAX_RELAY_JSON_CHARS = 256 * 1024;
 
     private static final List<JsPlugin> cache = new ArrayList<>();
-    private static boolean cacheLoaded;
+    private static volatile boolean cacheLoaded;
+    private static volatile Boolean cachedEngineEnabled;
+    private static volatile boolean cachedHasAnyEnabled;
 
-    /** Runtimes are created/dropped on the dedicated plugin thread,
-     *  but runtimeState() reads the map from the UI thread — a plain
-     *  HashMap raced there (audit P1-8). The synchronized map makes
-     *  every single operation safe; ensureRuntime additionally
-     *  guards its get-then-put so check-and-create stays atomic. */
     private static final Map<String, Runtime> runtimes =
             Collections.synchronizedMap(new HashMap<>());
     private static final Set<String> broken = Collections.synchronizedSet(new HashSet<>());
 
-    /** The single Rhino context factory (A8): installs the
-     *  instruction observer that enforces the per-hook budget. */
     private static final AminContextFactory CONTEXT_FACTORY = new AminContextFactory();
-    /** Per-hook JS execution budget in wall-clock ms (A8). */
     private static final long HOOK_BUDGET_MS = 5000L;
 
-    /** Session suspension set (A7/A8): plugins paused by the error
-     *  storm watchdog. Distinct from `enabled` (the user's toggle
-     *  is never touched) and from `broken` (load failure). Cleared
-     *  by resumePlugin() or a successful reinstall. */
     private static final Set<String> suspended = Collections.synchronizedSet(new HashSet<>());
-    private static final Map<String, String> suspendReasons =
-            Collections.synchronizedMap(new HashMap<>());
     private static final Map<String, ErrorStormTracker> stormTrackers = new HashMap<>();
+    private static final Map<String, Long> lastErrMetaPersistMs = new ConcurrentHashMap<>();
 
-    /** Plugins whose onMigrate is currently running (A6). Dispatch
-     *  entries skip these so no hook of new code runs mid-migration. */
     private static final Set<String> migrating = Collections.synchronizedSet(new HashSet<>());
-
-    /** Last settings key written while a plugin had no live runtime
-     *  (A6): delivered once as onSettingsChanged at next warm-up. */
     private static final Map<String, String> pendingSettingKeys =
             Collections.synchronizedMap(new HashMap<>());
 
-    /** Account the current plugin execution belongs to. -1 until
-     *  the first dispatch (audit P1-9): the old default of 0 made
-     *  pre-dispatch bridge lookups silently target account slot 0,
-     *  which is a valid account and may not be the selected one. */
     private static volatile int dispatchAccount = -1;
+    private static final AtomicInteger pendingMessageDispatches = new AtomicInteger(0);
+    private static volatile ScriptableObject sharedFallbackScope;
+
+    private static final ThreadLocal<SimpleDateFormat> LOG_DATE_FORMAT =
+            new ThreadLocal<SimpleDateFormat>() {
+                @Override
+                protected SimpleDateFormat initialValue() {
+                    return new SimpleDateFormat("MMM d HH:mm:ss", Locale.US);
+                }
+            };
+
+    private static volatile long cachedTodayEpochDay = -1;
+    private static volatile String cachedTodayStr = "";
 
     private static final ClassShutter CLASS_SHUTTER = new ClassShutter() {
         @Override
@@ -139,20 +118,11 @@ public final class JsPluginManager {
                     || fullClassName.equals(AminBridge.GoogleAccess.class.getName())
                     || fullClassName.equals(AminBridge.WithFile.class.getName())
                     || fullClassName.equals(AminBridge.WithGoogleFile.class.getName())
-                    // Platform v2 bridge family (A9): act-capability
-                    // variants + the amin.platform info object. Named
-                    // as literals because these classes are added by
-                    // the bridge layer; the shutter must allow them
-                    // by exact name once they exist.
                     || fullClassName.equals("org.telegram.messenger.amin.plugins.js.AminBridge$WithAct")
                     || fullClassName.equals("org.telegram.messenger.amin.plugins.js.AminBridge$WithGoogleAct")
                     || fullClassName.equals("org.telegram.messenger.amin.plugins.js.AminBridge$WithFileAct")
                     || fullClassName.equals("org.telegram.messenger.amin.plugins.js.AminBridge$WithGoogleFileAct")
                     || fullClassName.equals("org.telegram.messenger.amin.plugins.js.AminBridge$PlatformInfo")
-                    // Platform Phase B access objects (§1.4/§1.6/
-                    // §1.9/§1.10): nested classes on the bridge,
-                    // assigned only when the gating capability is
-                    // present (db is the base surface, ungated).
                     || fullClassName.equals("org.telegram.messenger.amin.plugins.js.AminBridge$DbAccess")
                     || fullClassName.equals("org.telegram.messenger.amin.plugins.js.AminBridge$FileAccess")
                     || fullClassName.equals("org.telegram.messenger.amin.plugins.js.AminBridge$UiAccess")
@@ -167,8 +137,6 @@ public final class JsPluginManager {
         }
     };
 
-    /** The one dedicated plugin thread (see the class javadoc's
-     *  execution-model note). Lazily started on first use. */
     private static final class PluginQueue {
         static final Handler INSTANCE;
         static {
@@ -191,10 +159,6 @@ public final class JsPluginManager {
     private JsPluginManager() {
     }
 
-    /** The account bridge calls resolve against: the dispatching
-     *  account once any dispatch has run, the user's selected
-     *  account before that — never a raw -1 and never a hardcoded
-     *  slot 0 (audit P1-9). */
     public static int dispatchAccount() {
         int account = dispatchAccount;
         return account >= 0 ? account : UserConfig.selectedAccount;
@@ -205,8 +169,19 @@ public final class JsPluginManager {
     }
 
     // ------------------------------------------------------------------
-    // Metadata store
+    // Metadata store (A-12 cached flags)
     // ------------------------------------------------------------------
+
+    private static void refreshHasAnyEnabledLocked() {
+        boolean any = false;
+        for (JsPlugin p : cache) {
+            if (p.enabled) {
+                any = true;
+                break;
+            }
+        }
+        cachedHasAnyEnabled = any;
+    }
 
     public static synchronized List<JsPlugin> plugins(Context context) {
         loadCache(context);
@@ -223,63 +198,45 @@ public final class JsPluginManager {
         return null;
     }
 
-    /** Master engine switch (hub → "Enable Plugins Engine", v1.3.3).
-     *  When off, NO JS plugin runs: hasEnabledPlugins() is false,
-     *  every dispatch entry returns immediately and the attach menu
-     *  shows no plugin buttons. Default on. Pure prefs read. */
     public static boolean isEngineEnabled(Context context) {
         if (context == null) {
             return false;
         }
-        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        Boolean cached = cachedEngineEnabled;
+        if (cached != null) {
+            return cached;
+        }
+        boolean enabled = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .getBoolean(KEY_ENGINE, true);
+        cachedEngineEnabled = enabled;
+        return enabled;
     }
 
     public static void setEngineEnabled(Context context, boolean enabled) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit().putBoolean(KEY_ENGINE, enabled).apply();
+        cachedEngineEnabled = enabled;
+        if (context != null) {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .edit().putBoolean(KEY_ENGINE, enabled).apply();
+        }
     }
 
     public static boolean hasEnabledPlugins(Context context) {
         if (!isEngineEnabled(context)) {
             return false;
         }
-        // Opt pass (2026-10-22): scan the meta cache in place.
-        // This gate runs on Telegram's update thread for every
-        // update batch (AminHooks.onRawUpdates); the old body went
-        // through plugins(), which allocates a full copy of the
-        // plugin list on every call.
+        if (cacheLoaded) {
+            return cachedHasAnyEnabled;
+        }
         synchronized (JsPluginManager.class) {
             loadCache(context);
-            for (JsPlugin plugin : cache) {
-                if (plugin.enabled) {
-                    return true;
-                }
-            }
+            return cachedHasAnyEnabled;
         }
-        return false;
     }
 
     // ------------------------------------------------------------------
     // Attach menu (patch 0014) + menu configuration (v2.0)
     // ------------------------------------------------------------------
 
-    /**
-     * One row of the attach-menu configuration, as consumed by the
-     * hub's menu-customization UI. {@link #icon} and {@link #label}
-     * are OVERRIDES: null/"" means "use the plugin's manifest
-     * default" (@icon / @menuLabel, else the plugin name / the
-     * default icon). Use {@link #resolvedLabel()} /
-     * {@link #resolvedIcon()} for the effective values.
-     *
-     * Icon values are specs everywhere in the plugin system
-     * (manifest @icon, this override, and menuPlugins row[2]):
-     * either a set name — download, mail, sparkles, dice, text,
-     * link, music, star, bolt, camera, globe, gear — or
-     * "emoji:&lt;glyph&gt;". Patch 0014 maps set names to
-     * GlassTabView.TabAnimation values and prepends emoji glyphs
-     * to the label.
-     */
     public static final class MenuEntry {
         public JsPlugin plugin;
         public boolean included = true;
@@ -296,7 +253,6 @@ public final class JsPluginManager {
             this.label = label;
         }
 
-        /** Effective label: override, else @menuLabel, else name. */
         public String resolvedLabel() {
             if (label != null && !label.isEmpty()) {
                 return label;
@@ -304,8 +260,6 @@ public final class JsPluginManager {
             return plugin != null ? plugin.defaultMenuLabel() : "";
         }
 
-        /** Effective icon spec: override, else manifest @icon,
-         *  else "" (patch 0014 renders its default, ARTICLE). */
         public String resolvedIcon() {
             if (icon != null && !icon.isEmpty()) {
                 return icon;
@@ -313,7 +267,6 @@ public final class JsPluginManager {
             return plugin != null ? plugin.defaultMenuIcon() : "";
         }
 
-        /** {id, resolvedLabel, resolvedIcon} — the patch-0014 row. */
         public String[] toArray() {
             return new String[]{
                     plugin != null ? plugin.id : "", resolvedLabel(), resolvedIcon()};
@@ -324,15 +277,6 @@ public final class JsPluginManager {
         return plugin.hasMenu && plugin.hasCapability("menu");
     }
 
-    /** Enabled plugins that belong in the chat attach menu, as
-     *  {id, label, iconSpec} rows (indices 0/1 are what patch 0014
-     *  has always consumed; index 2 is the v2.0 icon spec). Honors
-     *  the AminMenuConfig configuration (order, inclusion, icon /
-     *  label overrides); with no config stored, falls back to all
-     *  enabled menu plugins in plugin order with manifest
-     *  defaults. Menu plugins installed after the config was saved
-     *  are appended with defaults instead of being hidden.
-     *  Pure prefs read. */
     public static List<String[]> menuPlugins(Context context) {
         List<String[]> out = new ArrayList<>();
         for (MenuEntry entry : resolvedMenuEntries(context)) {
@@ -341,8 +285,6 @@ public final class JsPluginManager {
         return out;
     }
 
-    /** Typed twin of {@link #menuPlugins}: the resolved, included
-     *  entries actually shown in the attach menu. */
     public static List<MenuEntry> menuPluginEntries(Context context) {
         return resolvedMenuEntries(context);
     }
@@ -386,14 +328,6 @@ public final class JsPluginManager {
         return out;
     }
 
-    /** The effective menu configuration for editing (hub UI): one
-     *  MenuEntry per installed menu-capable plugin (enabled or
-     *  not), in configured order first, then plugin order for
-     *  plugins the config doesn't mention. icon/label are the
-     *  stored OVERRIDES ("" = manifest default), included defaults
-     *  to true. Mutate via setMenuIncluded / setMenuIcon /
-     *  setMenuLabel / moveMenuPlugin, which materialize and persist
-     *  this whole list. */
     public static List<MenuEntry> menuConfigEntries(Context context) {
         List<MenuEntry> out = new ArrayList<>();
         if (context == null) {
@@ -431,10 +365,6 @@ public final class JsPluginManager {
         AminMenuConfig.save(context, stored);
     }
 
-    /** Includes/excludes one plugin in the attach menu. Materializes
-     *  the effective config first, so excluding one plugin from the
-     *  fallback state doesn't disturb the others. No-op for
-     *  unknown / non-menu plugins. */
     public static void setMenuIncluded(Context context, String pluginId, boolean included) {
         List<MenuEntry> entries = menuConfigEntries(context);
         for (MenuEntry entry : entries) {
@@ -446,9 +376,6 @@ public final class JsPluginManager {
         }
     }
 
-    /** Sets a plugin's menu icon override (a set name or
-     *  "emoji:&lt;glyph&gt;"); null/"" clears it back to the
-     *  manifest @icon / default. */
     public static void setMenuIcon(Context context, String pluginId, String iconSpecOrNull) {
         List<MenuEntry> entries = menuConfigEntries(context);
         for (MenuEntry entry : entries) {
@@ -460,8 +387,6 @@ public final class JsPluginManager {
         }
     }
 
-    /** Sets a plugin's menu label override; null/"" clears it back
-     *  to the manifest @menuLabel / plugin name. */
     public static void setMenuLabel(Context context, String pluginId, String labelOrNull) {
         List<MenuEntry> entries = menuConfigEntries(context);
         for (MenuEntry entry : entries) {
@@ -473,8 +398,6 @@ public final class JsPluginManager {
         }
     }
 
-    /** Moves a plugin within the menu configuration by delta
-     *  positions (negative = up). Returns true when it moved. */
     public static boolean moveMenuPlugin(Context context, String pluginId, int delta) {
         List<MenuEntry> entries = menuConfigEntries(context);
         int from = -1;
@@ -497,8 +420,6 @@ public final class JsPluginManager {
         return true;
     }
 
-    /** Clears the whole menu configuration, restoring the
-     *  all-enabled fallback. */
     public static void resetMenuConfig(Context context) {
         AminMenuConfig.clear(context);
     }
@@ -510,6 +431,9 @@ public final class JsPluginManager {
         cacheLoaded = true;
         cache.clear();
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        if (cachedEngineEnabled == null) {
+            cachedEngineEnabled = prefs.getBoolean(KEY_ENGINE, true);
+        }
         String raw = prefs.getString(KEY_ORDER, null);
         if (raw != null) {
             try {
@@ -522,23 +446,23 @@ public final class JsPluginManager {
                     }
                     JsPlugin plugin = JsPlugin.fromJson(new JSONObject(meta));
                     if (plugin != null) {
+                        if (plugin.hasCapability("commands") && plugin.commands.isEmpty()) {
+                            String src = readCode(context, plugin.id);
+                            plugin.commands.addAll(
+                                    JsManifest.extractCommandsFromSource(src, plugin.description));
+                        }
                         cache.add(plugin);
                     }
                 }
             } catch (Exception ignored) {
             }
         }
-        // v1.3.4: bundled plugins are pre-installed. loadCache is
-        // the single funnel every plugin-system entry point passes
-        // through exactly once per process, so this is the lightest
-        // reliable auto-install point. cacheLoaded is already true
-        // here, so the install path's own loadCache calls no-op and
-        // cannot recurse; BundledPlugins guards itself too and only
-        // ever delivers each bundled id once (deletions stick).
+        refreshHasAnyEnabledLocked();
         try {
             BundledPlugins.ensureInstalled(context);
         } catch (Throwable ignored) {
         }
+        refreshHasAnyEnabledLocked();
     }
 
     private static void persistMeta(Context context, JsPlugin plugin) {
@@ -549,6 +473,7 @@ public final class JsPluginManager {
             for (JsPlugin p : cache) {
                 order.put(p.id);
             }
+            refreshHasAnyEnabledLocked();
         }
         prefs.edit()
                 .putString(KEY_ORDER, order.toString())
@@ -556,28 +481,28 @@ public final class JsPluginManager {
                 .apply();
     }
 
-    /** Rewrites the persisted plugin order from the in-memory cache.
-     *  Caller must hold the JsPluginManager.class lock (or be in a
-     *  synchronized method) and have mutated {@code cache} already. */
+    /** Lightweight single-plugin meta update used by error counters (A-16). */
+    private static void persistMetaOnly(Context context, JsPlugin plugin) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putString(KEY_META_PREFIX + plugin.id, plugin.toJson().toString())
+                .apply();
+    }
+
     private static void persistOrder(Context context) {
         JSONArray order = new JSONArray();
         for (JsPlugin p : cache) {
             order.put(p.id);
         }
+        refreshHasAnyEnabledLocked();
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit().putString(KEY_ORDER, order.toString()).apply();
     }
 
     // ------------------------------------------------------------------
-    // Ordering (v2.0): the cache order IS the persisted "order" list.
-    // Dispatch, the hub list and the attach-menu fallback all follow
-    // it, so these moves are the single ordering control.
+    // Ordering
     // ------------------------------------------------------------------
 
-    /** Moves a plugin by delta positions in the plugin order
-     *  (negative = up). Persists immediately. Returns true when the
-     *  position actually changed. (The hub's Move up/down menu
-     *  calls this with -1/+1.) */
     public static synchronized boolean movePlugin(Context context, String pluginId, int delta) {
         if (context == null || pluginId == null || delta == 0) {
             return false;
@@ -603,9 +528,7 @@ public final class JsPluginManager {
         return true;
     }
 
-    /** Moves a plugin to an absolute index (clamped). Persists
-     *  immediately. Returns true when the position changed. */
-    public static synchronized boolean movePluginTo(Context context, String pluginId, int newIndex) {
+    public static synchronized boolean movePluginTo(Context context, String pluginId, int index) {
         if (context == null || pluginId == null) {
             return false;
         }
@@ -620,7 +543,7 @@ public final class JsPluginManager {
         if (from < 0) {
             return false;
         }
-        int to = Math.max(0, Math.min(cache.size() - 1, newIndex));
+        int to = Math.max(0, Math.min(cache.size() - 1, index));
         if (to == from) {
             return false;
         }
@@ -630,25 +553,25 @@ public final class JsPluginManager {
         return true;
     }
 
-    /** Applies a full ordering: ids in orderedIds come first in
-     *  that sequence; unknown ids are ignored and installed plugins
-     *  missing from the list keep their relative order at the end.
-     *  Persists immediately. */
     public static synchronized void reorder(Context context, List<String> orderedIds) {
         if (context == null || orderedIds == null) {
             return;
         }
         loadCache(context);
-        List<JsPlugin> next = new ArrayList<>();
+        Map<String, JsPlugin> byId = new HashMap<>();
+        for (JsPlugin plugin : cache) {
+            byId.put(plugin.id, plugin);
+        }
+        List<JsPlugin> next = new ArrayList<>(cache.size());
+        Set<String> placed = new HashSet<>();
         for (String id : orderedIds) {
-            for (JsPlugin plugin : cache) {
-                if (plugin.id.equals(id) && !next.contains(plugin)) {
-                    next.add(plugin);
-                }
+            JsPlugin plugin = byId.get(id);
+            if (plugin != null && placed.add(id)) {
+                next.add(plugin);
             }
         }
         for (JsPlugin plugin : cache) {
-            if (!next.contains(plugin)) {
+            if (placed.add(plugin.id)) {
                 next.add(plugin);
             }
         }
@@ -661,38 +584,20 @@ public final class JsPluginManager {
     // Install / enable / delete
     // ------------------------------------------------------------------
 
-    /** Full install path shared by file import, paste-code and the
-     *  bundled examples: manifest validation → Rhino compile check →
-     *  probe evaluation (SETTINGS schema + hook detection) → store.
-     *  Returns null on success, or a user-readable error. */
     public static String install(Context context, String source) {
         return installWithSource(context, source, "paste");
     }
 
-    /** Install with the source recorded in meta (§2.7):
-     *  bundled | file | paste | catalog | pack | editor. */
     public static String installWithSource(Context context, String source, String sourceTag) {
         try {
             return installInternal(context, source,
                     sourceTag == null || sourceTag.isEmpty() ? "paste" : sourceTag);
         } catch (Throwable t) {
-            // Installing a plugin must NEVER take the app down (field
-            // report, v1.3: an engine-level Error escaped install() and
-            // closed the app). Any failure becomes a readable error.
             return "Plugin install failed: " + t.getClass().getSimpleName()
                     + (t.getMessage() != null ? ": " + t.getMessage() : "");
         }
     }
 
-    /** Async install for UI callers (audit P1-7): the manifest
-     *  check + Rhino compile + probe evaluation run installInternal's
-     *  whole top level, and the only bound on a hostile plugin is
-     *  the 5 s hook budget — on the UI thread that is a multi-second
-     *  freeze on the very screen where the user decides whether to
-     *  trust the plugin. This variant runs the identical validated
-     *  path on the plugin thread and delivers the result (null =
-     *  success, else the same user-readable error installWithSource
-     *  returns) on the UI thread. */
     public static void installAsync(final Context context, final String source,
                                     final String sourceTag,
                                     final java.util.function.Consumer<String> done) {
@@ -718,7 +623,6 @@ public final class JsPluginManager {
         });
     }
 
-    /** Semver check (§2.1): X.Y or X.Y.Z, all-numeric parts. */
     public static boolean isSemver(String version) {
         if (version == null) {
             return false;
@@ -740,9 +644,6 @@ public final class JsPluginManager {
         return true;
     }
 
-    /** Numeric semver compare (§2.1): missing parts count as 0;
-     *  non-numeric parts count as 0 (a malformed version never
-     *  crashes an update check). Returns -1/0/1. */
     public static int compareVersions(String a, String b) {
         long[] pa = versionParts(a);
         long[] pb = versionParts(b);
@@ -770,7 +671,6 @@ public final class JsPluginManager {
         return out;
     }
 
-    /** Full SHA-256 hex of a source string (UTF-8). */
     public static String sha256Hex(String source) {
         try {
             java.security.MessageDigest digest =
@@ -786,8 +686,6 @@ public final class JsPluginManager {
         }
     }
 
-    /** The short fingerprint recorded in meta and shown to the
-     *  user (§2.7): the first 12 hex chars of the SHA-256. */
     public static String fingerprintOf(String source) {
         String hex = sha256Hex(source);
         return hex.length() > 12 ? hex.substring(0, 12) : hex;
@@ -800,9 +698,6 @@ public final class JsPluginManager {
         } catch (IllegalArgumentException e) {
             return e.getMessage();
         }
-        // Dependency gate (§2.4): declared @depends must be installed
-        // (and new enough) BEFORE this plugin lands — the failure
-        // names the dependency so the user can act on it.
         for (JsManifest.Depends dep : manifest.depends) {
             if (dep.id.equals(manifest.id)) {
                 continue;
@@ -826,8 +721,6 @@ public final class JsPluginManager {
                 noteHookError(manifest.id, "compile", t);
                 return "JavaScript error: " + t.getMessage();
             }
-            // Probe-evaluate in a throwaway scope to read SETTINGS and
-            // detect which hooks exist. onLoad is NOT called here.
             ScriptableObject probe = newScope(cx, manifest.id, manifest.capabilities);
             try {
                 AminContextFactory.beginHook(HOOK_BUDGET_MS);
@@ -876,6 +769,7 @@ public final class JsPluginManager {
             plugin.contextMenu = manifest.contextMenu;
             plugin.exports.addAll(manifest.exports);
             plugin.topics.addAll(manifest.topics);
+            plugin.commands.addAll(manifest.commands);
             for (JsManifest.Depends dep : manifest.depends) {
                 plugin.depends.add(dep.minVersion != null
                         ? dep.id + "@>=" + dep.minVersion : dep.id);
@@ -889,21 +783,10 @@ public final class JsPluginManager {
                 appendLog(plugin.id, "[warn] @version '" + manifest.version
                         + "' is not semver (X.Y or X.Y.Z) — update checks may misbehave");
             }
-            // Data-version bookkeeping (A6): a fresh id (or a legacy
-            // meta that never recorded one) adopts the declared
-            // version silently; a real reinstall keeps the stored
-            // version so warm-up can run onMigrate when the
-            // declared version has moved past it.
             plugin.dataVersionStored = (existing == null || existing.dataVersionStored <= 0)
                     ? plugin.dataVersion : existing.dataVersionStored;
-            // Watchdog counters are per-day state, not code state:
-            // they survive a reinstall (suspension itself does not —
-            // see the success path below).
             plugin.errDay = existing != null && existing.errDay != null ? existing.errDay : "";
             plugin.errCount = existing != null ? existing.errCount : 0;
-            // Settings schema (A5): strict for ids this install is
-            // the first record of (bundled deliveries of NEW ids
-            // included), loose for reinstalls of a known id.
             boolean isReinstall = existing != null;
             List<String> settingsWarnings = new ArrayList<>();
             List<String> settingsErrors = readSettings(probe, plugin, !isReinstall, settingsWarnings);
@@ -915,20 +798,13 @@ public final class JsPluginManager {
                 return "Invalid SETTINGS: " + joinStrings(settingsErrors, "; ");
             }
             if (plugin.hasCapability("settings") && plugin.settings.isEmpty()) {
-                // Declared settings but no SETTINGS array — not fatal.
                 appendLog(plugin.id, "[info] declares 'settings' but defines no SETTINGS array");
             }
-            // Write the code file first, then swap metadata in.
             File file = codeFile(context, plugin.id);
             File parent = file.getParentFile();
             if (parent != null && !parent.exists()) {
                 parent.mkdirs();
             }
-            // Rollback copy (design §2.1): before an EXISTING install's
-            // code is overwritten, keep the old file as <id>.prev.js.
-            // This is what makes in-app code editing fearless — the
-            // editor can restore the previous version in one tap.
-            // Best-effort: a failed backup never blocks the install.
             if (existing != null && file.exists()) {
                 try {
                     FileInputStream pin = new FileInputStream(file);
@@ -959,11 +835,9 @@ public final class JsPluginManager {
                     }
                 }
                 cache.add(plugin);
+                refreshHasAnyEnabledLocked();
             }
             persistMeta(context, plugin);
-            // A successful install of a bundled id (any path) clears
-            // its user-deleted marker and marks it delivered, so a
-            // reinstalled bundled plugin stays reinstalled.
             BundledPlugins.onInstalled(context, plugin.id);
             appendLog(plugin.id, "[info] installed v" + plugin.version + " by " + plugin.author);
             if (plugin.minPlatform > PLATFORM_API_VERSION) {
@@ -972,10 +846,7 @@ public final class JsPluginManager {
                         + " — installing anyway");
             }
             broken.remove(plugin.id);
-            // A successful (re)install is the fix path: it also
-            // clears any storm suspension for this id.
             suspended.remove(plugin.id);
-            suspendReasons.remove(plugin.id);
             synchronized (stormTrackers) {
                 ErrorStormTracker tracker = stormTrackers.get(plugin.id);
                 if (tracker != null) {
@@ -999,15 +870,29 @@ public final class JsPluginManager {
             broken.remove(plugin.id);
             warmUp(plugin.id, true);
         } else {
+            notifyDependentsOfProviderChange(context, plugin.id, "disabled");
             disableRuntime(plugin.id);
         }
     }
 
-    /** Disable path (A6): onDisable runs on the plugin thread
-     *  BEFORE the runtime is dropped, inside the same queued
-     *  runnable, so no dispatch can slip between the hook and the
-     *  drop. A throwing onDisable is funnelled by callHook and
-     *  never blocks the disable. */
+    private static void notifyDependentsOfProviderChange(Context context, String providerId, String action) {
+        if (context == null || providerId == null) {
+            return;
+        }
+        for (JsPlugin p : plugins(context)) {
+            if (p.id.equals(providerId) || !p.enabled || p.depends == null) {
+                continue;
+            }
+            for (String depSpec : p.depends) {
+                int at = depSpec.indexOf("@>=");
+                String depId = at > 0 ? depSpec.substring(0, at).trim() : depSpec.trim();
+                if (providerId.equals(depId)) {
+                    appendLog(p.id, "[warn] dependency '" + providerId + "' was " + action);
+                }
+            }
+        }
+    }
+
     private static void disableRuntime(final String pluginId) {
         postToPluginThread(() -> {
             Runtime runtime = runtimes.get(pluginId);
@@ -1033,35 +918,11 @@ public final class JsPluginManager {
         }
     }
 
-    /**
-     * TRUE delete (v2.0): removes every trace of the plugin, so no
-     * ghost data can resurface on a later reinstall of the same id:
-     * - the in-memory cache entry and its slot in the persisted
-     *   plugin order;
-     * - meta_<id> and the log (log_<id>, removed directly and via
-     *   VaultStore, its writer);
-     * - the code file jsplugins/<id>.js;
-     * - the ENTIRE per-plugin storage prefs file
-     *   ("amingram_jsstore_<id>") — that file holds both
-     *   amin.storage values AND the hub-written SETTINGS values
-     *   (storageSetRaw writes there), so deleting the file removes
-     *   storage and settings wherever they are stored;
-     * - the plugin's attach-menu configuration entry
-     *   (AminMenuConfig), so a reinstall doesn't inherit stale
-     *   inclusion/order/icon/label state;
-     * - the live runtime and the session "broken" mark.
-     * For a bundled id it also records the explicit user deletion
-     * (BundledPlugins.markUserDeleted) — that marker is the ONE
-     * deliberate survivor: it stops auto-install from resurrecting
-     * the plugin, and the library keeps offering it for a manual
-     * reinstall (which clears the marker).
-     * Works by id even when the plugin is not in the cache, so
-     * orphaned meta/storage ghosts can be purged too.
-     */
     public static void delete(Context context, String pluginId) {
         if (context == null || pluginId == null || pluginId.isEmpty()) {
             return;
         }
+        notifyDependentsOfProviderChange(context, pluginId, "deleted");
         synchronized (JsPluginManager.class) {
             loadCache(context);
             for (int i = cache.size() - 1; i >= 0; i--) {
@@ -1085,9 +946,6 @@ public final class JsPluginManager {
         if (prevFile.exists()) {
             prevFile.delete();
         }
-        // Phase B data tiers die with the plugin too (true delete
-        // stays total): amin.db rows, the amin.files sandbox, and
-        // any durable-copied settings files.
         PluginDb.deleteAllForPlugin(pluginId);
         PluginFiles.deleteAllForPlugin(context, pluginId);
         deletePluginSettingsDir(context, pluginId);
@@ -1097,16 +955,14 @@ public final class JsPluginManager {
         dropRuntime(pluginId);
         broken.remove(pluginId);
         suspended.remove(pluginId);
-        suspendReasons.remove(pluginId);
         migrating.remove(pluginId);
         pendingSettingKeys.remove(pluginId);
+        lastErrMetaPersistMs.remove(pluginId);
         synchronized (stormTrackers) {
             stormTrackers.remove(pluginId);
         }
     }
 
-    /** The durable-copy directory for `file` settings values
-     *  (§1.5): filesDir/amingram/plugin-settings/<id>/. */
     public static File pluginSettingsDir(Context context, String pluginId) {
         File dir = new File(new File(context.getFilesDir(), "amingram/plugin-settings"), pluginId);
         if (!dir.exists()) {
@@ -1129,17 +985,12 @@ public final class JsPluginManager {
         }
     }
 
-    /** Hub Reload (§2.2): drop the runtime and re-warm the SAME
-     *  code — restarts a wedged runtime and re-runs onLoad. A tap,
-     *  never a timer. */
     public static void reloadPlugin(Context context, final String pluginId) {
         postToPluginThread(() -> runtimes.remove(pluginId));
         warmUp(pluginId, false);
         appendLog(pluginId, "[info] reloaded from the hub");
     }
 
-    /** Runtime state for the Developer section (§3.5):
-     *  "suspended" / "broken" / "loaded" / "not loaded". */
     public static String runtimeState(String pluginId) {
         if (suspended.contains(pluginId)) {
             return "suspended";
@@ -1147,9 +998,6 @@ public final class JsPluginManager {
         if (broken.contains(pluginId)) {
             return "broken";
         }
-        // runtimes is a synchronized map (P1-8): containsKey is
-        // atomic on its own — the class-monitor wrapper this read
-        // used to take was a lock the plugin thread never holds.
         return runtimes.containsKey(pluginId) ? "loaded" : "not loaded";
     }
 
@@ -1157,12 +1005,6 @@ public final class JsPluginManager {
         return "loaded".equals(runtimeState(pluginId));
     }
 
-    /** Removes a per-plugin storage prefs file completely — values,
-     *  in-process cache and the XML file itself. minSdk is 23 and
-     *  deleteSharedPreferences is API 24, so: clear() first (works
-     *  everywhere and empties any live cached instance), then the
-     *  platform delete where available, then a direct file delete
-     *  as belt-and-braces. */
     private static void deleteStoragePrefs(Context context, String pluginId) {
         String name = storagePrefsName(pluginId);
         try {
@@ -1200,15 +1042,15 @@ public final class JsPluginManager {
         return readCodeFile(codeFile(context, pluginId));
     }
 
-    /** The rollback copy kept by install() before an update
-     *  overwrites the code file; null when no previous version
-     *  exists (never updated, or the plugin was deleted since). */
     public static String readPrevCode(Context context, String pluginId) {
         return readCodeFile(prevCodeFile(context, pluginId));
     }
 
     private static String readCodeFile(File file) {
         try {
+            if (file == null || !file.isFile() || file.length() > JsManifest.MAX_SOURCE_CHARS) {
+                return null;
+            }
             FileInputStream in = new FileInputStream(file);
             byte[] data = new byte[(int) file.length()];
             int read = 0;
@@ -1227,13 +1069,9 @@ public final class JsPluginManager {
     }
 
     // ------------------------------------------------------------------
-    // Logs
+    // Logs (A-16)
     // ------------------------------------------------------------------
 
-    /** Live log tail (Phase B, §3.5): registered listeners are
-     *  notified (on the UI thread) whenever a line is appended, so
-     *  an open log view refreshes event-driven — never by polling.
-     *  Listeners must unregister when their page closes. */
     public interface LogListener {
         void onPluginLog(String pluginId);
     }
@@ -1272,17 +1110,16 @@ public final class JsPluginManager {
     public static void appendLog(String pluginId, String text) {
         try {
             Context context = ApplicationLoader.applicationContext;
-            if (context == null) {
+            if (context == null || pluginId == null) {
                 return;
             }
             String flat = (text == null ? "" : text).replace('\n', ' ');
             if (flat.length() > 1000) {
                 flat = flat.substring(0, 1000);
             }
-            String stamp = new java.text.SimpleDateFormat("MMM d HH:mm:ss", java.util.Locale.US)
-                    .format(new java.util.Date());
+            String stamp = LOG_DATE_FORMAT.get().format(new Date());
             List<String> lines = VaultStore.getAll(context, PREFS, KEY_LOG_PREFIX + pluginId);
-            lines.add(stamp + " — " + flat);
+            lines.add(stamp + " \u2014 " + flat);
             while (lines.size() > LOG_CAP) {
                 lines.remove(0);
             }
@@ -1300,11 +1137,6 @@ public final class JsPluginManager {
         VaultStore.clear(context, PREFS, KEY_LOG_PREFIX + pluginId);
     }
 
-    // ------------------------------------------------------------------
-    // Settings storage access for the hub (same backing store the
-    // bridge's amin.storage uses).
-    // ------------------------------------------------------------------
-
     public static String storageGetRaw(Context context, String pluginId, String key) {
         return context.getSharedPreferences(storagePrefsName(pluginId), Context.MODE_PRIVATE)
                 .getString(key, null);
@@ -1316,12 +1148,18 @@ public final class JsPluginManager {
     }
 
     // ------------------------------------------------------------------
-    // Watchdog (A7/A8) + settings-change notification (A6)
+    // Watchdog (A-16, A-22) + settings-change notification
     // ------------------------------------------------------------------
 
     private static String todayString() {
-        return new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
-                .format(new java.util.Date());
+        long epochDay = System.currentTimeMillis() / (24L * 60 * 60 * 1000L);
+        if (epochDay == cachedTodayEpochDay && !cachedTodayStr.isEmpty()) {
+            return cachedTodayStr;
+        }
+        String computed = new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(new Date());
+        cachedTodayStr = computed;
+        cachedTodayEpochDay = epochDay;
+        return computed;
     }
 
     private static String joinStrings(List<String> parts, String separator) {
@@ -1350,15 +1188,6 @@ public final class JsPluginManager {
         return suspended.contains(pluginId) || migrating.contains(pluginId);
     }
 
-    /**
-     * The single error funnel (A7): every hook / load / probe /
-     * callback failure routes through here. Logs in the existing
-     * "[error] &lt;hook&gt;: &lt;throwable&gt;" format (a budget
-     * expiry gets its own wording), increments the plugin's
-     * persisted per-day counter, and feeds its storm tracker —
-     * reaching the storm threshold session-suspends the plugin
-     * (A8). The user's enabled toggle is never touched.
-     */
     public static void noteHookError(String pluginId, String hook, Throwable t) {
         if (pluginId == null) {
             return;
@@ -1372,6 +1201,16 @@ public final class JsPluginManager {
             FileLog.e("AminGram plugin " + pluginId + " " + hook + " failed", t);
         } catch (Throwable ignored) {
         }
+        long now = System.currentTimeMillis();
+        boolean stormed = trackerFor(pluginId).record(now);
+        boolean newlySuspended = false;
+        if (stormed && !suspended.contains(pluginId)) {
+            suspended.add(pluginId);
+            newlySuspended = true;
+            appendLog(pluginId, "[error] suspended — error storm ("
+                    + ErrorStormTracker.THRESHOLD
+                    + "+ errors in 60s); resume from the plugin page");
+        }
         try {
             Context context = ApplicationLoader.applicationContext;
             if (context != null) {
@@ -1383,23 +1222,17 @@ public final class JsPluginManager {
                         plugin.errCount = 0;
                     }
                     plugin.errCount++;
-                    persistMeta(context, plugin);
+                    Long lastPersist = lastErrMetaPersistMs.get(pluginId);
+                    if (newlySuspended || lastPersist == null || now - lastPersist >= 1000L) {
+                        lastErrMetaPersistMs.put(pluginId, now);
+                        persistMetaOnly(context, plugin);
+                    }
                 }
             }
         } catch (Throwable ignored) {
         }
-        if (trackerFor(pluginId).record(System.currentTimeMillis())
-                && !suspended.contains(pluginId)) {
-            suspended.add(pluginId);
-            suspendReasons.put(pluginId,
-                    "error storm: " + ErrorStormTracker.THRESHOLD + "+ hook errors in 60s");
-            appendLog(pluginId, "[error] suspended — error storm ("
-                    + ErrorStormTracker.THRESHOLD
-                    + "+ errors in 60s); resume from the plugin page");
-        }
     }
 
-    /** Hook errors recorded for this plugin today (hub badge, A7). */
     public static int errorsToday(String pluginId) {
         try {
             Context context = ApplicationLoader.applicationContext;
@@ -1416,29 +1249,15 @@ public final class JsPluginManager {
         }
     }
 
-    /** True while the plugin is storm-suspended for this session. */
     public static boolean isSuspended(String pluginId) {
         return pluginId != null && suspended.contains(pluginId);
     }
 
-    /** Why the plugin is suspended ("" when it is not). */
-    public static String suspendReason(String pluginId) {
-        String reason = pluginId == null ? null : suspendReasons.get(pluginId);
-        return reason == null ? "" : reason;
-    }
-
-    /**
-     * Hub Resume (A7/A8): clears the suspension, the storm tracker
-     * and today's error counter (per the blueprint, "Resume clears
-     * counters"), then re-warms the plugin if it is enabled. The
-     * onEnable hook is NOT re-fired — the plugin was never disabled.
-     */
     public static void resumePlugin(Context context, String pluginId) {
         if (pluginId == null) {
             return;
         }
         suspended.remove(pluginId);
-        suspendReasons.remove(pluginId);
         synchronized (stormTrackers) {
             ErrorStormTracker tracker = stormTrackers.get(pluginId);
             if (tracker != null) {
@@ -1459,13 +1278,6 @@ public final class JsPluginManager {
         }
     }
 
-    /**
-     * Hub settings-write notification (A6). When the plugin has a
-     * live runtime, onSettingsChanged(key, newValue, oldValue)
-     * runs on the plugin thread; otherwise the key is remembered
-     * and the hook is delivered once at the next warm-up with
-     * oldValue == newValue == the current stored value.
-     */
     public static void onSettingWritten(final Context context, final String pluginId,
                                         final String key, final String newValue,
                                         final String oldValue) {
@@ -1504,7 +1316,7 @@ public final class JsPluginManager {
 
     private static org.mozilla.javascript.Context enterContext() {
         org.mozilla.javascript.Context cx = CONTEXT_FACTORY.enterContext();
-        cx.setOptimizationLevel(-1); // interpreted: required on Android
+        cx.setOptimizationLevel(-1);
         cx.setLanguageVersion(org.mozilla.javascript.Context.VERSION_ES6);
         cx.setClassShutter(CLASS_SHUTTER);
         return cx;
@@ -1513,18 +1325,10 @@ public final class JsPluginManager {
     private static ScriptableObject newScope(org.mozilla.javascript.Context cx, String pluginId,
                                              java.util.Collection<String> capabilities) {
         ScriptableObject scope = cx.initStandardObjects();
-        // Defense in depth on top of the ClassShutter: the standard
-        // scope has no Java access, but strip the names if present.
         String[] banned = {"Packages", "java", "javax", "JavaAdapter", "importClass", "getClass"};
         for (String name : banned) {
             ScriptableObject.deleteProperty(scope, name);
         }
-        // Capability gating is structural: only plugins whose
-        // manifest declares `google` get amin.google, and only
-        // plugins declaring `file` get amin.sendFile. The bridge
-        // variant is selected by the declared capability pair —
-        // on a variant without the wrapper, the method/property
-        // does not exist at all.
         boolean hasGoogle = capabilities != null && capabilities.contains("google");
         boolean hasFile = capabilities != null && capabilities.contains("file");
         boolean hasAct = capabilities != null && capabilities.contains("act");
@@ -1551,28 +1355,11 @@ public final class JsPluginManager {
         return scope;
     }
 
-    /** Delivers an async bridge result to a plugin callback
-     *  function (v1.3.5, built for amin.google's token / sign-in
-     *  callbacks). Runs on the plugin thread with a fresh Rhino
-     *  context — the same isolation pattern as every dispatch
-     *  entry (v1.3.2 audit): enterContext INSIDE the guard,
-     *  Context.exit() only when a context was entered. The
-     *  function's own parent scope is the invocation scope, so a
-     *  callback closes over the plugin scope it was defined in.
-     *  A deleted plugin's pending callbacks are dropped. */
     public static void invokePluginCallback(final String pluginId, final Object fnObject,
                                             final Object value) {
         invokePluginCallback(pluginId, fnObject, value, -1);
     }
 
-    /** Account-carrying variant (audit P1-9): {@code account} is
-     *  the account captured when the async bridge call was MADE
-     *  (on the plugin thread, where dispatchAccount was that
-     *  call's account). The posted runnable adopts it before the
-     *  callback runs, so the callback's own bridge calls resolve
-     *  against the account the operation belongs to — not
-     *  whichever account most recently dispatched a message.
-     *  -1 = unknown: resolve to the selected account at delivery. */
     public static void invokePluginCallback(final String pluginId, final Object fnObject,
                                             final Object value, final int account) {
         if (!(fnObject instanceof Function)) {
@@ -1611,32 +1398,15 @@ public final class JsPluginManager {
         });
     }
 
-    /** Builds the single argument for {@link #invokePluginCallbackWithArg}
-     *  (A3 support): invoked INSIDE the callback's guarded context
-     *  on the plugin thread, so implementations can create Rhino
-     *  values (objects/arrays) in the right scope. */
     public interface CallbackArgFactory {
         Object build(org.mozilla.javascript.Context cx, Scriptable scope);
     }
 
-    /**
-     * Twin of {@link #invokePluginCallback} whose single callback
-     * argument is produced lazily by {@code factory} inside the
-     * guard (A3: async bridge results that are structured values,
-     * e.g. an HTTP result object, are built with the live context
-     * and the callback's own scope instead of being captured from
-     * another thread). Same contract otherwise: plugin thread,
-     * fresh context inside the guard, dropped when the plugin was
-     * deleted or is storm-suspended, failures funnelled through
-     * noteHookError, hook budget applied.
-     */
     public static void invokePluginCallbackWithArg(final String pluginId, final Object fnObject,
                                                    final CallbackArgFactory factory) {
         invokePluginCallbackWithArg(pluginId, fnObject, factory, -1);
     }
 
-    /** Account-carrying variant (audit P1-9) — same contract as
-     *  {@link #invokePluginCallback(String, Object, Object, int)}. */
     public static void invokePluginCallbackWithArg(final String pluginId, final Object fnObject,
                                                    final CallbackArgFactory factory,
                                                    final int account) {
@@ -1677,21 +1447,12 @@ public final class JsPluginManager {
         });
     }
 
-    /** Reads + validates the probe scope's SETTINGS array via
-     *  {@link SettingsSchema} (A5). Fills plugin.settings and
-     *  returns the validation ERRORS (empty = ok); warnings are
-     *  appended to {@code warnings}. {@code strict} is true for a
-     *  first install of the id, false for a reinstall. */
     private static List<String> readSettings(ScriptableObject scope, JsPlugin plugin,
                                              boolean strict, List<String> warnings) {
         Object raw = ScriptableObject.getProperty(scope, "SETTINGS");
         return SettingsSchema.parseAndValidate(raw, plugin.settings, strict, warnings);
     }
 
-    /** PLUGIN_PAGE probe parse (§1.8a): fills plugin.pageRows from
-     *  the probe scope's PLUGIN_PAGE array. Lenient by design —
-     *  malformed rows are skipped, unknown types dropped; the
-     *  renderer only ever sees clean rows. Caps at 24 rows. */
     private static void readPluginPage(ScriptableObject scope, JsPlugin plugin) {
         plugin.pageRows.clear();
         Object raw = ScriptableObject.getProperty(scope, "PLUGIN_PAGE");
@@ -1750,15 +1511,6 @@ public final class JsPluginManager {
         postToPluginThread(() -> runtimes.remove(pluginId));
     }
 
-    private static void warmUp(final String pluginId) {
-        warmUp(pluginId, false);
-    }
-
-    /** Warms the plugin's runtime (load + onLoad + migration +
-     *  pending settings delivery, all inside ensureRuntime). With
-     *  {@code fireOnEnable} (the setEnabled / install paths, A6),
-     *  onEnable runs right after that sequence completes.
-     *  Storm-suspended plugins are not warmed at all. */
     private static void warmUp(final String pluginId, final boolean fireOnEnable) {
         postToPluginThread(() -> {
             Context context = ApplicationLoader.applicationContext;
@@ -1788,17 +1540,8 @@ public final class JsPluginManager {
         });
     }
 
-    /** Loads (once) and returns the plugin's runtime, calling onLoad
-     *  on first successful load. Returns null when the plugin cannot
-     *  run (missing/broken source — logged once per session). */
     private static Runtime ensureRuntime(org.mozilla.javascript.Context cx,
                                          Context context, JsPlugin plugin) {
-        // Check-and-create under the map's own monitor (P1-8): the
-        // build itself (source eval + onLoad) stays OUTSIDE the
-        // lock so a UI-thread runtimeState() read never waits on a
-        // plugin load; the put is re-checked inside the lock, so a
-        // runtime built concurrently can never be overwritten or
-        // have onLoad run twice.
         synchronized (runtimes) {
             Runtime existing = runtimes.get(plugin.id);
             if (existing != null) {
@@ -1810,7 +1553,7 @@ public final class JsPluginManager {
         }
         String source = readCode(context, plugin.id);
         if (source == null) {
-            appendLog(plugin.id, "[error] plugin file missing");
+            appendLog(plugin.id, "[error] plugin file missing or over 512 KB cap");
             broken.add(plugin.id);
             return null;
         }
@@ -1845,20 +1588,6 @@ public final class JsPluginManager {
         return runtime;
     }
 
-    /**
-     * Data migration (A6): when the installed code declares a
-     * @dataVersion past the stored one (and a version was actually
-     * stored before), onMigrate(stored, declared) runs right after
-     * onLoad — before onEnable, any pending settings delivery, and
-     * any dispatched hook of the new code (dispatch entries check
-     * the {@code migrating} gate; this sequence itself is
-     * synchronous on the plugin thread). The stored version
-     * advances only when the hook returns normally; a throwing
-     * migration is funnelled as an error, the stored version stays,
-     * and the plugin still runs. A plugin without onMigrate has
-     * nothing that could migrate its data, so the stored version
-     * simply adopts the declared one.
-     */
     private static void runMigrationIfNeeded(org.mozilla.javascript.Context cx,
                                              Context context, Runtime runtime) {
         JsPlugin plugin = runtime.plugin;
@@ -1892,10 +1621,6 @@ public final class JsPluginManager {
         }
     }
 
-    /** Delivers a settings change that arrived while the plugin
-     *  had no live runtime (A6): fired once, right after onLoad
-     *  (and after any migration), with oldValue == newValue ==
-     *  the currently stored value. */
     private static void deliverPendingSettingsChanged(org.mozilla.javascript.Context cx,
                                                       Context context, Runtime runtime) {
         String key = pendingSettingKeys.remove(runtime.plugin.id);
@@ -1909,14 +1634,6 @@ public final class JsPluginManager {
         callHook(cx, runtime, "onSettingsChanged", new Object[]{key, current, current});
     }
 
-    /** The one hook-invocation funnel: every dispatched and
-     *  lifecycle hook (onLoad, onMessage, onCommand, onMenuAction,
-     *  onEnable, onDisable, onSettingsChanged) runs through here,
-     *  so the A8 budget wrap and the A7 error funnel each live in
-     *  exactly one place. (onMigrate is the exception — its
-     *  success/failure drives the stored data version, so it is
-     *  invoked, with the same wrap + funnel, by
-     *  runMigrationIfNeeded.) */
     private static Object callHook(org.mozilla.javascript.Context cx, Runtime runtime,
                                    String name, Object[] args) {
         try {
@@ -1936,7 +1653,7 @@ public final class JsPluginManager {
     }
 
     // ------------------------------------------------------------------
-    // Dispatch (called from AminHooks; work runs on the plugin thread)
+    // Dispatch (A-01, A-14, A-18, A-35)
     // ------------------------------------------------------------------
 
     public static void dispatchMessage(final int account, final TLRPC.Message message) {
@@ -1948,7 +1665,12 @@ public final class JsPluginManager {
         if (targets.isEmpty()) {
             return;
         }
+        if (pendingMessageDispatches.incrementAndGet() > MAX_PENDING_MESSAGE_DISPATCHES) {
+            pendingMessageDispatches.decrementAndGet();
+            return;
+        }
         postToPluginThread(() -> {
+            pendingMessageDispatches.decrementAndGet();
             dispatchAccount = account;
             org.mozilla.javascript.Context cx = null;
             try {
@@ -1968,14 +1690,17 @@ public final class JsPluginManager {
                     if (fields == null) {
                         fields = computeMsgFields(account, message);
                     }
+                    AminBridge.setCurrentDispatchChatId(fields.chatId);
                     Scriptable msg = buildMsg(cx, runtime.scope, account, message, fields);
                     Object result = callHook(cx, runtime, "onMessage", new Object[]{msg});
                     if (result != null && ScriptRuntime.toBoolean(result)) {
-                        break; // handled: stops later plugins
+                        break;
                     }
                 }
             } catch (Throwable ignored) {
             } finally {
+                AminBridge.setCurrentDispatchChatId(0);
+                AminBridge.setCurrentDispatchReplyToMsg(null);
                 if (cx != null) {
                     org.mozilla.javascript.Context.exit();
                 }
@@ -1992,27 +1717,53 @@ public final class JsPluginManager {
         if (parsed == null) {
             return;
         }
-        dispatchCommandInternal(account, message, parsed[0], parsed[1], null);
+        dispatchCommandInternal(account, message, parsed[0], parsed[1]);
     }
 
-    /** Own command sent from THIS device (SendMessagesHelper hook). */
-    public static void dispatchOutgoingCommand(final SendMessagesHelper.SendMessageParams params) {
+    /** True when at least one enabled, non-blocked command plugin owns
+     *  the given lowercase command name (Phase A.4 command suppression). */
+    public static boolean willHandleCommand(Context context, String command) {
+        if (context == null || command == null || command.isEmpty() || !isEngineEnabled(context)) {
+            return false;
+        }
+        String lowerCmd = command.toLowerCase(Locale.US);
+        for (JsPlugin plugin : enabledCommandPlugins(context)) {
+            if (!plugin.hasCommand) {
+                continue;
+            }
+            if (plugin.commands != null && plugin.commands.contains(lowerCmd)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Own command sent from THIS device (SendMessagesHelper hook).
+     *  Returns true when an enabled command plugin claims the command,
+     *  so SendMessagesHelper suppresses posting the raw "/cmd" text
+     *  into the chat (Phase A.4). */
+    public static boolean dispatchOutgoingCommand(final SendMessagesHelper.SendMessageParams params) {
         final Context context = ApplicationLoader.applicationContext;
         if (context == null || params == null || params.message == null
                 || !isEngineEnabled(context)) {
-            return;
+            return false;
         }
         String[] parsed = parseCommand(params.message);
         if (parsed == null) {
-            return;
+            return false;
         }
         final int account = UserConfig.selectedAccount;
         final long peer = params.peer;
         final String text = params.message;
         final String command = parsed[0];
         final String args = parsed[1];
+        final MessageObject replyToMsg = params.replyToMsg;
+        final boolean suppressOutgoing = willHandleCommand(context, command);
+
         postToPluginThread(() -> {
             dispatchAccount = account;
+            AminBridge.setCurrentDispatchChatId(peer);
+            AminBridge.setCurrentDispatchReplyToMsg(replyToMsg);
             org.mozilla.javascript.Context cx = null;
             try {
                 cx = enterContext();
@@ -2037,8 +1788,9 @@ public final class JsPluginManager {
                     msg.put("outgoing", msg, Boolean.TRUE);
                     msg.put("channel", msg, Boolean.FALSE);
                     putNum(msg, "date", (int) (System.currentTimeMillis() / 1000L));
+                    putNum(msg, "replyToId", replyToMsg != null ? replyToMsg.getId() : 0);
                     Scriptable ctx = buildCtx(cx, runtime.scope, msg, peer, selfId, command, args,
-                            account, null, params.replyToMsg);
+                            account, null, replyToMsg);
                     Object result = callHook(cx, runtime, "onCommand", new Object[]{ctx});
                     if (result != null && ScriptRuntime.toBoolean(result)) {
                         break;
@@ -2046,16 +1798,18 @@ public final class JsPluginManager {
                 }
             } catch (Throwable ignored) {
             } finally {
+                AminBridge.setCurrentDispatchChatId(0);
+                AminBridge.setCurrentDispatchReplyToMsg(null);
                 if (cx != null) {
                     org.mozilla.javascript.Context.exit();
                 }
             }
         });
+        return suppressOutgoing;
     }
 
     private static void dispatchCommandInternal(final int account, final TLRPC.Message message,
-                                                final String command, final String args,
-                                                Object unused) {
+                                                final String command, final String args) {
         final Context context = ApplicationLoader.applicationContext;
         if (context == null || !isEngineEnabled(context)) {
             return;
@@ -2066,6 +1820,8 @@ public final class JsPluginManager {
             try {
                 cx = enterContext();
                 MsgFields fields = null;
+                long chatId = MessageObject.getDialogId(message);
+                AminBridge.setCurrentDispatchChatId(chatId);
                 for (JsPlugin plugin : enabledCommandPlugins(context)) {
                     if (dispatchBlocked(plugin.id)) {
                         continue;
@@ -2081,7 +1837,6 @@ public final class JsPluginManager {
                         fields = computeMsgFields(account, message);
                     }
                     Scriptable msg = buildMsg(cx, runtime.scope, account, message, fields);
-                    long chatId = MessageObject.getDialogId(message);
                     long senderId = UserConfig.getInstance(account).getClientUserId();
                     Scriptable ctx = buildCtx(cx, runtime.scope, msg, chatId, senderId, command, args,
                             account, message, null);
@@ -2092,6 +1847,8 @@ public final class JsPluginManager {
                 }
             } catch (Throwable ignored) {
             } finally {
+                AminBridge.setCurrentDispatchChatId(0);
+                AminBridge.setCurrentDispatchReplyToMsg(null);
                 if (cx != null) {
                     org.mozilla.javascript.Context.exit();
                 }
@@ -2113,6 +1870,7 @@ public final class JsPluginManager {
                 return;
             }
             dispatchAccount = UserConfig.selectedAccount;
+            AminBridge.setCurrentDispatchChatId(chatId);
             org.mozilla.javascript.Context cx = null;
             try {
                 cx = enterContext();
@@ -2125,6 +1883,8 @@ public final class JsPluginManager {
                 callHook(cx, runtime, "onMenuAction", new Object[]{ctx});
             } catch (Throwable ignored) {
             } finally {
+                AminBridge.setCurrentDispatchChatId(0);
+                AminBridge.setCurrentDispatchReplyToMsg(null);
                 if (cx != null) {
                     org.mozilla.javascript.Context.exit();
                 }
@@ -2132,10 +1892,6 @@ public final class JsPluginManager {
         });
     }
 
-    /** Context-menu dispatch (§1.8b): the user long-pressed a
-     *  message and tapped this plugin's item. ctx = {chatId, msg}
-     *  with msg in the standard buildMsg shape. Called from
-     *  AminHooks.onPluginContextAction (patch 0020's click path). */
     public static void dispatchContextAction(final String pluginId, final int account,
                                              final TLRPC.Message message) {
         final Context context = ApplicationLoader.applicationContext;
@@ -2167,6 +1923,8 @@ public final class JsPluginManager {
                 callHook(cx, runtime, "onContextAction", new Object[]{ctx});
             } catch (Throwable ignored) {
             } finally {
+                AminBridge.setCurrentDispatchChatId(0);
+                AminBridge.setCurrentDispatchReplyToMsg(null);
                 if (cx != null) {
                     org.mozilla.javascript.Context.exit();
                 }
@@ -2174,9 +1932,6 @@ public final class JsPluginManager {
         });
     }
 
-    /** Plugin-page action dispatch (§1.8a): a PLUGIN_PAGE action
-     *  row was tapped in the hub; onPluginAction(actionId) runs on
-     *  the plugin thread with the standard isolation. */
     public static void dispatchPluginAction(final String pluginId, final String actionId) {
         final Context context = ApplicationLoader.applicationContext;
         if (context == null || !isEngineEnabled(context)) {
@@ -2191,6 +1946,7 @@ public final class JsPluginManager {
                 return;
             }
             dispatchAccount = UserConfig.selectedAccount;
+            AminBridge.setCurrentDispatchChatId(0);
             org.mozilla.javascript.Context cx = null;
             try {
                 cx = enterContext();
@@ -2201,6 +1957,8 @@ public final class JsPluginManager {
                 callHook(cx, runtime, "onPluginAction", new Object[]{actionId});
             } catch (Throwable ignored) {
             } finally {
+                AminBridge.setCurrentDispatchChatId(0);
+                AminBridge.setCurrentDispatchReplyToMsg(null);
                 if (cx != null) {
                     org.mozilla.javascript.Context.exit();
                 }
@@ -2209,35 +1967,17 @@ public final class JsPluginManager {
     }
 
     // ------------------------------------------------------------------
-    // Relay (§1.10): plugin-to-plugin calls and event broadcast.
-    // Values cross the boundary ONLY as JSON (deep-copied through
-    // org.json by AminBridge.jsToJson/jsonToJs) — no Rhino object
-    // is ever shared between two plugins' scopes.
+    // Relay & @depends hardening (A-18, Phase A.4)
     // ------------------------------------------------------------------
 
-    /** Maximum relay call nesting (§1.10). */
     public static final int RELAY_MAX_DEPTH = 4;
-
-    /** Depth of the relay dispatch currently executing on the
-     *  plugin thread (0 = not inside a relay call). All relay work
-     *  is confined to the plugin thread, so a plain static is the
-     *  correct scope. */
     private static int relayDepth = 0;
 
-    /** Delivers an immediate argument error to a relay callback
-     *  (bridge-side validation failures: bad target/method/args). */
     public static void relayCallError(String callerId, Object callback, String message) {
         relayCallback(callerId, callback,
                 org.json.JSONObject.quote(message == null ? "relay error" : message), null);
     }
 
-    /** A manifest-level preview of an install, for the permission
-     *  review screen (§3.2): everything the review shows that can
-     *  be known WITHOUT running the probe — identity, declared
-     *  capabilities/exports/topics/depends, the code fingerprint,
-     *  and problems (bad manifest, @minPlatform, unmet @depends,
-     *  non-semver @version). The real install still validates
-     *  everything again (probe included). */
     public static class InstallPreview {
         public String error;
         public String id = "";
@@ -2249,13 +1989,10 @@ public final class JsPluginManager {
         public String contextMenu = "";
         public java.util.List<String> exports = new java.util.ArrayList<>();
         public java.util.List<String> topics = new java.util.ArrayList<>();
-        /** Raw entries: "id" or "id@>=X.Y". */
         public java.util.List<String> depends = new java.util.ArrayList<>();
         public int minPlatform;
         public String fingerprint = "";
         public java.util.List<String> problems = new java.util.ArrayList<>();
-        /** Capabilities the installed copy does NOT have yet
-         *  (update diff, §3.2); empty for fresh installs. */
         public java.util.List<String> addedCapabilities = new java.util.ArrayList<>();
         public boolean update;
         public String installedVersion = "";
@@ -2321,12 +2058,44 @@ public final class JsPluginManager {
         return preview;
     }
 
-    /** amin.relay.call, entered from the bridge on the plugin
-     *  thread: validates the target + its @exports, dispatches the
-     *  PLUGIN_API method on the SAME thread (queued, so ordering
-     *  is deterministic), and delivers (err, result) to the
-     *  caller's callback — never throws. argsJson is a JSON array
-     *  string produced by the bridge; callback may be null. */
+    /** Verifies at runtime that all @depends of a plugin are still
+     *  installed, enabled, and meet their minimum version. Returns null
+     *  when satisfied, or an error reason string. */
+    private static String checkRuntimeDependencies(Context context, JsPlugin plugin) {
+        if (plugin == null || plugin.depends == null || plugin.depends.isEmpty()) {
+            return null;
+        }
+        for (String spec : plugin.depends) {
+            if (spec == null || spec.isEmpty()) {
+                continue;
+            }
+            String depId = spec;
+            String minVer = null;
+            int at = spec.indexOf("@>=");
+            if (at > 0) {
+                depId = spec.substring(0, at).trim();
+                minVer = spec.substring(at + 3).trim();
+            }
+            if (depId.equals(plugin.id)) {
+                continue;
+            }
+            JsPlugin dep = get(context, depId);
+            if (dep == null) {
+                return "missing dependency '" + depId + "'";
+            }
+            if (!dep.enabled) {
+                return "dependency '" + depId + "' is disabled";
+            }
+            if (dispatchBlocked(depId)) {
+                return "dependency '" + depId + "' is suspended";
+            }
+            if (minVer != null && !minVer.isEmpty() && compareVersions(dep.version, minVer) < 0) {
+                return "dependency '" + depId + "' v" + dep.version + " < required " + minVer;
+            }
+        }
+        return null;
+    }
+
     public static void relayCall(final String callerId, final String targetId,
                                  final String method, final String argsJson,
                                  final Object callback) {
@@ -2334,6 +2103,11 @@ public final class JsPluginManager {
         if (depth >= RELAY_MAX_DEPTH) {
             relayCallback(callerId, callback,
                     "\"relay depth exceeded (max " + RELAY_MAX_DEPTH + ")\"", null);
+            return;
+        }
+        if (argsJson != null && argsJson.length() > MAX_RELAY_JSON_CHARS) {
+            relayCallback(callerId, callback,
+                    "\"relay arguments exceed 256 KB limit\"", null);
             return;
         }
         final Context context = ApplicationLoader.applicationContext;
@@ -2353,6 +2127,11 @@ public final class JsPluginManager {
                 err = "\"plugin " + targetId + " does not export '" + method + "'\"";
             } else if (dispatchBlocked(targetId)) {
                 err = "\"plugin is suspended: " + targetId + "\"";
+            } else {
+                String depErr = checkRuntimeDependencies(context, target);
+                if (depErr != null) {
+                    err = "\"plugin " + targetId + " has " + depErr + "\"";
+                }
             }
             org.mozilla.javascript.Context cx = null;
             if (err == null) {
@@ -2400,6 +2179,9 @@ public final class JsPluginManager {
                                     && !(result instanceof org.mozilla.javascript.Undefined)) {
                                 err = "\"relay result is not JSON-serialisable\"";
                                 resultJson = null;
+                            } else if (resultJson != null && resultJson.length() > MAX_RELAY_JSON_CHARS) {
+                                err = "\"relay result exceeds 256 KB limit\"";
+                                resultJson = null;
                             }
                         }
                     }
@@ -2418,10 +2200,6 @@ public final class JsPluginManager {
         });
     }
 
-    /** Delivers a relay (err, result) pair to the caller's JS
-     *  callback fn(err, result): err is a string or null, result a
-     *  JSON value or null. Both arrive as JSON text and are rebuilt
-     *  inside the caller's own scope. */
     private static void relayCallback(final String callerId, final Object callback,
                                       final String errJson, final String resultJson) {
         if (!(callback instanceof Function)) {
@@ -2459,42 +2237,48 @@ public final class JsPluginManager {
         });
     }
 
-    /** amin.relay.emit: fire-and-forget broadcast to every enabled
-     *  plugin (other than the emitter) defining onEvent whose
-     *  @topics include the topic or "*". */
+    /** Shares a single Rhino Context across all target plugins (A-18). */
     public static void relayEmit(final String callerId, final String topic,
                                  final String dataJson) {
         final Context context = ApplicationLoader.applicationContext;
         if (context == null || topic == null || topic.isEmpty()) {
             return;
         }
+        if (dataJson != null && dataJson.length() > MAX_RELAY_JSON_CHARS) {
+            appendLog(callerId, "[warn] amin.relay.emit: event payload exceeds 256 KB; dropped");
+            return;
+        }
         postToPluginThread(() -> {
-            for (JsPlugin plugin : plugins(context)) {
-                if (plugin.id.equals(callerId) || !plugin.enabled || !plugin.hasEvent) {
-                    continue;
-                }
-                if (!plugin.topics.contains(topic) && !plugin.topics.contains("*")) {
-                    continue;
-                }
-                if (dispatchBlocked(plugin.id)) {
-                    continue;
-                }
-                org.mozilla.javascript.Context cx = null;
-                try {
-                    cx = enterContext();
-                    Runtime runtime = ensureRuntime(cx, context, plugin);
-                    if (runtime == null) {
+            org.mozilla.javascript.Context cx = null;
+            try {
+                for (JsPlugin plugin : plugins(context)) {
+                    if (plugin.id.equals(callerId) || !plugin.enabled || !plugin.hasEvent) {
                         continue;
                     }
-                    Object data = AminBridge.jsonToJs(
-                            dataJson == null ? "null" : dataJson, cx, runtime.scope);
-                    appendLog(plugin.id, "[relay] event '" + topic + "' <- " + callerId);
-                    callHook(cx, runtime, "onEvent", new Object[]{topic, data});
-                } catch (Throwable ignored) {
-                } finally {
-                    if (cx != null) {
-                        org.mozilla.javascript.Context.exit();
+                    if (!plugin.topics.contains(topic) && !plugin.topics.contains("*")) {
+                        continue;
                     }
+                    if (dispatchBlocked(plugin.id)) {
+                        continue;
+                    }
+                    if (cx == null) {
+                        cx = enterContext();
+                    }
+                    try {
+                        Runtime runtime = ensureRuntime(cx, context, plugin);
+                        if (runtime == null) {
+                            continue;
+                        }
+                        Object data = AminBridge.jsonToJs(
+                                dataJson == null ? "null" : dataJson, cx, runtime.scope);
+                        appendLog(plugin.id, "[relay] event '" + topic + "' <- " + callerId);
+                        callHook(cx, runtime, "onEvent", new Object[]{topic, data});
+                    } catch (Throwable ignored) {
+                    }
+                }
+            } finally {
+                if (cx != null) {
+                    org.mozilla.javascript.Context.exit();
                 }
             }
         });
@@ -2508,12 +2292,6 @@ public final class JsPluginManager {
         void onResult(String text);
     }
 
-    /** Eval console (§3.5): evaluates a snippet in the plugin's
-     *  OWN runtime scope and reports the stringified result. The
-     *  caller (the hub Developer section) owns the mitigations:
-     *  Developer-mode gate, and this method itself writes every
-     *  evaluation to the plugin's log before running it. Snippets
-     *  are never stored anywhere. */
     public static void evaluateInPlugin(final String pluginId, final String snippet,
                                         final EvalResult callback) {
         final Context context = ApplicationLoader.applicationContext;
@@ -2523,7 +2301,7 @@ public final class JsPluginManager {
         }
         String flat = snippet == null ? "" : snippet.replace('\n', ' ');
         if (flat.length() > 200) {
-            flat = flat.substring(0, 200) + "…";
+            flat = flat.substring(0, 200) + "\u2026";
         }
         appendLog(pluginId, "[eval] " + flat);
         postToPluginThread(() -> {
@@ -2567,13 +2345,11 @@ public final class JsPluginManager {
             }
             final String text = out;
             appendLog(pluginId, "[eval] -> " + (text.length() > 200
-                    ? text.substring(0, 200) + "…" : text));
+                    ? text.substring(0, 200) + "\u2026" : text));
             org.telegram.messenger.AndroidUtilities.runOnUIThread(() -> callback.onResult(text));
         });
     }
 
-    /** All storage key/value pairs of a plugin (storage inspector):
-     *  the raw prefs strings amin.storage + settings share. */
     public static java.util.Map<String, String> storageGetAll(Context context, String pluginId) {
         java.util.Map<String, String> out = new java.util.TreeMap<>();
         try {
@@ -2597,9 +2373,6 @@ public final class JsPluginManager {
         }
     }
 
-    /** Clears a plugin's data tiers (storage prefs + db rows) —
-     *  the storage inspector's "clear all data". Files and settings
-     *  file copies are NOT touched here; true delete handles those. */
     public static void clearPluginData(Context context, String pluginId) {
         try {
             context.getSharedPreferences(storagePrefsName(pluginId), Context.MODE_PRIVATE)
@@ -2610,11 +2383,6 @@ public final class JsPluginManager {
         appendLog(pluginId, "[info] data cleared from the Developer tools");
     }
 
-    /** Enabled, non-blocked plugins declaring {@code capability},
-     *  in hub order. Built straight from the meta cache under the
-     *  class lock (opt pass, 2026-10-22): the dispatch entries used
-     *  to iterate plugins() — a full defensive copy of the list —
-     *  only to filter it down, on the per-message dispatch path. */
     private static List<JsPlugin> enabledPlugins(Context context, String capability) {
         List<JsPlugin> out = new ArrayList<>();
         synchronized (JsPluginManager.class) {
@@ -2634,19 +2402,7 @@ public final class JsPluginManager {
     }
 
     // ------------------------------------------------------------------
-    // JS value builders
-    // ------------------------------------------------------------------
-
-    // ------------------------------------------------------------------
-    // Lazy rich lookups (A1, blueprint §1.1): the public statics the
-    // bridge's amin.getChatInfo / getUserInfo / getMessage delegate
-    // to. They run on the calling (plugin) thread during JS
-    // execution, so a Rhino context is already current; objects are
-    // built in the plugin runtime's scope when it can be resolved,
-    // else in a fresh standard scope — they are plain data either
-    // way. Account follows the manager's dispatch idiom:
-    // dispatchAccount (set by every dispatch entry before hooks
-    // run), falling back to UserConfig.selectedAccount.
+    // JS value builders & lazy lookups (A-27, A-35, Phase A.4, Phase C.1)
     // ------------------------------------------------------------------
 
     private static int resolveLookupAccount() {
@@ -2662,12 +2418,14 @@ public final class JsPluginManager {
         if (runtime != null && runtime.scope != null) {
             return runtime.scope;
         }
-        return cx.initStandardObjects();
+        ScriptableObject fb = sharedFallbackScope;
+        if (fb == null) {
+            fb = cx.initStandardObjects(null, true);
+            sharedFallbackScope = fb;
+        }
+        return fb;
     }
 
-    /** {id, type, title, username, memberCount} for a dialog id,
-     *  or null when the user/chat is not loaded. memberCount is
-     *  the chat's participants_count; 0 for private chats. */
     public static Scriptable lookupChatInfo(String pluginId, long chatId) {
         org.mozilla.javascript.Context cx = org.mozilla.javascript.Context.getCurrentContext();
         if (cx == null || chatId == 0) {
@@ -2706,8 +2464,6 @@ public final class JsPluginManager {
         }
     }
 
-    /** {id, name, username, isBot, isPremium} for a user id, or
-     *  null when the user is not loaded. */
     public static Scriptable lookupUserInfo(String pluginId, long userId) {
         org.mozilla.javascript.Context cx = org.mozilla.javascript.Context.getCurrentContext();
         if (cx == null || userId <= 0) {
@@ -2732,9 +2488,6 @@ public final class JsPluginManager {
         }
     }
 
-    /** A buildMsg-shaped object for a message that is already
-     *  loaded in MessagesController's maps, or null — the bound is
-     *  contractual: unloaded messages are never fetched. */
     public static Scriptable lookupMessage(String pluginId, long chatId, long id) {
         org.mozilla.javascript.Context cx = org.mozilla.javascript.Context.getCurrentContext();
         if (cx == null) {
@@ -2752,10 +2505,25 @@ public final class JsPluginManager {
         }
     }
 
-    /** Finds a loaded message in MessagesController's maps: the
-     *  per-dialog message list first, then the global by-id map
-     *  (accepted only when its dialog matches). Null when not
-     *  loaded. Shared by lookupMessage and ctx.replyTo. */
+    /** Returns the raw message metadata object for (chatId, id), or null (Phase A.4). */
+    public static Scriptable lookupMessageRaw(String pluginId, long chatId, long id) {
+        org.mozilla.javascript.Context cx = org.mozilla.javascript.Context.getCurrentContext();
+        if (cx == null) {
+            return null;
+        }
+        try {
+            int account = resolveLookupAccount();
+            TLRPC.Message message = findLoadedMessage(account, chatId, id);
+            if (message == null) {
+                return null;
+            }
+            MsgFields fields = computeMsgFields(account, message);
+            return buildRawMessageObject(cx, lookupScope(cx, pluginId), account, message, fields);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
     private static TLRPC.Message findLoadedMessage(int account, long chatId, long messageId) {
         try {
             MessagesController controller = MessagesController.getInstance(account);
@@ -2778,17 +2546,6 @@ public final class JsPluginManager {
         return null;
     }
 
-    /** The per-message values of {@link #buildMsg} that are
-     *  immutable for a given (account, message): the peer lookups
-     *  and display strings. Opt pass (2026-10-22): dispatch used to
-     *  recompute these inside buildMsg for EVERY target plugin —
-     *  sender-name resolution (a string-building getUserName),
-     *  chat/sender controller lookups, forward-origin resolution —
-     *  so an incoming message cost N full constructions for N
-     *  observing plugins. Dispatch entries now compute the fields
-     *  once per event and each plugin's Scriptable is populated
-     *  from them; only the scope-bound object itself (and the
-     *  media descriptor) is still built per plugin. */
     private static final class MsgFields {
         long chatId;
         long senderId;
@@ -2807,10 +2564,6 @@ public final class JsPluginManager {
         fields.senderId = message.from_id != null
                 ? DialogObject.getPeerDialogId(message.from_id) : fields.chatId;
         fields.senderName = resolveSenderName(account, fields.senderId, fields.chatId);
-        // Rich context (Platform v2, A1): the chat and sender user
-        // are resolved once here and reused for channel / chatType /
-        // chatTitle / senderUsername / senderIsBot, keeping the
-        // per-message construction allocation-light.
         MessagesController controller = null;
         TLRPC.Chat chat = null;
         TLRPC.User senderUser = null;
@@ -2912,17 +2665,106 @@ public final class JsPluginManager {
         putStr(msg, "chatType", fields.chatType);
         putStr(msg, "senderUsername", fields.senderUsername);
         msg.put("senderIsBot", msg, fields.senderIsBot ? Boolean.TRUE : Boolean.FALSE);
-        if (message.media != null) {
-            msg.put("media", msg, buildMediaDescriptor(cx, scope, message.media));
+        if (message.media != null && !(message.media instanceof TLRPC.TL_messageMediaEmpty)) {
+            msg.put("media", msg, buildMediaDescriptor(cx, scope, account, message, message.media));
         } else {
             msg.put("media", msg, null);
         }
+        msg.put("raw", msg, buildRawMessageObject(cx, scope, account, message, fields));
         return msg;
     }
 
-    /** Forward origin display name (A1): the header's from_name
-     *  when present, else the resolved name of its from peer,
-     *  else the post author. Name only — no peer objects leak. */
+    /** Exposes the full structured server metadata of TLRPC.Message on
+     *  msg.raw and amin.getMessageRaw (Phase A.4). */
+    private static Scriptable buildRawMessageObject(org.mozilla.javascript.Context cx,
+                                                    Scriptable scope, int account,
+                                                    TLRPC.Message message, MsgFields fields) {
+        Scriptable raw = cx.newObject(scope);
+        try {
+            putNum(raw, "id", message.id);
+            putNum(raw, "realId", message.realId);
+            putNum(raw, "dialogId", fields.chatId);
+            putNum(raw, "fromId", fields.senderId);
+            putNum(raw, "date", message.date);
+            putNum(raw, "editDate", message.edit_date);
+            raw.put("editHide", raw, message.edit_hide ? Boolean.TRUE : Boolean.FALSE);
+            putNum(raw, "flags", message.flags);
+            raw.put("out", raw, message.out ? Boolean.TRUE : Boolean.FALSE);
+            raw.put("mentioned", raw, message.mentioned ? Boolean.TRUE : Boolean.FALSE);
+            raw.put("mediaUnread", raw, message.media_unread ? Boolean.TRUE : Boolean.FALSE);
+            raw.put("silent", raw, message.silent ? Boolean.TRUE : Boolean.FALSE);
+            raw.put("post", raw, message.post ? Boolean.TRUE : Boolean.FALSE);
+            raw.put("fromScheduled", raw, message.from_scheduled ? Boolean.TRUE : Boolean.FALSE);
+            raw.put("legacy", raw, message.legacy ? Boolean.TRUE : Boolean.FALSE);
+            raw.put("pinned", raw, message.pinned ? Boolean.TRUE : Boolean.FALSE);
+            raw.put("noforwards", raw, message.noforwards ? Boolean.TRUE : Boolean.FALSE);
+            raw.put("invertMedia", raw, message.invert_media ? Boolean.TRUE : Boolean.FALSE);
+            putNum(raw, "views", message.views);
+            putNum(raw, "forwards", message.forwards);
+            putNum(raw, "groupedId", message.grouped_id);
+            putNum(raw, "viaBotId", message.via_bot_id);
+            putStr(raw, "postAuthor", message.post_author);
+            int dcId = 0;
+            if (message.media != null) {
+                if (message.media.document != null) {
+                    dcId = message.media.document.dc_id;
+                } else if (message.media.photo != null) {
+                    dcId = message.media.photo.dc_id;
+                }
+            }
+            putNum(raw, "dcId", dcId);
+            if (message.fwd_from != null) {
+                Scriptable fwd = cx.newObject(scope);
+                putNum(fwd, "date", message.fwd_from.date);
+                putNum(fwd, "fromId", message.fwd_from.from_id != null
+                        ? DialogObject.getPeerDialogId(message.fwd_from.from_id) : 0);
+                putStr(fwd, "fromName", message.fwd_from.from_name);
+                putStr(fwd, "postAuthor", message.fwd_from.post_author);
+                putNum(fwd, "channelPost", message.fwd_from.channel_post);
+                putNum(fwd, "savedFromPeerId", message.fwd_from.saved_from_peer != null
+                        ? DialogObject.getPeerDialogId(message.fwd_from.saved_from_peer) : 0);
+                putNum(fwd, "savedFromMsgId", message.fwd_from.saved_from_msg_id);
+                raw.put("fwdFrom", raw, fwd);
+            } else {
+                raw.put("fwdFrom", raw, null);
+            }
+            if (message.reply_to != null) {
+                Scriptable rep = cx.newObject(scope);
+                putNum(rep, "replyToMsgId", message.reply_to.reply_to_msg_id);
+                putNum(rep, "replyToTopId", message.reply_to.reply_to_top_id);
+                putNum(rep, "replyToPeerId", message.reply_to.reply_to_peer_id != null
+                        ? DialogObject.getPeerDialogId(message.reply_to.reply_to_peer_id) : 0);
+                putStr(rep, "quoteText", message.reply_to.quote_text);
+                raw.put("replyTo", raw, rep);
+            } else {
+                raw.put("replyTo", raw, null);
+            }
+            List<Object> ents = new ArrayList<>();
+            if (message.entities != null) {
+                for (TLRPC.MessageEntity entity : message.entities) {
+                    if (entity == null) {
+                        continue;
+                    }
+                    Scriptable eObj = cx.newObject(scope);
+                    putStr(eObj, "type", entity.getClass().getSimpleName()
+                            .replace("TL_messageEntity", ""));
+                    putNum(eObj, "offset", entity.offset);
+                    putNum(eObj, "length", entity.length);
+                    putStr(eObj, "url", entity.url);
+                    putStr(eObj, "language", entity.language);
+                    if (entity instanceof TLRPC.TL_messageEntityCustomEmoji) {
+                        putStr(eObj, "documentId",
+                                String.valueOf(((TLRPC.TL_messageEntityCustomEmoji) entity).document_id));
+                    }
+                    ents.add(eObj);
+                }
+            }
+            raw.put("entities", raw, cx.newArray(scope, ents.toArray()));
+        } catch (Throwable ignored) {
+        }
+        return raw;
+    }
+
     private static String resolveFwdFromName(int account, TLRPC.Message message, long chatId) {
         try {
             TLRPC.MessageFwdHeader fwd = message.fwd_from;
@@ -2947,11 +2789,11 @@ public final class JsPluginManager {
         return "";
     }
 
-    /** The msg.media descriptor (A1): built purely by instanceof
-     *  checks on the already-loaded media object — no downloads,
-     *  no FileLoader paths. Unknown media degrades to "other". */
+    /** Enriched msg.media descriptor (Phase A.4 & Phase C.1 Sticker Downloader). */
     private static Scriptable buildMediaDescriptor(org.mozilla.javascript.Context cx,
                                                    Scriptable scope,
+                                                   int account,
+                                                   TLRPC.Message message,
                                                    TLRPC.MessageMedia media) {
         Scriptable desc = cx.newObject(scope);
         String kind = "other";
@@ -2961,26 +2803,50 @@ public final class JsPluginManager {
         long durationSec = 0;
         long width = 0;
         long height = 0;
+        long dcId = 0;
+        String documentId = "";
+        String stickerEmoji = "";
+        String stickerSetName = "";
+        String stickerSetId = "";
+        boolean isAnimatedSticker = false;
+        boolean isVideoSticker = false;
+        boolean isCustomEmoji = false;
+        String localPath = "";
+        try {
+            if (message != null) {
+                File f = FileLoader.getInstance(account).getPathToMessage(message);
+                if (f != null && f.isFile() && f.length() > 0) {
+                    localPath = f.getAbsolutePath();
+                }
+            }
+        } catch (Throwable ignored) {
+        }
         try {
             if (media instanceof TLRPC.TL_messageMediaPhoto) {
                 kind = "photo";
                 TLRPC.Photo photo = media.photo;
-                if (photo != null && photo.sizes != null) {
-                    TLRPC.PhotoSize best = null;
-                    for (TLRPC.PhotoSize size : photo.sizes) {
-                        if (size != null && (best == null || size.size > best.size)) {
-                            best = size;
+                if (photo != null) {
+                    dcId = photo.dc_id;
+                    documentId = String.valueOf(photo.id);
+                    if (photo.sizes != null) {
+                        TLRPC.PhotoSize best = null;
+                        for (TLRPC.PhotoSize size : photo.sizes) {
+                            if (size != null && (best == null || size.size > best.size)) {
+                                best = size;
+                            }
                         }
-                    }
-                    if (best != null) {
-                        sizeBytes = best.size;
-                        width = best.w;
-                        height = best.h;
+                        if (best != null) {
+                            sizeBytes = best.size;
+                            width = best.w;
+                            height = best.h;
+                        }
                     }
                 }
             } else if (media instanceof TLRPC.TL_messageMediaDocument) {
                 TLRPC.Document doc = media.document;
                 if (doc != null) {
+                    dcId = doc.dc_id;
+                    documentId = String.valueOf(doc.id);
                     fileName = documentFileName(doc);
                     mimeType = doc.mime_type == null ? "" : doc.mime_type;
                     sizeBytes = doc.size;
@@ -2994,6 +2860,31 @@ public final class JsPluginManager {
                             }
                             if (attr instanceof TLRPC.TL_documentAttributeSticker) {
                                 sticker = true;
+                                if (attr.alt != null) {
+                                    stickerEmoji = attr.alt;
+                                }
+                                if (attr.stickerset != null) {
+                                    if (attr.stickerset.short_name != null) {
+                                        stickerSetName = attr.stickerset.short_name;
+                                    }
+                                    if (attr.stickerset.id != 0) {
+                                        stickerSetId = String.valueOf(attr.stickerset.id);
+                                    }
+                                }
+                            } else if (attr instanceof TLRPC.TL_documentAttributeCustomEmoji) {
+                                sticker = true;
+                                isCustomEmoji = true;
+                                if (attr.alt != null && stickerEmoji.isEmpty()) {
+                                    stickerEmoji = attr.alt;
+                                }
+                                if (attr.stickerset != null) {
+                                    if (attr.stickerset.short_name != null && stickerSetName.isEmpty()) {
+                                        stickerSetName = attr.stickerset.short_name;
+                                    }
+                                    if (attr.stickerset.id != 0 && stickerSetId.isEmpty()) {
+                                        stickerSetId = String.valueOf(attr.stickerset.id);
+                                    }
+                                }
                             } else if (attr instanceof TLRPC.TL_documentAttributeAudio) {
                                 docKind = attr.voice ? "voice" : "audio";
                                 durationSec = Math.round(attr.duration);
@@ -3020,6 +2911,8 @@ public final class JsPluginManager {
                     }
                     if (sticker) {
                         docKind = "sticker";
+                        isAnimatedSticker = "application/x-tgsticker".equalsIgnoreCase(mimeType);
+                        isVideoSticker = "video/webm".equalsIgnoreCase(mimeType);
                     } else if (animated && ("document".equals(docKind) || "video".equals(docKind))) {
                         docKind = "gif";
                     } else if ("document".equals(docKind) && mimeType.startsWith("video/")) {
@@ -3032,8 +2925,9 @@ public final class JsPluginManager {
             } else if (media instanceof TLRPC.TL_messageMediaPoll) {
                 kind = "poll";
             } else if (media.photo != null) {
-                // Other media shapes that still carry a photo.
                 kind = "photo";
+                dcId = media.photo.dc_id;
+                documentId = String.valueOf(media.photo.id);
                 if (media.photo.sizes != null) {
                     TLRPC.PhotoSize best = null;
                     for (TLRPC.PhotoSize size : media.photo.sizes) {
@@ -3049,6 +2943,8 @@ public final class JsPluginManager {
                 }
             } else if (media.document != null) {
                 kind = "document";
+                dcId = media.document.dc_id;
+                documentId = String.valueOf(media.document.id);
                 fileName = documentFileName(media.document);
                 mimeType = media.document.mime_type == null ? "" : media.document.mime_type;
                 sizeBytes = media.document.size;
@@ -3062,6 +2958,15 @@ public final class JsPluginManager {
         putNum(desc, "durationSec", durationSec);
         putNum(desc, "width", width);
         putNum(desc, "height", height);
+        putNum(desc, "dcId", dcId);
+        putStr(desc, "documentId", documentId);
+        putStr(desc, "stickerEmoji", stickerEmoji);
+        putStr(desc, "stickerSetName", stickerSetName);
+        putStr(desc, "stickerSetId", stickerSetId);
+        desc.put("isAnimatedSticker", desc, isAnimatedSticker ? Boolean.TRUE : Boolean.FALSE);
+        desc.put("isVideoSticker", desc, isVideoSticker ? Boolean.TRUE : Boolean.FALSE);
+        desc.put("isCustomEmoji", desc, isCustomEmoji ? Boolean.TRUE : Boolean.FALSE);
+        putStr(desc, "localPath", localPath);
         return desc;
     }
 
@@ -3072,17 +2977,6 @@ public final class JsPluginManager {
         return doc.file_name == null ? "" : doc.file_name;
     }
 
-    /**
-     * Command context. When the source message is a reply
-     * (reply_to id != 0 — from {@code sourceMessage} on the update
-     * path, or {@code replyTarget} on the outgoing path where the
-     * send params already carry the target MessageObject),
-     * ctx.replyTo is set to {text, caption, senderName, chatId,
-     * messageId} describing the target: resolved through the same
-     * loaded-message lookup as lookupMessage; an unresolved target
-     * still yields the object, with empty text/senderName. caption
-     * is the target's text when the target carries media, else "".
-     */
     private static Scriptable buildCtx(org.mozilla.javascript.Context cx, Scriptable scope,
                                        Scriptable msg, long chatId, long senderId,
                                        String command, String args, int account,
@@ -3120,6 +3014,14 @@ public final class JsPluginManager {
             putStr(replyTo, "senderName", targetSenderName);
             putNum(replyTo, "chatId", chatId);
             putNum(replyTo, "messageId", replyToId);
+            if (target != null) {
+                Scriptable targetMsg = buildMsg(cx, scope, account, target);
+                replyTo.put("msg", replyTo, targetMsg);
+                replyTo.put("media", replyTo, targetMsg.get("media", targetMsg));
+            } else {
+                replyTo.put("msg", replyTo, null);
+                replyTo.put("media", replyTo, null);
+            }
             ctx.put("replyTo", ctx, replyTo);
         }
         return ctx;
@@ -3159,9 +3061,6 @@ public final class JsPluginManager {
         obj.put(key, obj, value == null ? "" : value);
     }
 
-    /** "/shout hello world" → {"shout", "hello world"}; also strips a
-     *  trailing "@botname" from the command token. Null when the text
-     *  is not a command. */
     public static String[] parseCommand(String text) {
         if (text == null || !text.startsWith("/")) {
             return null;
@@ -3184,7 +3083,7 @@ public final class JsPluginManager {
         if (at >= 0) {
             command = command.substring(0, at);
         }
-        command = command.toLowerCase();
+        command = command.toLowerCase(Locale.US);
         if (command.isEmpty()) {
             return null;
         }

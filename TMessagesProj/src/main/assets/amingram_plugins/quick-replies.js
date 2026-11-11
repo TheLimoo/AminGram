@@ -1,10 +1,11 @@
 // ==AminGramPlugin==
 // @id          quick-replies
 // @name        Quick Replies
-// @version     1.1
+// @version     1.1.1
 // @author      Amin
-// @description Text templates: /tpl set <name> <text> saves one, /tpl <name> posts it, /tpl list shows your templates, /tpl del <name> removes one, /tpl export posts them all in one message. Note: the /tpl command message itself also appears in the chat (the platform can't swallow outgoing commands yet).
+// @description Text templates: /tpl set <name> <text> saves one, /tpl <name> posts it, /tpl list shows your templates, /tpl del <name> removes one, /tpl export posts them all in one message. Outgoing /tpl commands are suppressed automatically.
 // @capabilities commands, send, settings, ui
+// @commands    tpl
 // @minPlatform 2
 // ==/AminGramPlugin==
 

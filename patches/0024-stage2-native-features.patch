@@ -1,0 +1,55 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
+index e51e462..bd55d36 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
+@@ -12062,6 +12062,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+             Activity activity = AndroidUtilities.findActivity(getContext());
+             Window window = activity == null ? null : activity.getWindow();
+             if (window != null) {
++                org.telegram.messenger.amin.AminHooks.onCellAttached(this);
+                 flagSecure = new FlagSecureReason(window, () ->
+                     !org.telegram.messenger.amin.AminHooks.screenshotUnlocked() && currentMessageObject != null && currentMessageObject.messageOwner != null && (
+                         currentMessageObject.type == MessageObject.TYPE_PAID_MEDIA && (groupMedia == null || !groupMedia.hidden) ||
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index d4503b3..a0f6b48 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -33447,6 +33447,17 @@ public class ChatActivity extends BaseFragment implements
+                 org.telegram.messenger.amin.AminHooks.showMessageDetails(ChatActivity.this, selectedObject);
+                 break;
+             }
++            case org.telegram.messenger.amin.AminHooks.OPTION_REVEAL_FILTERED:
++            case org.telegram.messenger.amin.AminHooks.OPTION_AYU_FORWARD_COPY:
++            case org.telegram.messenger.amin.AminHooks.OPTION_AYU_SAVE_SELF:
++            case org.telegram.messenger.amin.AminHooks.OPTION_FORWARD_AS_COPY:
++            case org.telegram.messenger.amin.AminHooks.OPTION_JUMP_TO_BEGINNING:
++            case org.telegram.messenger.amin.AminHooks.OPTION_MARK_FOLDER_READ:
++            case org.telegram.messenger.amin.AminHooks.OPTION_AYU_COPY_TEXT:
++            case org.telegram.messenger.amin.AminHooks.OPTION_QUICK_GESTURE_ACTION: {
++                org.telegram.messenger.amin.AminHooks.handleStage2MessageOption(ChatActivity.this, option, selectedObject);
++                break;
++            }
+             case org.telegram.messenger.amin.AminHooks.OPTION_PLUGIN_CONTEXT_BASE:
+             case org.telegram.messenger.amin.AminHooks.OPTION_PLUGIN_CONTEXT_BASE + 1:
+             case org.telegram.messenger.amin.AminHooks.OPTION_PLUGIN_CONTEXT_BASE + 2:
+@@ -46558,6 +46569,7 @@ public class ChatActivity extends BaseFragment implements
+         }
+ 
+         org.telegram.messenger.amin.AminHooks.addMessageDetailsOption(icons, items, options);
++        org.telegram.messenger.amin.AminHooks.addStage2MessageOptions(ChatActivity.this, message, icons, items, options);
+ 
+         aminContextItems = org.telegram.messenger.amin.AminHooks.pluginContextItems(getDialogId(), message != null ? message.messageOwner : null);
+         if (aminContextItems != null) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+index 8efd3e9..9616bfc 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+@@ -11036,7 +11036,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                 return org.telegram.messenger.amin.AminHooks.filterHiddenDialogs(messagesController.getDialogs(folderId));
+             } else {
+                 if (initialDialogsType == DIALOGS_TYPE_FORWARD) {
+-                    return dialogFilter.dialogsForward;
++                    return org.telegram.messenger.amin.AminHooks.filterHiddenDialogs(dialogFilter.dialogsForward);
+                 }
+                 return dialogFilter.dialogs;
+             }

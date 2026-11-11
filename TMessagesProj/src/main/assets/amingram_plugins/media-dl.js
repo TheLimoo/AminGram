@@ -1,12 +1,13 @@
 // ==AminGramPlugin==
 // @id          media-dl
 // @name        Downloader Pro
-// @version     3.0.2
+// @version     3.0.3
 // @author      Amin
 // @description Downloads public media into the chat from TikTok, Instagram, X/Twitter, Reddit, Pinterest, Threads and direct media links. Supports albums, quality choices, TikTok MP3, replied-to links, a long-press download action, download history and link fallback.
 // @icon        download
 // @menuLabel   Download media
 // @capabilities observe, commands, send, http, settings, menu, file, ui
+// @commands    dl, download, links, mp3, last, recent, dlhelp, downloadhelp
 // @contextMenu Download media
 // @minPlatform 2
 // @dataVersion 2
@@ -234,8 +235,9 @@ function classifyUrl(url) {
     if (/\/(p|reel|reels|tv)\//i.test(path)) return "instagram";
     return null;
   }
-  if (host === "x.com" || host === "www.x.com" || contains(host, "twitter.com")) {
-    return /\/status\/\d+/i.test(path) ? "x" : null;
+  if (host === "x.com" || host === "www.x.com" || host === "mobile.x.com"
+      || contains(host, "twitter.com") || contains(host, "fixupx.com") || contains(host, "twittpr.com")) {
+    return /\/status(?:es)?\/\d+/i.test(path) ? "x" : null;
   }
   if (contains(host, "reddit.com") || host === "redd.it") return "reddit";
   if (contains(host, "pinterest.") || host === "pin.it") return "pinterest";
@@ -475,10 +477,14 @@ function tikTokAudioUrl(data) {
 }
 
 function resolveTikTok(source, options, done) {
-  var endpoint = "https://www.tikwm.com/api/?url=" + encodeURIComponent(source);
+  var cleanSource = source.split("#")[0];
+  var endpoint = "https://www.tikwm.com/api/?hd=1&url=" + encodeURIComponent(cleanSource);
   httpGetJsonAsync(endpoint, BROWSER_HEADERS, function (json) {
     try {
-      if (!json || !json.data) { done(null); return; }
+      if (!json || Number(json.code || 0) !== 0 || !json.data) {
+        resolveGeneric(cleanSource, options, done);
+        return;
+      }
       var d = json.data;
       var result = emptyResult("tiktok", source);
       result.title = cleanTitle(d.title || d.content_desc, "TikTok video");
@@ -618,10 +624,12 @@ function xParseInto(result, root, quality) {
 }
 
 function resolveX(source, options, done) {
-  var m = source.match(/(?:x\.com|twitter\.com)\/([A-Za-z0-9_]{1,15})\/status\/(\d+)/i);
-  if (!m) { done(null); return; }
+  var idMatch = source.match(/\/status(?:es)?\/(\d+)/i);
+  if (!idMatch) { done(null); return; }
+  var userMatch = source.match(/(?:x\.com|twitter\.com|fixupx\.com|twittpr\.com)\/(?!i\/)([A-Za-z0-9_]{1,15})\/status/i);
   var quality = preferredQuality(options && options.quality);
-  var username = m[1], statusId = m[2];
+  var username = userMatch ? userMatch[1] : "i";
+  var statusId = idMatch[1];
 
   function tryVx() {
     var vxUrl = "https://api.vxtwitter.com/" + encodeURIComponent(username)
@@ -1206,11 +1214,12 @@ function startDownload(chatId, msg, source, options) {
   options = options || {};
   if (!source) return false;
   var key = str(chatId);
-  if (activeJobs[key]) {
+  var startedAt = Number(activeJobs[key] || 0);
+  if (startedAt && (nowMs() - startedAt) < 180000) {
     if (!options.quiet) amin.toast("⏳ A download is already running in this chat");
     return false;
   }
-  activeJobs[key] = true;
+  activeJobs[key] = nowMs() || 1;
   markWindowStart();
   rememberUrl(chatId, source);
   if (!options.quietStart) amin.toast("⏳ Resolving link…");

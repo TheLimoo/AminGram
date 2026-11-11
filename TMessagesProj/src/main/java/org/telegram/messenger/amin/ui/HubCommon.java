@@ -50,8 +50,15 @@ import org.telegram.messenger.amin.dns.AminDnsController;
 import org.telegram.messenger.amin.dns.DnsProfile;
 import org.telegram.messenger.amin.dns.DnsProfiles;
 import org.telegram.messenger.amin.google.GoogleAuthManager;
+import org.telegram.messenger.amin.AminHooks;
+import org.telegram.messenger.amin.modules.AyuForwardModule;
+import org.telegram.messenger.amin.modules.FolderChatQolModule;
+import org.telegram.messenger.amin.modules.ForwardAsCopyModule;
+import org.telegram.messenger.amin.modules.GestureActionsModule;
 import org.telegram.messenger.amin.modules.GhostModeModule;
 import org.telegram.messenger.amin.modules.LocalPremiumModule;
+import org.telegram.messenger.amin.modules.MessageFiltersModule;
+import org.telegram.messenger.amin.modules.SpeedBoostModule;
 import org.telegram.messenger.amin.plugins.ModModule;
 import org.telegram.messenger.amin.plugins.PluginRegistry;
 import org.telegram.messenger.amin.plugins.js.BundledPlugins;
@@ -182,7 +189,6 @@ public final class HubCommon {
     private static final int KIND_CATEGORY = 14;
     private static final int KIND_QUICK = 15;
     private static final int KIND_MODULE = 1;
-    private static final int KIND_INFO = 2; // retired (merged into KIND_MODULE)
     private static final int KIND_ACTION = 3;
     private static final int KIND_FOOTER = 6;
     private static final int KIND_PAGE_HEADER = 17;
@@ -224,7 +230,6 @@ public final class HubCommon {
         String statusText;
         int statusTone = TONE_NONE;
         boolean accent;
-        boolean multiline;
         // v3:
         String quickId;
         String categoryId;
@@ -259,11 +264,11 @@ public final class HubCommon {
             new Category("plugins", "01", "Plugins",
                     "Engine · library · catalog · packs", null),
             new Category("privacy", "02", "Privacy & Ghost",
-                    "Ghost · records · hidden chats", "6 MODULES · 3 GROUPS · ALL ON-DEVICE"),
+                    "Ghost · records · AyuForward · hidden", "7 MODULES · 3 GROUPS · ALL ON-DEVICE"),
             new Category("appearance", "03", "Appearance & Media",
                     "Wallpaper · icon · font · saver", "4 MODULES · 3 GROUPS · ALL ON-DEVICE"),
             new Category("tools", "04", "Tools & Automation",
-                    "Premium · translate · radar · queue", "4 MODULES · 1 GROUP · ALL ON-DEVICE"),
+                    "Premium · filters · gestures · speed · QoL", "9 MODULES · 1 GROUP · ALL ON-DEVICE"),
             new Category("network", "05", "Network & Accounts",
                     "DNS profiles · Google account", "2 SERVICES · 1 GROUP · ALL ON-DEVICE"),
             new Category("system", "06", "System & Data",
@@ -290,6 +295,7 @@ public final class HubCommon {
             case "anti_delete":
             case "edit_history":
             case "screenshot_unlock":
+            case "ayu_forward":
             case "hidden_chats":
                 return "privacy";
             case "video_background":
@@ -311,6 +317,7 @@ public final class HubCommon {
             case "edit_history":
                 return 1;
             case "screenshot_unlock":
+            case "ayu_forward":
             case "hidden_chats":
                 return 2;
             case "video_background":
@@ -346,6 +353,8 @@ public final class HubCommon {
     private boolean searchPluginsOnly;
     private String searchQuery = "";
     private List<SearchEntry> searchIndex;
+    private boolean buildingSearchIndex;
+    private String cachedDnsProfile = "NONE";
 
     // Search-arrival highlight (page mode).
     private String highlightKey;
@@ -409,6 +418,7 @@ public final class HubCommon {
         }
         rows.clear();
         blockCounter = 0;
+        refreshCachedDnsProfile(context);
         if (mode == MODE_HOME) {
             buildHomeRows(context);
         } else {
@@ -427,6 +437,19 @@ public final class HubCommon {
      *  else stays uncarded. (The pre-v3 machinery inferred groups
      *  from row kinds and section boundaries; the runs it produced
      *  are the same shape, now explicit.) */
+    private void refreshCachedDnsProfile(Context context) {
+        String profile = "NONE";
+        try {
+            DnsProfile activeProfile = DnsProfiles.activeProfile(context);
+            if (activeProfile != null && activeProfile.name != null
+                    && !activeProfile.name.isEmpty()) {
+                profile = activeProfile.name.toUpperCase(Locale.US);
+            }
+        } catch (Throwable ignored) {
+        }
+        cachedDnsProfile = profile;
+    }
+
     private void assignSegments() {
         for (Row row : rows) {
             row.seg = SEG_NONE;
@@ -548,11 +571,11 @@ public final class HubCommon {
             case "plugins":
                 return String.valueOf(JsPluginManager.plugins(context).size());
             case "privacy":
-                return "06";
+                return "07";
             case "appearance":
                 return "06";
             case "tools":
-                return "04";
+                return "09";
             case "network": {
                 String state = "OFF";
                 try {
@@ -703,7 +726,6 @@ public final class HubCommon {
         }
         if (allPlugins.isEmpty()) {
             Row note = addRow(KIND_NOTE);
-            note.multiline = true;
             note.title = "No plugins installed yet. Use Add Plugin below or open the Built-in library.";
         }
 
@@ -781,13 +803,20 @@ public final class HubCommon {
                 break;
             }
             case "anti_delete": {
-                int count = VaultStore.getAll(context, DeletedStore.PREFS, DeletedStore.DELETED_KEY).size();
+                int count = VaultStore.count(context, DeletedStore.PREFS, DeletedStore.DELETED_KEY);
                 actionRow(moduleBlock, "view_deleted", "Deleted messages", String.valueOf(count));
                 break;
             }
             case "edit_history": {
-                int count = VaultStore.getAll(context, DeletedStore.PREFS, DeletedStore.EDIT_KEY).size();
+                int count = VaultStore.count(context, DeletedStore.PREFS, DeletedStore.EDIT_KEY);
                 actionRow(moduleBlock, "view_edits", "Edit history", String.valueOf(count));
+                break;
+            }
+            case "ayu_forward": {
+                subRow("ayu_forward_media", "Re-upload restricted media",
+                        AyuForwardModule.reuploadMedia(context) ? "On" : "Off", SUB_TOGGLE);
+                subRow("ayu_forward_copy_save", "Unlock copy & gallery save",
+                        AyuForwardModule.unlockCopySave(context) ? "On" : "Off", SUB_TOGGLE);
                 break;
             }
             case "hidden_chats": {
@@ -823,12 +852,56 @@ public final class HubCommon {
                 actionRow(moduleBlock, "view_saved", "Saved media", String.valueOf(count));
                 break;
             }
+            case "forward_as_copy": {
+                subRow("fac_drop_author", "Drop “Forwarded from” header",
+                        ForwardAsCopyModule.dropAuthor(context) ? "On" : "Off", SUB_TOGGLE);
+                subRow("fac_drop_caption", "Strip media captions",
+                        ForwardAsCopyModule.dropCaption(context) ? "On" : "Off", SUB_TOGGLE);
+                break;
+            }
             case "keyword_radar": {
                 int keywords = MessagePipeline.loadKeywords(context).size();
                 actionRow(moduleBlock, "edit_keywords", "Radar keywords", keywords == 0 ? "None" : keywords + " set");
-                int hits = VaultStore.getAll(context, MessagePipeline.RADAR_PREFS,
-                        MessagePipeline.RADAR_HITS_KEY).size();
+                int hits = VaultStore.count(context, MessagePipeline.RADAR_PREFS,
+                        MessagePipeline.RADAR_HITS_KEY);
                 actionRow(moduleBlock, "view_hits", "Radar hits", String.valueOf(hits));
+                break;
+            }
+            case "message_filters": {
+                int kwCount = MessageFiltersModule.loadKeywords(context).size();
+                actionRow(moduleBlock, "edit_filter_keywords", "Filter keywords",
+                        kwCount == 0 ? "None" : kwCount + " set");
+                int senderCount = MessageFiltersModule.loadSenders(context).size();
+                actionRow(moduleBlock, "edit_filter_senders", "Filtered sender IDs",
+                        senderCount == 0 ? "None" : senderCount + " set");
+                subRow("filter_channels_only", "Filter channels & groups only",
+                        MessageFiltersModule.channelsOnly(context) ? "On" : "Off", SUB_TOGGLE);
+                break;
+            }
+            case "folder_chat_qol": {
+                subRow("qol_mark_folder_read", "Mark folder as read",
+                        FolderChatQolModule.markFolderRead(context) ? "On" : "Off", SUB_TOGGLE);
+                subRow("qol_jump_to_start", "Jump to beginning of chat",
+                        FolderChatQolModule.jumpToStart(context) ? "On" : "Off", SUB_TOGGLE);
+                subRow("qol_folders_in_forward", "Folders in forward picker",
+                        FolderChatQolModule.foldersInForward(context) ? "On" : "Off", SUB_TOGGLE);
+                actionRow(moduleBlock, "qol_mark_folder_now", "Mark a folder as read now…", "Pick folder");
+                break;
+            }
+            case "gesture_actions": {
+                subRow("gesture_double_tap_pick", "Double-tap action",
+                        GestureActionsModule.doubleTapLabel(GestureActionsModule.doubleTapAction(context)), SUB_PICK);
+                subRow("gesture_double_tap_own", "Double-tap own message = Edit",
+                        GestureActionsModule.doubleTapOwnEdit(context) ? "On" : "Off", SUB_TOGGLE);
+                subRow("gesture_swipe_pick", "Swipe action",
+                        GestureActionsModule.swipeLabel(GestureActionsModule.swipeAction(context)), SUB_PICK);
+                break;
+            }
+            case "speed_boost": {
+                subRow("speed_boost_dl_pick", "Download boost level",
+                        SpeedBoostModule.levelShortLabel(SpeedBoostModule.downloadLevel(context)), SUB_PICK);
+                subRow("speed_boost_ul_toggle", "Upload speed boost",
+                        SpeedBoostModule.uploadBoost(context) ? "On" : "Off", SUB_TOGGLE);
                 break;
             }
             case "send_when_online": {
@@ -1002,6 +1075,11 @@ public final class HubCommon {
     }
 
     private List<SearchEntry> buildSearchIndex(Context context) {
+        if (buildingSearchIndex) {
+            return new ArrayList<>();
+        }
+        buildingSearchIndex = true;
+        try {
         List<SearchEntry> index = new ArrayList<>();
         List<Row> saved = new ArrayList<>(rows);
         String savedCategory = categoryId;
@@ -1059,6 +1137,9 @@ public final class HubCommon {
         rows.clear();
         rows.addAll(saved);
         return index;
+        } finally {
+            buildingSearchIndex = false;
+        }
     }
 
     private void buildSearchResults(Context context) {
@@ -1082,7 +1163,6 @@ public final class HubCommon {
         }
         if (shown == 0) {
             Row note = addRow(KIND_NOTE);
-            note.multiline = true;
             note.title = "No results";
         }
     }
@@ -1409,14 +1489,84 @@ public final class HubCommon {
             case "pack_import":
                 pickPackImport();
                 break;
-            case "bundled": {
-                String error = BundledPlugins.install(context, row.bundled);
-                if (error == null) {
-                    bulletin(R.raw.contact_check, row.bundled.name + " installed");
-                } else {
-                    showError(error);
-                }
+            case "ayu_forward_media":
+                AyuForwardModule.setReuploadMedia(context,
+                        !AyuForwardModule.reuploadMedia(context));
                 rebuild();
+                break;
+            case "ayu_forward_copy_save":
+                AyuForwardModule.setUnlockCopySave(context,
+                        !AyuForwardModule.unlockCopySave(context));
+                rebuild();
+                break;
+            case "fac_drop_author":
+                ForwardAsCopyModule.setDropAuthor(context,
+                        !ForwardAsCopyModule.dropAuthor(context));
+                rebuild();
+                break;
+            case "fac_drop_caption":
+                ForwardAsCopyModule.setDropCaption(context,
+                        !ForwardAsCopyModule.dropCaption(context));
+                rebuild();
+                break;
+            case "edit_filter_keywords":
+                editFilterKeywords(context);
+                break;
+            case "edit_filter_senders":
+                editFilterSenders(context);
+                break;
+            case "filter_channels_only":
+                MessageFiltersModule.setChannelsOnly(context,
+                        !MessageFiltersModule.channelsOnly(context));
+                rebuild();
+                break;
+            case "qol_mark_folder_read":
+                FolderChatQolModule.setMarkFolderRead(context,
+                        !FolderChatQolModule.markFolderRead(context));
+                rebuild();
+                break;
+            case "qol_jump_to_start":
+                FolderChatQolModule.setJumpToStart(context,
+                        !FolderChatQolModule.jumpToStart(context));
+                rebuild();
+                break;
+            case "qol_folders_in_forward":
+                FolderChatQolModule.setFoldersInForward(context,
+                        !FolderChatQolModule.foldersInForward(context));
+                rebuild();
+                break;
+            case "qol_mark_folder_now":
+                AminHooks.showMarkFolderReadDialog(host.fragment(), host.currentAccount());
+                break;
+            case "gesture_double_tap_pick":
+                pickDoubleTapAction(context);
+                break;
+            case "gesture_double_tap_own":
+                GestureActionsModule.setDoubleTapOwnEdit(context,
+                        !GestureActionsModule.doubleTapOwnEdit(context));
+                rebuild();
+                break;
+            case "gesture_swipe_pick":
+                pickSwipeAction(context);
+                break;
+            case "speed_boost_dl_pick":
+                pickDownloadSpeedBoost(context);
+                break;
+            case "speed_boost_ul_toggle":
+                SpeedBoostModule.setUploadBoost(context,
+                        !SpeedBoostModule.uploadBoost(context));
+                rebuild();
+                break;
+            case "bundled": {
+                final BundledPlugins.Bundled b = row.bundled;
+                BundledPlugins.installAsync(context, b, error -> {
+                    if (error == null) {
+                        bulletin(R.raw.contact_check, b.name + " installed");
+                    } else {
+                        showError(error);
+                    }
+                    rebuild();
+                });
                 break;
             }
             default:
@@ -1565,6 +1715,92 @@ public final class HubCommon {
         builder.setView(fieldContainer(context, editText));
         builder.setPositiveButton("Save", (dialog, which) -> {
             MessagePipeline.setKeywords(context, editText.getText().toString());
+            rebuild();
+        });
+        builder.setNegativeButton("Cancel", null);
+        host.showDialog(builder.create());
+    }
+
+    private void editFilterKeywords(Context context) {
+        EditTextBoldCursor editText = textField(context, "ad, sponsored, promo, …", false);
+        editText.setText(MessageFiltersModule.getKeywordsRaw(context));
+        AlertDialog.Builder builder = new AlertDialog.Builder(host.parentActivity());
+        builder.setTitle("Message Filters — keywords");
+        builder.setView(fieldContainer(context, editText));
+        builder.setPositiveButton("Save", (dialog, which) -> {
+            MessageFiltersModule.setKeywords(context, editText.getText().toString());
+            rebuild();
+        });
+        builder.setNegativeButton("Cancel", null);
+        host.showDialog(builder.create());
+    }
+
+    private void editFilterSenders(Context context) {
+        EditTextBoldCursor editText = textField(context, "123456789, -100987654321, …", false);
+        editText.setText(MessageFiltersModule.getSendersRaw(context));
+        AlertDialog.Builder builder = new AlertDialog.Builder(host.parentActivity());
+        builder.setTitle("Message Filters — sender IDs");
+        builder.setView(fieldContainer(context, editText));
+        builder.setPositiveButton("Save", (dialog, which) -> {
+            MessageFiltersModule.setSenders(context, editText.getText().toString());
+            rebuild();
+        });
+        builder.setNegativeButton("Cancel", null);
+        host.showDialog(builder.create());
+    }
+
+    private void pickDoubleTapAction(Context context) {
+        if (host.parentActivity() == null) {
+            return;
+        }
+        int current = GestureActionsModule.doubleTapAction(context);
+        CharSequence[] items = new CharSequence[GestureActionsModule.DOUBLE_TAP_LABELS.length];
+        for (int i = 0; i < items.length; i++) {
+            items[i] = GestureActionsModule.DOUBLE_TAP_LABELS[i] + (current == i ? "  ✓" : "");
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(host.parentActivity());
+        builder.setTitle("Double-tap action");
+        builder.setItems(items, (dialog, which) -> {
+            GestureActionsModule.setDoubleTapAction(context, which);
+            rebuild();
+        });
+        builder.setNegativeButton("Cancel", null);
+        host.showDialog(builder.create());
+    }
+
+    private void pickSwipeAction(Context context) {
+        if (host.parentActivity() == null) {
+            return;
+        }
+        int current = GestureActionsModule.swipeAction(context);
+        CharSequence[] items = new CharSequence[GestureActionsModule.SWIPE_LABELS.length];
+        for (int i = 0; i < items.length; i++) {
+            items[i] = GestureActionsModule.SWIPE_LABELS[i] + (current == i ? "  ✓" : "");
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(host.parentActivity());
+        builder.setTitle("Swipe action");
+        builder.setItems(items, (dialog, which) -> {
+            GestureActionsModule.setSwipeAction(context, which);
+            rebuild();
+        });
+        builder.setNegativeButton("Cancel", null);
+        host.showDialog(builder.create());
+    }
+
+    private void pickDownloadSpeedBoost(Context context) {
+        if (host.parentActivity() == null) {
+            return;
+        }
+        int current = SpeedBoostModule.downloadLevel(context);
+        CharSequence[] items = new CharSequence[SpeedBoostModule.LEVEL_LABELS.length];
+        for (int i = 0; i < items.length; i++) {
+            items[i] = SpeedBoostModule.LEVEL_LABELS[i] + (current == i ? "  ✓" : "");
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(host.parentActivity());
+        builder.setTitle("Download speed boost");
+        builder.setItems(items, (dialog, which) -> {
+            SpeedBoostModule.setDownloadLevel(context, which);
+            AminHooks.syncSpeedBoostFlagOnController(context, host.currentAccount());
             rebuild();
         });
         builder.setNegativeButton("Cancel", null);
@@ -2192,7 +2428,7 @@ public final class HubCommon {
             return n < 10 ? "0" + n : String.valueOf(n);
         }
 
-        void bind(Context context) {
+        void bind(Context context, String profile) {
             List<JsPlugin> plugins = JsPluginManager.plugins(context);
             int active = 0;
             for (JsPlugin plugin : plugins) {
@@ -2220,15 +2456,6 @@ public final class HubCommon {
                         break;
                     default:
                         break;
-                }
-            } catch (Throwable ignored) {
-            }
-            String profile = "NONE";
-            try {
-                DnsProfile activeProfile = DnsProfiles.activeProfile(context);
-                if (activeProfile != null && activeProfile.name != null
-                        && !activeProfile.name.isEmpty()) {
-                    profile = activeProfile.name.toUpperCase(Locale.US);
                 }
             } catch (Throwable ignored) {
             }
@@ -2845,19 +3072,26 @@ public final class HubCommon {
             addView(tick, tickParams);
         }
 
+        private static volatile String cachedVersionLine;
+
         void bind(Row row) {
             disclaimerView.setText(row.title == null ? ""
                     : row.title.toUpperCase(Locale.US));
-            String version = null;
-            try {
-                Context context = getContext();
-                version = context.getPackageManager()
-                        .getPackageInfo(context.getPackageName(), 0).versionName;
-            } catch (Throwable ignored) {
+            String line = cachedVersionLine;
+            if (line == null) {
+                String version = null;
+                try {
+                    Context context = getContext();
+                    version = context.getPackageManager()
+                            .getPackageInfo(context.getPackageName(), 0).versionName;
+                } catch (Throwable ignored) {
+                }
+                line = (version == null || version.isEmpty())
+                        ? "AMINGRAM · HUB DOSSIER V3"
+                        : "AMINGRAM · VERSION " + version + " · HUB DOSSIER V3";
+                cachedVersionLine = line;
             }
-            versionView.setText(version == null || version.isEmpty()
-                    ? "AMINGRAM · HUB DOSSIER V3"
-                    : "AMINGRAM · VERSION " + version + " · HUB DOSSIER V3");
+            versionView.setText(line);
         }
     }
 
@@ -2909,6 +3143,11 @@ public final class HubCommon {
             void onPluginMore(JsPlugin plugin);
             void onDeletePlugin(JsPlugin plugin);
         }
+
+        private static final PorterDuffColorFilter GRAY_FILTER =
+                new PorterDuffColorFilter(HubSkin.GRAY, PorterDuff.Mode.SRC_IN);
+        private static final PorterDuffColorFilter ACCENT_FILTER =
+                new PorterDuffColorFilter(HubSkin.ACCENT, PorterDuff.Mode.SRC_IN);
 
         private final FrameLayout chip;
         private final TextView chipLetter;
@@ -3091,12 +3330,14 @@ public final class HubCommon {
             bound = plugin;
             setBackground(HubSkin.blockDrawable(SEG_ONLY));
 
-            GradientDrawable chipBg = new GradientDrawable();
-            chipBg.setShape(GradientDrawable.RECTANGLE);
-            chipBg.setColor(HubSkin.SURFACE2);
-            chipBg.setStroke(1, HubSkin.HAIRLINE);
-            chipBg.setCornerRadius(AndroidUtilities.dp(2));
-            chip.setBackground(chipBg);
+            if (chip.getBackground() == null) {
+                GradientDrawable chipBg = new GradientDrawable();
+                chipBg.setShape(GradientDrawable.RECTANGLE);
+                chipBg.setColor(HubSkin.SURFACE2);
+                chipBg.setStroke(1, HubSkin.HAIRLINE);
+                chipBg.setCornerRadius(AndroidUtilities.dp(2));
+                chip.setBackground(chipBg);
+            }
             chipLetter.setText(plugin.name == null || plugin.name.isEmpty() ? "?"
                     : plugin.name.substring(0, 1).toUpperCase(Locale.US));
             chipLetter.setTextColor(HubSkin.ACCENT);
@@ -3138,9 +3379,7 @@ public final class HubCommon {
                 descView.setText(plugin.description);
             }
 
-            chipsRow.removeAllViews();
-            // Chips: the install-source chip first (§3.3 — where
-            // this copy came from), then one per capability.
+            // Chips: recycle existing child TextViews instead of reallocating on every bind (A-22).
             List<String> chipTexts = new ArrayList<>();
             if (plugin.installSource != null && !plugin.installSource.isEmpty()) {
                 chipTexts.add("from " + plugin.installSource);
@@ -3152,9 +3391,9 @@ public final class HubCommon {
                 chipsRow.setVisibility(GONE);
             } else {
                 chipsRow.setVisibility(VISIBLE);
-                for (String capability : chipTexts) {
+                int needed = chipTexts.size();
+                while (chipsRow.getChildCount() < needed) {
                     TextView chipView = new TextView(getContext());
-                    chipView.setText(capability);
                     chipView.setTextSize(10);
                     chipView.setTypeface(HubSkin.mono(getContext()));
                     chipView.setTextColor(HubSkin.SECONDARY);
@@ -3173,13 +3412,21 @@ public final class HubCommon {
                     chipParams.rightMargin = AndroidUtilities.dp(6);
                     chipsRow.addView(chipView, chipParams);
                 }
+                for (int i = 0; i < chipsRow.getChildCount(); i++) {
+                    TextView child = (TextView) chipsRow.getChildAt(i);
+                    if (i < needed) {
+                        child.setText(chipTexts.get(i));
+                        child.setVisibility(VISIBLE);
+                    } else {
+                        child.setVisibility(GONE);
+                    }
+                }
             }
 
-            settingsBtn.setColorFilter(new PorterDuffColorFilter(HubSkin.GRAY, PorterDuff.Mode.SRC_IN));
-            logBtn.setColorFilter(new PorterDuffColorFilter(HubSkin.GRAY, PorterDuff.Mode.SRC_IN));
+            settingsBtn.setColorFilter(GRAY_FILTER);
+            logBtn.setColorFilter(GRAY_FILTER);
             moreBtn.setTextColor(HubSkin.GRAY);
-            deleteBtn.setColorFilter(new PorterDuffColorFilter(
-                    HubSkin.ACCENT, PorterDuff.Mode.SRC_IN));
+            deleteBtn.setColorFilter(ACCENT_FILTER);
 
             float contentAlpha = engineOn ? 1f : 0.55f;
             nameView.setAlpha(contentAlpha);
@@ -3305,7 +3552,7 @@ public final class HubCommon {
                 case KIND_MASTHEAD:
                     break;
                 case KIND_STATS:
-                    ((StatsView) holder.itemView).bind(context);
+                    ((StatsView) holder.itemView).bind(context, cachedDnsProfile);
                     break;
                 case KIND_SEARCH:
                     lp.leftMargin = AndroidUtilities.dp(24);

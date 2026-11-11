@@ -1,9 +1,9 @@
 // ==AminGramPlugin==
 // @id          ai-actions
 // @name        AI Actions
-// @version     1.1
+// @version     1.2
 // @author      Amin
-// @description AI on any message: reply to a message with /sum to summarize it, /explain to explain it simply, or /draft to draft a reply to it — or pass text directly (/sum <text>). Uses Gemini via your connected Google account (AI Studio or Vertex AI mode, see Plugins → Google Account). (v1.1: async requests, usage stats in amin.db on the plugin page.)
+// @description AI on any message: reply to a message with /sum to summarize it, /explain to explain it simply, or /draft to draft a reply to it — or pass text directly (/sum <text>). Uses Gemini via your connected Google account (AI Studio or Vertex AI mode, see Plugins → Google Account). (v1.1: async requests, usage stats in amin.db on the plugin page.) (v1.2: optional Respan gateway routing — set a Respan API key in settings to route AI Studio requests through gateway.respan.ai instead of Google, no sign-in needed.)
 // @icon        sparkles
 // @menuLabel   AI: summarize
 // @capabilities commands, send, http, google, menu, observe, settings
@@ -12,6 +12,7 @@
 
 var SETTINGS = [
   { key: "model", type: "text", title: "Gemini model (AI Studio mode)", def: "gemini-3-flash-preview" },
+  { key: "respanApiKey", type: "text", title: "Respan gateway API key (optional — routes AI Studio requests through Respan, no Google sign-in)", def: "" },
   { key: "vertexProject", type: "text", title: "Vertex AI project", def: "gen-lang-client-0433595679" },
   { key: "vertexLocation", type: "text", title: "Vertex AI location", def: "us-central1" },
   { key: "vertexModel", type: "text", title: "Vertex AI model", def: "gemini-2.5-flash" },
@@ -19,7 +20,7 @@ var SETTINGS = [
 ];
 
 var PLUGIN_PAGE = [
-  { type: "info", text: "AI Actions counts how often /sum, /explain, /draft and the menu summary run. Counts live in the plugin database — Clear stats zeroes them." },
+  { type: "info", text: "AI Actions counts how often /sum, /explain, /draft and the menu summary run. Set a Respan gateway API key in settings to route AI Studio requests through Respan instead of Google — no sign-in needed. Counts live in the plugin database — Clear stats zeroes them." },
   { type: "action", id: "stats", title: "Usage stats", subtitle: "Toast the totals and log the per-action breakdown" },
   { type: "action", id: "clear", title: "Clear stats", subtitle: "Zero every counter" }
 ];
@@ -233,7 +234,10 @@ function lastAuthError() {
 
 // Same auth pattern as gemini-chat: in Vertex mode with a
 // vertexApiKey set, the key authenticates on its own — sign-in and
-// token fetch are never touched. Otherwise, when not signed in,
+// token fetch are never touched. Same for the Respan gateway: in
+// AI Studio mode with a respanApiKey set, the request goes to
+// gateway.respan.ai with that key and no Google account or bridge
+// is touched. Otherwise, when not signed in,
 // signIn opens the native picker and the pending request continues
 // in its callback; when signed in, the token is fetched and the
 // request runs inside that callback.
@@ -243,6 +247,11 @@ function runAi(kind, src, post) {
   var vertexKey = (mode === "vertex") ? setting("vertexApiKey", "") : "";
   if (mode === "vertex" && vertexKey) {
     doRequest(kind, mode, prompt, null, vertexKey, post);
+    return;
+  }
+  var respanKey = (mode === "aistudio") ? setting("respanApiKey", "") : "";
+  if (respanKey) {
+    doRequest(kind, "respan", prompt, null, "", post);
     return;
   }
   if (!amin.google) {
@@ -295,7 +304,16 @@ function fetchToken(kind, mode, prompt, post) {
 function doRequest(kind, mode, prompt, token, vertexKey, post) {
   var url;
   var headers;
-  if (mode === "vertex") {
+  if (mode === "respan") {
+    // Respan gateway: same Google GenAI generateContent shape,
+    // pointed at https://gateway.respan.ai (per the Respan Google
+    // GenAI gateway page), authenticated with the Respan key as
+    // x-goog-api-key. No Google token is involved.
+    var rmodel = setting("model", "gemini-3-flash-preview");
+    url = "https://gateway.respan.ai/v1beta/models/"
+      + encodeURIComponent(rmodel) + ":generateContent";
+    headers = { "x-goog-api-key": setting("respanApiKey", ""), "Content-Type": "application/json" };
+  } else if (mode === "vertex") {
     var loc = setting("vertexLocation", "us-central1");
     var proj = setting("vertexProject", "gen-lang-client-0433595679");
     var vmodel = setting("vertexModel", "gemini-2.5-flash");

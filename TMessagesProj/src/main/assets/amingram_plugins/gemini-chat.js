@@ -1,9 +1,9 @@
 // ==AminGramPlugin==
 // @id          gemini-chat
 // @name        Gemini Chat
-// @version     1.1
+// @version     1.2
 // @author      Amin
-// @description /ai <question> asks Gemini, using your connected Google account (no API key). Dual mode: AI Studio or Vertex AI (Plugins → Google Account). (v1.1: async requests, plugin page with connection status, question history in amin.db.)
+// @description /ai <question> asks Gemini, using your connected Google account (no API key). Dual mode: AI Studio or Vertex AI (Plugins → Google Account). (v1.1: async requests, plugin page with connection status, question history in amin.db.) (v1.2: optional Respan gateway routing — set a Respan API key in settings to route AI Studio requests through gateway.respan.ai instead of Google, no sign-in needed.)
 // @capabilities commands, send, http, google, settings, menu
 // @minPlatform 2
 // ==/AminGramPlugin==
@@ -11,6 +11,7 @@
 var SETTINGS = [
   { key: "model", type: "text", title: "Gemini model (AI Studio mode)", def: "gemini-3-flash-preview" },
   { key: "systemPrompt", type: "text", title: "System prompt (prepended, optional)", def: "" },
+  { key: "respanApiKey", type: "text", title: "Respan gateway API key (optional — routes AI Studio requests through Respan, no Google sign-in)", def: "" },
   { key: "vertexProject", type: "text", title: "Vertex AI: Google Cloud project", def: "gen-lang-client-0433595679" },
   { key: "vertexLocation", type: "text", title: "Vertex AI: location", def: "us-central1" },
   { key: "vertexModel", type: "text", title: "Vertex AI: model", def: "gemini-2.5-flash" },
@@ -18,7 +19,7 @@ var SETTINGS = [
 ];
 
 var PLUGIN_PAGE = [
-  { type: "info", text: "Gemini Chat answers /ai with your connected Google account (or a Vertex API key). Questions are counted and the recent ones kept in the plugin database — Clear wipes both." },
+  { type: "info", text: "Gemini Chat answers /ai with your connected Google account (or a Vertex API key). Set a Respan gateway API key in settings to route AI Studio requests through Respan instead — no sign-in needed. Questions are counted and the recent ones kept in the plugin database — Clear wipes both." },
   { type: "action", id: "status", title: "Connection status", subtitle: "Mode, sign-in state and active model" },
   { type: "action", id: "history", title: "Recent questions", subtitle: "Toast the totals and log the last few questions" },
   { type: "action", id: "clear", title: "Clear history", subtitle: "Delete the question history and counters" }
@@ -158,12 +159,22 @@ function apiMode() {
   return (amin.google.getMode && amin.google.getMode()) || "aistudio";
 }
 
+function isVertex() {
+  try { return !!(amin.google && amin.google.getMode && amin.google.getMode() === "vertex"); } catch (e) { return false; }
+}
+
 // If the account is not connected yet, amin.google.signIn opens the
 // native Google picker; the pending question continues in the
-// callback once the user finishes. Exception: Vertex mode with an
+// callback once the user finishes. Exceptions: Vertex mode with an
 // API key set needs no account at all — the key IS the credential,
-// so no sign-in surface is touched.
+// so no sign-in surface is touched. Same for the Respan gateway:
+// AI Studio mode with a Respan key set routes through
+// gateway.respan.ai and needs no account or bridge at all.
 function ask(ctx, prompt) {
+  if (readSetting("respanApiKey", "") && !isVertex()) {
+    fetchAndAnswer(ctx, prompt);
+    return;
+  }
   if (!amin.google) {
     amin.reply(ctx.msg, "⚠️ The Google bridge is not available in this build.");
     return;
@@ -199,6 +210,16 @@ function fetchAndAnswer(ctx, prompt) {
       }
       return;
     }
+  }
+  var respanKey = readSetting("respanApiKey", "");
+  if (mode !== "vertex" && respanKey) {
+    // Gateway auth: no Google token / sign-in is touched.
+    try {
+      gatewayRequest(ctx, prompt, respanKey);
+    } catch (e) {
+      answerError(ctx, e);
+    }
+    return;
   }
   amin.google.getAccessToken(function (token) {
     try {
@@ -259,7 +280,26 @@ function aistudioRequest(ctx, prompt, token) {
     "Content-Type": "application/json"
   }, function (res) {
     try {
-      handleResponse(ctx, prompt, res && res.body ? res.body : null, false);
+      handleResponse(ctx, prompt, res && res.body ? res.body : null, "aistudio");
+    } catch (e) { answerError(ctx, e); }
+  });
+}
+
+// Respan gateway: the same Google GenAI generateContent shape,
+// pointed at https://gateway.respan.ai (per the Respan Google GenAI
+// gateway page) and authenticated with the Respan key as
+// x-goog-api-key. No Google token or sign-in is involved; Respan
+// handles provider auth. Only used when a Respan key is set.
+function gatewayRequest(ctx, prompt, respanKey) {
+  var model = readSetting("model", "gemini-3-flash-preview");
+  var url = "https://gateway.respan.ai/v1beta/models/"
+    + encodeURIComponent(model) + ":generateContent";
+  amin.httpPostAsync(url, requestBody(prompt), {
+    "x-goog-api-key": respanKey,
+    "Content-Type": "application/json"
+  }, function (res) {
+    try {
+      handleResponse(ctx, prompt, res && res.body ? res.body : null, "respan");
     } catch (e) { answerError(ctx, e); }
   });
 }
@@ -282,13 +322,13 @@ function vertexRequest(ctx, prompt, token, apiKey) {
   }
   amin.httpPostAsync(url, requestBody(prompt), headers, function (res) {
     try {
-      handleResponse(ctx, prompt, res && res.body ? res.body : null, true);
+      handleResponse(ctx, prompt, res && res.body ? res.body : null, "vertex");
     } catch (e) { answerError(ctx, e); }
   });
 }
 
-function handleResponse(ctx, prompt, response, isVertex) {
-  var mode = isVertex ? "vertex" : "aistudio";
+function handleResponse(ctx, prompt, response, mode) {
+  var isVertex = (mode === "vertex");
   if (!response) {
     recordQuestion(prompt, mode, false);
     amin.reply(ctx.msg, "⚠️ Gemini did not answer — check the connection, and "
@@ -368,7 +408,9 @@ function statusLine() {
     ? readSetting("vertexModel", "gemini-2.5-flash")
     : readSetting("model", "gemini-3-flash-preview");
   var auth;
-  if (mode === "vertex" && readSetting("vertexApiKey", "")) {
+  if (mode !== "vertex" && readSetting("respanApiKey", "")) {
+    auth = "Respan gateway (no Google sign-in needed)";
+  } else if (mode === "vertex" && readSetting("vertexApiKey", "")) {
     auth = "Vertex API key (no sign-in needed)";
   } else if (!amin.google) {
     auth = "Google bridge unavailable in this build";

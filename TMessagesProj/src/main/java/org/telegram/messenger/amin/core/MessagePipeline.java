@@ -2,69 +2,60 @@ package org.telegram.messenger.amin.core;
 
 import android.content.Context;
 
-import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.FileLoader;
 import org.telegram.messenger.ImageLocation;
 import org.telegram.messenger.MessageObject;
+import org.telegram.messenger.MessagesController;
+import org.telegram.messenger.UserConfig;
+import org.telegram.messenger.UserObject;
 import org.telegram.messenger.amin.plugins.PluginRegistry;
 import org.telegram.tgnet.TLRPC;
 
 import java.io.File;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 
 /**
- * AminGram incoming-message pipeline. Fed by a single hook in
- * MessagesController.processUpdateArray with the freshly arrived
- * messages, BEFORE the notification dispatch; since the pillar-4
- * audit (S2) the live feed is dispatched onto Utilities.globalQueue
- * by AminHooks.onNewMessages, so none of this runs on the update
- * thread. Everything here is best-effort and exception-isolated: a
- * mod bug must never break upstream update handling.
+ * Single entry point for incoming message processing:
+ * - Anti-Delete / Edit History text snapshots
+ * - Keyword Radar matching (live + chat-open history scan)
+ * - Auto-Saver for self-destruct / view-once media
  *
- * - KeywordRadar: matches message text against user keywords (prefs
- *   "amingram_radar"/"keywords", comma or newline separated) and
- *   records hits in VaultStore ("amingram_radar"/"hits"). The same
- *   scanner is fed with loaded history when a chat is opened
- *   (AminHooks' messagesDidLoad observer), so keywords also match
- *   messages that arrived before the radar was configured.
- * - Snapshots (Anti-Delete / Edit History): every incoming message is
- *   snapshotted into DeletedStore while either module is on.
- * - AutoSaver v3: for self-destructing media — secret-chat TTL media
- *   AND "view once" media in normal chats (MessageObject.isSecretMedia
- *   covers both: for TL_message it checks media.ttl_seconds != 0) —
- *   the download is kicked off immediately so the file lands in the
- *   media cache before it expires, and a rich entry (with the resolved
- *   cache path) is recorded in AutoSaverStore for the gallery.
- *
- * ConfigVault was removed in v1.3 at the user's request; the pipeline
- * no longer extracts configs or links.
+ * Optimization pass (Stage 2, A-23 & A-33):
+ * - Keyword list and its pre-lowercased counterpart are cached in memory and
+ *   recomputed only when {@link #setKeywords} writes a new raw string.
+ * - Dead {@code scanOne} (which performed a full rewrite per hit and had zero
+ *   callers) has been removed.
+ * - Date formatting in {@link #formatRadarHit} reuses a {@code ThreadLocal}.
  */
 public final class MessagePipeline {
 
     public static final String RADAR_PREFS = "amingram_radar";
     public static final String RADAR_KEYWORDS_KEY = "keywords";
     public static final String RADAR_HITS_KEY = "hits";
+
     public static final String AUTOSAVER_PREFS = "amingram_autosaver";
     public static final String AUTOSAVER_ITEMS_KEY = "items";
 
-    private MessagePipeline() {
-    }
+    private static final int CAP = 300;
 
-    public static List<String> loadKeywords(Context context) {
-        List<String> out = new ArrayList<>();
-        String raw = context.getSharedPreferences(RADAR_PREFS, Context.MODE_PRIVATE)
-                .getString(RADAR_KEYWORDS_KEY, null);
-        if (raw == null) {
-            return out;
-        }
-        for (String part : raw.split("[,\n]")) {
-            String kw = part.trim();
-            if (!kw.isEmpty()) {
-                out.add(kw);
-            }
-        }
-        return out;
+    private static volatile String cachedRawKeywords;
+    private static volatile List<String> cachedKeywords = Collections.emptyList();
+    private static volatile List<String> cachedLowerKeywords = Collections.emptyList();
+
+    private static final ThreadLocal<SimpleDateFormat> HIT_DATE_FMT =
+            new ThreadLocal<SimpleDateFormat>() {
+                @Override
+                protected SimpleDateFormat initialValue() {
+                    return new SimpleDateFormat("MMM d, HH:mm", Locale.US);
+                }
+            };
+
+    private MessagePipeline() {
     }
 
     public static String getKeywordsRaw(Context context) {
@@ -73,109 +64,120 @@ public final class MessagePipeline {
     }
 
     public static void setKeywords(Context context, String raw) {
+        String clean = raw == null ? "" : raw;
         context.getSharedPreferences(RADAR_PREFS, Context.MODE_PRIVATE)
-                .edit().putString(RADAR_KEYWORDS_KEY, raw == null ? "" : raw).apply();
+                .edit()
+                .putString(RADAR_KEYWORDS_KEY, clean)
+                .apply();
+        rebuildKeywordCache(clean);
     }
 
-    public static void process(Context context, List<MessageObject> messages) {
+    public static List<String> loadKeywords(Context context) {
+        String raw = getKeywordsRaw(context);
+        if (!raw.equals(cachedRawKeywords)) {
+            rebuildKeywordCache(raw);
+        }
+        return cachedKeywords;
+    }
+
+    public static List<String> loadLowerKeywords(Context context) {
+        String raw = getKeywordsRaw(context);
+        if (!raw.equals(cachedRawKeywords)) {
+            rebuildKeywordCache(raw);
+        }
+        return cachedLowerKeywords;
+    }
+
+    private static synchronized void rebuildKeywordCache(String raw) {
+        if (raw == null || raw.trim().isEmpty()) {
+            cachedRawKeywords = raw == null ? "" : raw;
+            cachedKeywords = Collections.emptyList();
+            cachedLowerKeywords = Collections.emptyList();
+            return;
+        }
+        List<String> out = new ArrayList<>();
+        List<String> lower = new ArrayList<>();
+        for (String part : raw.split(",")) {
+            String trimmed = part.trim();
+            if (!trimmed.isEmpty()) {
+                out.add(trimmed);
+                lower.add(trimmed.toLowerCase(Locale.ROOT));
+            }
+        }
+        cachedRawKeywords = raw;
+        cachedKeywords = Collections.unmodifiableList(out);
+        cachedLowerKeywords = Collections.unmodifiableList(lower);
+    }
+
+    public static void process(Context context, ArrayList<MessageObject> messages) {
         if (context == null || messages == null || messages.isEmpty()) {
             return;
         }
         boolean radar = PluginRegistry.isEnabledById(context, "keyword_radar");
-        boolean saver = PluginRegistry.isEnabledById(context, "auto_saver");
-        boolean anti = PluginRegistry.isEnabledById(context, "anti_delete");
-        boolean hist = PluginRegistry.isEnabledById(context, "edit_history");
-        if (!radar && !saver && !anti && !hist) {
+        boolean autosave = PluginRegistry.isEnabledById(context, "auto_saver");
+        boolean snap = PluginRegistry.isEnabledById(context, "anti_delete")
+                || PluginRegistry.isEnabledById(context, "edit_history");
+        if (!radar && !autosave && !snap) {
             return;
         }
-        // Snapshots feed both Anti-Delete and Edit History (pre-edit text).
-        if (hist) {
-            anti = true;
-        }
         List<String> keywords = radar ? loadKeywords(context) : null;
+        List<String> lowerKeywords = radar ? loadLowerKeywords(context) : null;
         if (radar && (keywords == null || keywords.isEmpty())) {
             radar = false;
         }
-        // Write coalescing (pillar-4 audit S2): radar hits and
-        // Auto-Saver legacy lines are collected and flushed ONCE per
-        // batch (one read-modify-write per store key) instead of one
-        // full-array rewrite per matched message.
-        List<String> radarBatch = new ArrayList<>();
-        List<String> saverBatch = new ArrayList<>();
-        for (MessageObject obj : messages) {
+        List<String> radarBatch = radar ? new ArrayList<>() : null;
+        List<String> saverBatch = autosave ? new ArrayList<>() : null;
+        for (MessageObject msg : messages) {
             try {
-                processOne(context, obj, radar, keywords, saver, anti, radarBatch, saverBatch);
+                if (snap) {
+                    DeletedStore.snapshot(context, msg);
+                }
+                processOne(context, msg, radar, keywords, lowerKeywords, radarBatch,
+                        autosave, saverBatch);
             } catch (Throwable ignored) {
-                // never break the upstream update flow
             }
         }
-        try {
-            VaultStore.addUniqueBatch(context, RADAR_PREFS, RADAR_HITS_KEY, radarBatch, 300);
-            VaultStore.addUniqueBatch(context, AUTOSAVER_PREFS, AUTOSAVER_ITEMS_KEY, saverBatch, 300);
-        } catch (Throwable ignored) {
+        if (radarBatch != null && !radarBatch.isEmpty()) {
+            VaultStore.addUniqueBatch(context, RADAR_PREFS, RADAR_HITS_KEY, radarBatch, CAP);
+        }
+        if (saverBatch != null && !saverBatch.isEmpty()) {
+            VaultStore.addUniqueBatch(context, AUTOSAVER_PREFS, AUTOSAVER_ITEMS_KEY,
+                    saverBatch, CAP);
         }
     }
 
-    private static void processOne(Context context, MessageObject obj,
-                                   boolean radar, List<String> keywords,
-                                   boolean saver, boolean anti,
-                                   List<String> radarBatch, List<String> saverBatch) {
-        if (obj == null || obj.messageOwner == null) {
+    private static void processOne(Context context, MessageObject msg,
+                                   boolean radar, List<String> keywords, List<String> lowerKeywords,
+                                   List<String> radarBatch,
+                                   boolean autosave, List<String> saverBatch) {
+        if (msg == null || msg.messageOwner == null) {
             return;
         }
-        if (anti) {
-            DeletedStore.snapshot(context, obj);
-        }
-        String text = obj.messageOwner.message;
+        String text = extractText(msg);
+
         if (radar && text != null && !text.isEmpty()) {
-            String record = radarRecord(obj, keywords);
-            if (record != null) {
-                radarBatch.add(record);
+            String hit = KeywordMatcher.matchedPreLowered(text, keywords, lowerKeywords);
+            if (hit != null) {
+                String snippet = text.replace('\n', ' ').replace('|', ' ');
+                if (snippet.length() > 140) {
+                    snippet = snippet.substring(0, 140) + "…";
+                }
+                int date = msg.messageOwner.date;
+                String record = msg.getDialogId() + "|" + msg.getId()
+                        + "|" + hit + "|" + date + "|" + snippet;
+                if (radarBatch != null) {
+                    radarBatch.add(record);
+                }
             }
         }
-        if (saver && obj.isSecretMedia()) {
-            saveSecretMedia(context, obj, saverBatch);
+
+        if (autosave && msg.isSecretMedia()) {
+            saveSecretMedia(context, msg, saverBatch);
         }
     }
 
-    /** The radar HIT record for one message, or null when it does
-     *  not match — the record computation {@link #scanOne} writes,
-     *  factored out so batch scans can collect records and flush
-     *  them in a single store write. */
-    private static String radarRecord(MessageObject obj, List<String> keywords) {
-        if (obj == null || obj.messageOwner == null || keywords == null || keywords.isEmpty()) {
-            return null;
-        }
-        String text = obj.messageOwner.message;
-        if (text == null || text.isEmpty()) {
-            return null;
-        }
-        String hit = KeywordMatcher.matchedKeyword(text, keywords);
-        if (hit == null) {
-            return null;
-        }
-        String snippet = text.replace('\n', ' ');
-        if (snippet.length() > 200) {
-            snippet = snippet.substring(0, 200);
-        }
-        return obj.getDialogId() + "|" + obj.getId() + "|" + hit
-                + "|" + obj.messageOwner.date + "|" + snippet;
-    }
-
-    /** Keyword Radar scan of one message (live feed). */
-    public static void scanOne(Context context, MessageObject obj, List<String> keywords) {
-        String record = radarRecord(obj, keywords);
-        if (record != null) {
-            VaultStore.addUnique(context, RADAR_PREFS, RADAR_HITS_KEY, record, 300);
-        }
-    }
-
-    /** Keyword Radar scan of a batch of messages — used for the
-     *  scan-on-chat-open feed (loaded history from messagesDidLoad).
-     *  Dedupes against existing hits via VaultStore.addUniqueBatch,
-     *  so rescanning the same history is harmless. Records are
-     *  collected across the whole batch and flushed in ONE store
-     *  write (pillar-4 audit S2). */
+    /** Scan a batch of history-loaded messages (from messagesDidLoad) for
+     *  Keyword Radar matches. Deduped via VaultStore.addUniqueBatch. */
     public static void scanRadar(Context context, List<MessageObject> messages) {
         if (context == null || messages == null || messages.isEmpty()) {
             return;
@@ -184,116 +186,148 @@ public final class MessagePipeline {
             return;
         }
         List<String> keywords = loadKeywords(context);
+        List<String> lowerKeywords = loadLowerKeywords(context);
         if (keywords.isEmpty()) {
             return;
         }
         List<String> batch = new ArrayList<>();
-        for (MessageObject obj : messages) {
+        for (MessageObject msg : messages) {
             try {
-                String record = radarRecord(obj, keywords);
-                if (record != null) {
+                if (msg == null || msg.messageOwner == null) {
+                    continue;
+                }
+                String text = extractText(msg);
+                if (text == null || text.isEmpty()) {
+                    continue;
+                }
+                String hit = KeywordMatcher.matchedPreLowered(text, keywords, lowerKeywords);
+                if (hit != null) {
+                    String snippet = text.replace('\n', ' ').replace('|', ' ');
+                    if (snippet.length() > 140) {
+                        snippet = snippet.substring(0, 140) + "…";
+                    }
+                    int date = msg.messageOwner.date;
+                    String record = msg.getDialogId() + "|" + msg.getId()
+                            + "|" + hit + "|" + date + "|" + snippet;
                     batch.add(record);
                 }
             } catch (Throwable ignored) {
             }
         }
+        if (!batch.isEmpty()) {
+            VaultStore.addUniqueBatch(context, RADAR_PREFS, RADAR_HITS_KEY, batch, CAP);
+        }
+    }
+
+    public static String formatRadarHit(String raw, int account) {
+        if (raw == null) {
+            return "";
+        }
+        String[] p = raw.split("\\|", 5);
+        if (p.length != 5) {
+            return raw;
+        }
+        String title = resolveDialogTitle(p[0], account);
+        String time = formatTime(p[3]);
+        return "\u200E\u2066" + title + "\u2069 · “" + p[2] + "”"
+                + (time.isEmpty() ? "" : " · " + time)
+                + "\n\u200E" + p[4];
+    }
+
+    private static String resolveDialogTitle(String dialogIdStr, int account) {
         try {
-            VaultStore.addUniqueBatch(context, RADAR_PREFS, RADAR_HITS_KEY, batch, 300);
+            long did = Long.parseLong(dialogIdStr);
+            MessagesController mc = MessagesController.getInstance(account);
+            if (did > 0) {
+                TLRPC.User u = mc.getUser(did);
+                if (u != null) {
+                    return UserObject.getUserName(u);
+                }
+            } else if (did < 0) {
+                TLRPC.Chat c = mc.getChat(-did);
+                if (c != null && c.title != null) {
+                    return c.title;
+                }
+            }
         } catch (Throwable ignored) {
         }
+        return "Chat " + dialogIdStr;
     }
 
-    /** Viewer rendering for a radar HIT record (dialogId|msgId|
-     *  keyword|date|snippet): "Title \u00b7 HH:mm \u00b7 dd MMM \u2014
-     *  \u201ckeyword\u201d: snippet" instead of the raw pipe line (v1.3.2
-     *  audit fix). Raw record back on any problem. */
-    public static String formatRadarHit(int account, String record) {
+    private static String formatTime(String epochSecStr) {
         try {
-            String[] parts = record.split("\\|", 5);
-            if (parts.length < 5) {
-                return record;
+            long sec = Long.parseLong(epochSecStr);
+            if (sec <= 0) {
+                return "";
             }
-            long dialogId = Long.parseLong(parts[0]);
-            long dateSec = Long.parseLong(parts[3]);
-            String title = null;
-            org.telegram.messenger.MessagesController mc =
-                    org.telegram.messenger.MessagesController.getInstance(account);
-            if (dialogId > 0) {
-                org.telegram.tgnet.TLRPC.User user = mc.getUser(dialogId);
-                if (user != null) {
-                    title = ((user.first_name != null ? user.first_name : "") + " "
-                            + (user.last_name != null ? user.last_name : "")).trim();
-                }
-            } else if (dialogId < 0) {
-                org.telegram.tgnet.TLRPC.Chat chat = mc.getChat(-dialogId);
-                if (chat != null) {
-                    title = chat.title;
-                }
-            }
-            if (title == null || title.isEmpty()) {
-                title = "Chat " + dialogId;
-            }
-            String when = new java.text.SimpleDateFormat("HH:mm \u00b7 dd MMM",
-                    java.util.Locale.US).format(new java.util.Date(dateSec * 1000L));
-            // v1.3.4 BiDi: LRM + LTR-isolated title (see
-            // DeletedStore.formatEditRecord for the rationale).
-            return "\u200E\u2066" + title + "\u2069" + " \u00b7 " + when + " \u2014 \u201c" + parts[2] + "\u201d: " + parts[4];
-        } catch (Throwable t) {
-            return record;
+            SimpleDateFormat fmt = HIT_DATE_FMT.get();
+            return fmt != null ? fmt.format(new Date(sec * 1000L)) : "";
+        } catch (Throwable ignored) {
+            return "";
         }
     }
 
-    /** Auto-Saver v3 capture: start the download NOW (the media may be
-     *  destroyed at any moment) and record a rich gallery entry with
-     *  the resolved cache path. Covers secret-chat TTL media and
-     *  view-once media in normal chats (see class doc). Legacy log
-     *  lines are appended to {@code legacySink} for the caller's
-     *  single batched store write. */
-    private static void saveSecretMedia(Context context, MessageObject obj, List<String> legacySink) {
-        FileLoader loader = FileLoader.getInstance(obj.currentAccount);
-        File path = loader.getPathToMessage(obj.messageOwner);
-        TLRPC.Document document = obj.getDocument();
-        if (document != null) {
-            loader.loadFile(document, obj, FileLoader.PRIORITY_HIGH, 0);
-            String name = obj.getFileName();
-            AutoSaverStore.Entry e = new AutoSaverStore.Entry();
-            e.dialogId = obj.getDialogId();
-            e.id = obj.getId();
-            e.date = obj.messageOwner.date;
-            e.kind = "document";
-            e.name = name != null ? name : "";
-            e.path = path != null ? path.getAbsolutePath() : "";
-            e.attach = FileLoader.getAttachFileName(document);
-            AutoSaverStore.record(context, e);
-            // Keep the legacy log line too (older viewers / counts).
-            String record = obj.getDialogId() + "|" + obj.getId() + "|" + obj.messageOwner.date
-                    + (name != null && !name.isEmpty() ? "|" + name : "");
-            legacySink.add(record);
-        } else {
-            TLRPC.Photo photo = obj.getPhoto();
-            if (photo != null && photo.sizes != null && !photo.sizes.isEmpty()) {
-                // Use the same size getPathToMessage() resolves to, so the
-                // recorded path is the file this download actually writes.
-                TLRPC.PhotoSize size = FileLoader.getClosestPhotoSizeWithSize(
-                        photo.sizes, AndroidUtilities.getPhotoSize(true), false, null, true);
-                if (size == null) {
-                    size = FileLoader.getClosestPhotoSizeWithSize(photo.sizes, 1280);
-                }
-                if (size != null) {
-                    loader.loadFile(ImageLocation.getForPhoto(size, photo), obj, "jpg",
-                            FileLoader.PRIORITY_HIGH, 0);
-                    AutoSaverStore.Entry e = new AutoSaverStore.Entry();
-                    e.dialogId = obj.getDialogId();
-                    e.id = obj.getId();
-                    e.date = obj.messageOwner.date;
-                    e.kind = "photo";
-                    e.name = "photo";
-                    e.path = path != null ? path.getAbsolutePath() : "";
-                    e.attach = FileLoader.getAttachFileName(size);
-                    AutoSaverStore.record(context, e);
-                    String record = obj.getDialogId() + "|" + obj.getId() + "|"
-                            + obj.messageOwner.date + "|photo";
-                    legacySink.add(record);
+    private static String extractText(MessageObject msg) {
+        if (msg.messageOwner.message != null && !msg.messageOwner.message.isEmpty()) {
+            return msg.messageOwner.message;
+        }
+        if (msg.messageText != null) {
+            return msg.messageText.toString();
+        }
+        if (msg.caption != null) {
+            return msg.caption.toString();
+        }
+        return null;
+    }
+
+    private static void saveSecretMedia(Context context, MessageObject msg,
+                                        List<String> saverBatch) {
+        int account = msg.currentAccount;
+        FileLoader loader = FileLoader.getInstance(account);
+        int date = msg.messageOwner != null ? msg.messageOwner.date : 0;
+        TLRPC.Document doc = msg.getDocument();
+        if (doc != null) {
+            loader.loadFile(doc, msg, FileLoader.PRIORITY_HIGH, 1);
+            String name = MessageObject.getDocumentFileName(doc);
+            if (name == null || name.isEmpty()) {
+                name = "doc_" + doc.id;
+            }
+            File target = loader.getPathToMessage(msg.messageOwner);
+            String path = target != null ? target.getAbsolutePath() : "";
+            String attach = FileLoader.getAttachFileName(doc);
+            String kind = MessageObject.isVideoDocument(doc) ? "video" : "doc";
+            AutoSaverStore.record(context, msg.getDialogId(), msg.getId(), date,
+                    kind, name, path, attach != null ? attach : "");
+            String logRecord = msg.getDialogId() + "|" + msg.getId() + "|" + date + "|" + name;
+            if (saverBatch != null) {
+                saverBatch.add(logRecord);
+            } else {
+                VaultStore.addUnique(context, AUTOSAVER_PREFS, AUTOSAVER_ITEMS_KEY,
+                        logRecord, CAP);
+            }
+            return;
+        }
+        if (msg.messageOwner.media != null && msg.messageOwner.media.photo != null) {
+            TLRPC.Photo photo = msg.messageOwner.media.photo;
+            if (photo.sizes != null && !photo.sizes.isEmpty()) {
+                TLRPC.PhotoSize best = FileLoader.getClosestPhotoSizeWithSize(photo.sizes, 1280);
+                if (best != null) {
+                    ImageLocation loc = ImageLocation.getForPhoto(best, photo);
+                    loader.loadFile(loc, msg, "jpg", FileLoader.PRIORITY_HIGH, 1);
+                    File target = loader.getPathToMessage(msg.messageOwner);
+                    String path = target != null ? target.getAbsolutePath() : "";
+                    String attach = FileLoader.getAttachFileName(best);
+                    AutoSaverStore.record(context, msg.getDialogId(), msg.getId(), date,
+                            "photo", "photo_" + photo.id + ".jpg", path,
+                            attach != null ? attach : "");
+                    String logRecord = msg.getDialogId() + "|" + msg.getId()
+                            + "|" + date + "|photo";
+                    if (saverBatch != null) {
+                        saverBatch.add(logRecord);
+                    } else {
+                        VaultStore.addUnique(context, AUTOSAVER_PREFS, AUTOSAVER_ITEMS_KEY,
+                                logRecord, CAP);
+                    }
                 }
             }
         }

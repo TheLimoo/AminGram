@@ -1,6 +1,6 @@
 {
   "catalogVersion": 1,
-  "updatedAt": "2026-10-24",
+  "updatedAt": "2026-11-11",
   "plugins": [
     {
       "id": "shout",
@@ -42,7 +42,7 @@
     {
       "id": "media-dl",
       "name": "Downloader Pro",
-      "version": "3.0.2",
+      "version": "3.0.3",
       "author": "Amin",
       "description": "Downloads public media into the chat from TikTok, Instagram, X/Twitter, Reddit, Pinterest, Threads and direct media links. Supports albums, quality choices, TikTok MP3, replied-to links, a long-press download action, download history and link fallback.",
       "category": "Media",
@@ -59,9 +59,9 @@
       "minPlatform": 2,
       "depends": [],
       "url": "https://raw.githubusercontent.com/TheLimoo/AminGram/main/TMessagesProj/src/main/assets/amingram_plugins/media-dl.js",
-      "sha256": "6dcbcae83b56be605102d8790eda8347b418b4d2a308b3348914c374149dfdd1",
-      "size": 53986,
-      "updatedAt": "2026-10-22"
+      "sha256": "a6642f8af008811f1cc73fbb941040ae32d103c0f5fc263bc2ecb5533442e52d",
+      "size": 54524,
+      "updatedAt": "2026-11-11"
     },
     {
       "id": "temp-mail",
@@ -129,7 +129,7 @@
     {
       "id": "gemini-chat",
       "name": "Gemini Chat",
-      "version": "1.1",
+      "version": "1.2",
       "author": "Amin",
       "description": "/ai <question> asks Gemini, using your connected Google account (no API key). Dual mode: AI Studio or Vertex AI (Plugins → Google Account). (v1.1: async requests, plugin page with connection status, question history in amin.db.)",
       "category": "AI",
@@ -144,8 +144,8 @@
       "minPlatform": 2,
       "depends": [],
       "url": "https://raw.githubusercontent.com/TheLimoo/AminGram/main/TMessagesProj/src/main/assets/amingram_plugins/gemini-chat.js",
-      "sha256": "a7b698697c3ec65c3c20d872223f9ec5cff4c5f8cd376677808d4c78f5c93e64",
-      "size": 14674,
+      "sha256": "474938ce8b72fc0f37c130ff923351c787818fc13af4183f0e60f735a2b109d2",
+      "size": 16731,
       "updatedAt": "2026-10-22"
     },
     {
@@ -214,7 +214,7 @@
     {
       "id": "ai-actions",
       "name": "AI Actions",
-      "version": "1.1",
+      "version": "1.2",
       "author": "Amin",
       "description": "AI on any message: reply to a message with /sum to summarize it, /explain to explain it simply, or /draft to draft a reply to it — or pass text directly (/sum <text>). Uses Gemini via your connected Google account (AI Studio or Vertex AI mode, see Plugins → Google Account). (v1.1: async requests, usage stats in amin.db on the plugin page.)",
       "category": "AI",
@@ -230,16 +230,16 @@
       "minPlatform": 2,
       "depends": [],
       "url": "https://raw.githubusercontent.com/TheLimoo/AminGram/main/TMessagesProj/src/main/assets/amingram_plugins/ai-actions.js",
-      "sha256": "9b7d74fbaa23732ab47c2830ecc9061bd23b99c1e32493201e454138430e2448",
-      "size": 15022,
+      "sha256": "f53cd708af1a8295b1740b0c38b475a80f0f1b0c3692fa03429a476c5f856396",
+      "size": 16371,
       "updatedAt": "2026-10-22"
     },
     {
       "id": "quick-replies",
       "name": "Quick Replies",
-      "version": "1.1",
+      "version": "1.1.1",
       "author": "Amin",
-      "description": "Text templates: /tpl set <name> <text> saves one, /tpl <name> posts it, /tpl list shows your templates, /tpl del <name> removes one, /tpl export posts them all in one message. Note: the /tpl command message itself also appears in the chat (the platform can't swallow outgoing commands yet).",
+      "description": "Text templates: /tpl set <name> <text> saves one, /tpl <name> posts it, /tpl list shows your templates, /tpl del <name> removes one, /tpl export posts them all in one message. Outgoing /tpl commands are suppressed automatically.",
       "category": "Utilities",
       "capabilities": [
         "commands",
@@ -250,9 +250,9 @@
       "minPlatform": 2,
       "depends": [],
       "url": "https://raw.githubusercontent.com/TheLimoo/AminGram/main/TMessagesProj/src/main/assets/amingram_plugins/quick-replies.js",
-      "sha256": "550517c3d6548c8cfd8384b252dafb5686815819d6b852f414b545b9ef5e1a25",
-      "size": 10393,
-      "updatedAt": "2026-10-22"
+      "sha256": "a5b518db97c944fb6e2611d5256aaca54cbda92c0527c68cf0b40c4b35e42802",
+      "size": 10353,
+      "updatedAt": "2026-11-11"
     },
     {
       "id": "theme-manager",
@@ -321,6 +321,29 @@
       "sha256": "689af59fbc2d15b707bee494758460074565fa74083478deb611e792ab33b56b",
       "size": 44659,
       "updatedAt": "2026-10-24"
+    },
+    {
+      "id": "sticker-dl",
+      "name": "Sticker Downloader",
+      "version": "1.0.0",
+      "author": "Amin",
+      "description": "Exports stickers, custom emoji, and media messages into the chat as PNG images or raw .webp/.tgs/.webm files. Reply to a sticker with /sticker, /stpng, /straw, or /stinfo — or long-press a sticker and tap “Save Sticker / PNG”.",
+      "category": "Media",
+      "capabilities": [
+        "observe",
+        "commands",
+        "send",
+        "file",
+        "settings",
+        "menu",
+        "ui"
+      ],
+      "minPlatform": 2,
+      "depends": [],
+      "url": "https://raw.githubusercontent.com/TheLimoo/AminGram/main/TMessagesProj/src/main/assets/amingram_plugins/sticker-dl.js",
+      "sha256": "f11421703ffdac146c56d0bbdb70c36002d306a48dc72a339a5a50fb20dbe201",
+      "size": 9348,
+      "updatedAt": "2026-11-11"
     }
   ]
 }

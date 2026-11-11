@@ -7,30 +7,20 @@ import org.json.JSONObject;
 import org.telegram.messenger.UserConfig;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Send When Online (v1.3): queued messages that fire the moment their
  * target user comes online.
  *
- * Storage: prefs "amingram_swo", key "items" — a JSONArray of objects:
- * {peer, name, text, date, state ("pending"|"sent"), sentDate,
- * account}. The account field (Stage 1, audit D2) records which
- * account queued the message; the flush in AminHooks filters by
- * (account, peer), so a status update arriving on account B can never
- * send a message queued under account A. Entries written before the
- * field existed have no "account" key and default AT LOAD to
- * UserConfig.selectedAccount (the store is re-read from prefs on
- * every call, so the default is evaluated fresh until any save
- * persists it alongside the entry).
- *
- * The trigger is purely event-driven: AminHooks watches the raw update
- * stream for TL_updateUserStatus updates (the same updates Telegram
- * itself processes during normal sync, foreground or background) and,
- * when a pending target reports online, sends via SendMessagesHelper.
- * No polling, no timers, no extra threads. Android bound (documented
- * in MODS.md): if the app process is dead / force-stopped, the send
- * fires on the next launch's sync instead.
+ * Phase A optimization (A-29):
+ * - Caches entries and active (account, peer) pending keys in memory so
+ *   pendingFor() returns in O(1) on every TL_updateUserStatus event
+ *   without reading SharedPreferences or parsing JSON when the peer has
+ *   no queued messages.
  */
 public final class SendWhenOnlineStore {
 
@@ -38,13 +28,9 @@ public final class SendWhenOnlineStore {
     private static final String KEY_ITEMS = "items";
     private static final int CAP = 100;
 
-    /** Serializes the whole-list read-modify-write mutators
-     *  (audit P1-2): add()/remove() run on the hub UI thread while
-     *  markSent() runs on the update thread — unsynchronized, one
-     *  writer's save could overwrite the other's and silently lose
-     *  a queued message (or its sent mark). getAll()/saveAll() stay
-     *  lock-free primitives, called under this lock. */
     private static final Object LOCK = new Object();
+    private static List<Entry> cachedEntries;
+    private static final Set<String> pendingPeers = new HashSet<>();
 
     public static final class Entry {
         public long peer;
@@ -53,53 +39,103 @@ public final class SendWhenOnlineStore {
         public int date;
         public String state;
         public int sentDate;
-        /** Account index (UserConfig slot) that queued this entry;
-         *  -1 only transiently — getAll resolves legacy entries to
-         *  UserConfig.selectedAccount. */
         public int account = -1;
 
         public boolean isPending() {
             return !"sent".equals(state);
+        }
+
+        private Entry copy() {
+            Entry c = new Entry();
+            c.peer = peer;
+            c.name = name;
+            c.text = text;
+            c.date = date;
+            c.state = state;
+            c.sentDate = sentDate;
+            c.account = account;
+            return c;
         }
     }
 
     private SendWhenOnlineStore() {
     }
 
-    public static List<Entry> getAll(Context context) {
-        List<Entry> out = new ArrayList<>();
-        String raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getString(KEY_ITEMS, null);
-        if (raw == null) {
-            return out;
-        }
-        try {
-            JSONArray arr = new JSONArray(raw);
-            for (int i = 0; i < arr.length(); i++) {
-                JSONObject o = arr.optJSONObject(i);
-                if (o == null) {
-                    continue;
-                }
-                Entry e = new Entry();
-                e.peer = o.optLong("peer");
-                e.name = o.optString("name", "");
-                e.text = o.optString("text", "");
-                e.date = o.optInt("date");
-                e.state = o.optString("state", "pending");
-                e.sentDate = o.optInt("sentDate");
-                // Legacy entries (no "account" key) belong to the
-                // account selected at load time.
-                e.account = o.optInt("account", UserConfig.selectedAccount);
-                out.add(e);
+    private static String peerKey(int account, long peer) {
+        return account + ":" + peer;
+    }
+
+    private static void rebuildPendingIndexLocked(List<Entry> entries) {
+        pendingPeers.clear();
+        for (Entry e : entries) {
+            if (e.isPending()) {
+                pendingPeers.add(peerKey(e.account, e.peer));
             }
-        } catch (Exception ignored) {
         }
-        return out;
+    }
+
+    private static List<Entry> ensureLoadedLocked(Context context) {
+        if (cachedEntries != null) {
+            return cachedEntries;
+        }
+        List<Entry> out = new ArrayList<>();
+        if (context != null) {
+            String raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .getString(KEY_ITEMS, null);
+            if (raw != null) {
+                try {
+                    JSONArray arr = new JSONArray(raw);
+                    for (int i = 0; i < arr.length(); i++) {
+                        JSONObject o = arr.optJSONObject(i);
+                        if (o == null) {
+                            continue;
+                        }
+                        Entry e = new Entry();
+                        e.peer = o.optLong("peer");
+                        e.name = o.optString("name", "");
+                        e.text = o.optString("text", "");
+                        e.date = o.optInt("date");
+                        e.state = o.optString("state", "pending");
+                        e.sentDate = o.optInt("sentDate");
+                        e.account = o.optInt("account", UserConfig.selectedAccount);
+                        out.add(e);
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        cachedEntries = out;
+        rebuildPendingIndexLocked(out);
+        return cachedEntries;
+    }
+
+    public static List<Entry> getAll(Context context) {
+        synchronized (LOCK) {
+            List<Entry> list = ensureLoadedLocked(context);
+            List<Entry> copy = new ArrayList<>(list.size());
+            for (Entry e : list) {
+                copy.add(e.copy());
+            }
+            return copy;
+        }
     }
 
     public static void saveAll(Context context, List<Entry> entries) {
+        if (context == null) {
+            return;
+        }
+        List<Entry> copy = new ArrayList<>(entries != null ? entries.size() : 0);
+        if (entries != null) {
+            for (Entry e : entries) {
+                copy.add(e.copy());
+            }
+        }
+        synchronized (LOCK) {
+            cachedEntries = copy;
+            rebuildPendingIndexLocked(copy);
+        }
         JSONArray arr = new JSONArray();
-        for (Entry e : entries) {
+        for (Entry e : copy) {
             try {
                 JSONObject o = new JSONObject();
                 o.put("peer", e.peer);
@@ -123,7 +159,7 @@ public final class SendWhenOnlineStore {
 
     public static void add(Context context, int account, long peer, String name, String text) {
         synchronized (LOCK) {
-            List<Entry> entries = getAll(context);
+            List<Entry> entries = new ArrayList<>(ensureLoadedLocked(context));
             Entry e = new Entry();
             e.peer = peer;
             e.name = name;
@@ -140,50 +176,40 @@ public final class SendWhenOnlineStore {
     }
 
     public static int pendingCount(Context context) {
-        int n = 0;
-        for (Entry e : getAll(context)) {
-            if (e.isPending()) {
-                n++;
+        synchronized (LOCK) {
+            int n = 0;
+            for (Entry e : ensureLoadedLocked(context)) {
+                if (e.isPending()) {
+                    n++;
+                }
             }
+            return n;
         }
-        return n;
     }
 
-    /** Pending entries for one (account, peer) pair — the only list
-     *  the flush may send from. Entries queued under a different
-     *  account are invisible here even for the same peer. */
+    /** Fast O(1) early-out when (account, peer) has no pending messages (A-29). */
     public static List<Entry> pendingFor(Context context, int account, long peer) {
-        List<Entry> out = new ArrayList<>();
-        for (Entry e : getAll(context)) {
-            if (e.peer == peer && e.account == account && e.isPending()) {
-                out.add(e);
+        synchronized (LOCK) {
+            List<Entry> all = ensureLoadedLocked(context);
+            if (pendingPeers.isEmpty() || !pendingPeers.contains(peerKey(account, peer))) {
+                return Collections.emptyList();
             }
+            List<Entry> out = new ArrayList<>();
+            for (Entry e : all) {
+                if (e.peer == peer && e.account == account && e.isPending()) {
+                    out.add(e.copy());
+                }
+            }
+            return out;
         }
-        return out;
     }
 
-    /**
-     * Marks exactly the given entries as sent (Stage 1, audit D6).
-     * The flush calls this ONLY with entries whose sendMessage()
-     * hand-off already returned without throwing, so a silently
-     * failed enqueue is never recorded as sent — it stays pending
-     * and retries on the next online event. Matching is by
-     * (peer, account, date, text) identity, the same identity
-     * remove() uses. Crash-window semantics: the state flip is a
-     * single SharedPreferences apply() of the whole list; if the
-     * process dies after dispatch but before the apply lands, the
-     * entries stay pending and may send once more on the next
-     * online event — at-least-once by design, because the previous
-     * ordering (mark first / blanket-mark) could silently LOSE a
-     * queued message, which is worse than a rare duplicate.
-     * Returns how many entries were flipped.
-     */
     public static int markSent(Context context, List<Entry> dispatched) {
         if (dispatched == null || dispatched.isEmpty()) {
             return 0;
         }
         synchronized (LOCK) {
-            List<Entry> entries = getAll(context);
+            List<Entry> entries = new ArrayList<>(ensureLoadedLocked(context));
             int now = (int) (System.currentTimeMillis() / 1000L);
             int changed = 0;
             for (Entry e : entries) {
@@ -207,8 +233,6 @@ public final class SendWhenOnlineStore {
         }
     }
 
-    // Lightweight change listeners so an open hub can refresh itself
-    // (e.g. right after a queued message fired). Listeners run inline.
     private static final java.util.List<Runnable> LISTENERS =
             new java.util.concurrent.CopyOnWriteArrayList<>();
 
@@ -230,8 +254,11 @@ public final class SendWhenOnlineStore {
     }
 
     public static void remove(Context context, Entry target) {
+        if (target == null) {
+            return;
+        }
         synchronized (LOCK) {
-            List<Entry> entries = getAll(context);
+            List<Entry> entries = new ArrayList<>(ensureLoadedLocked(context));
             for (int i = 0; i < entries.size(); i++) {
                 Entry e = entries.get(i);
                 if (e.peer == target.peer && e.account == target.account && e.date == target.date

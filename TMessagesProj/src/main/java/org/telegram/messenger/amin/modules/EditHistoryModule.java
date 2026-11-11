@@ -19,7 +19,7 @@ public class EditHistoryModule implements ModModule {
         if (!PluginRegistry.isEnabled(context, this)) {
             return "";
         }
-        int edits = VaultStore.getAll(context, DeletedStore.PREFS, DeletedStore.EDIT_KEY).size();
+        int edits = VaultStore.count(context, DeletedStore.PREFS, DeletedStore.EDIT_KEY);
         return edits > 0 ? "Active · " + edits + " edits recorded" : "Active";
     }
 }
