@@ -2,8 +2,8 @@
 
 A personal Telegram Android client — a fork of the official
 [Telegram for Android](https://github.com/DrKLO/Telegram) sources
-(DrKLO/Telegram, pinned at 13.0.2, commit
-`f32ffeec763f0bdbf4bec25b52d654f77bff733d`) with a modular feature
+(DrKLO/Telegram, pinned at 13.2.2, commit
+`21f7d109da6ab3506c9e9577f98c6a38771ab335`) with a modular feature
 layer under `org.telegram.messenger.amin.**`, a native modules hub in
 Settings, and a JavaScript plugin system (Mozilla Rhino) whose
 plugins install instantly from inside the app — no rebuild needed.
@@ -119,7 +119,7 @@ CI (`.github/workflows/build.yml`) does exactly this; locally:
 1. Clone the pinned upstream:
    `git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/DrKLO/Telegram.git upstream`,
    then inside it fetch + check out the pinned commit
-   `f32ffeec763f0bdbf4bec25b52d654f77bff733d`. Never build against
+   `21f7d109da6ab3506c9e9577f98c6a38771ab335`. Never build against
    moving upstream HEAD.
 2. Copy this repo's overlay over it: `cp -r TMessagesProj upstream/`
    (this repo *is* the overlay: `TMessagesProj/` sources + assets,

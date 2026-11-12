@@ -11,7 +11,7 @@ import org.telegram.messenger.amin.plugins.PluginRegistry;
  * and concurrent request count levels (Off / Balanced / Extreme), plus an
  * independent Upload Speed Boost toggle.
  *
- * Verified against upstream 13.0.2 ({@code f32ffee}):
+ * Verified against upstream 13.2.2 ({@code 21f7d10}):
  * - Off (level 0): upstream default ({@code 128 KB} big chunk, {@code 4}
  *   concurrent requests unless server {@code getfileExperimentalParams} is set).
  * - Balanced (level 1): forces Telegram's own experimental fast branch

@@ -39,7 +39,7 @@ diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.j
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java b/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java
 --- a/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java
-@@ -17442,10 +17442,10 @@
+@@ -17453,11 +17453,11 @@
                  WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR |
                  WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM |
                  WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS;
@@ -47,8 +47,9 @@ diff --git a/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java b/TMes
 +            if (!org.telegram.messenger.amin.AminHooks.screenshotUnlocked() && (chatActivity != null && chatActivity.getCurrentEncryptedChat() != null ||
                  avatarsDialogId != 0 && MessagesController.getInstance(currentAccount).isPeerNoForwards(avatarsDialogId) ||
                  messageObject != null && (MessagesController.getInstance(currentAccount).isPeerNoForwards(messageObject.getDialogId()) ||
--                (messageObject.messageOwner != null && messageObject.messageOwner.noforwards)) || messageObject != null && messageObject.hasRevealedExtendedMedia()
-+                (messageObject.messageOwner != null && messageObject.messageOwner.noforwards)) || messageObject != null && messageObject.hasRevealedExtendedMedia())
+                 (messageObject.messageOwner != null && messageObject.messageOwner.noforwards)) || messageObject != null && messageObject.hasRevealedExtendedMedia() ||
+-                isPageBlocksNoForwards(pageBlocksAdapter)
++                isPageBlocksNoForwards(pageBlocksAdapter))
              ) {
                  windowLayoutParams.flags |= WindowManager.LayoutParams.FLAG_SECURE;
                  AndroidUtilities.logFlagSecure();

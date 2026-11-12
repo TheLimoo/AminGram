@@ -23,7 +23,7 @@ stages:
   - release
 
 variables:
-  UPSTREAM_SHA: "f32ffeec763f0bdbf4bec25b52d654f77bff733d"  # DrKLO/Telegram 13.0.2 (7175)
+  UPSTREAM_SHA: "21f7d109da6ab3506c9e9577f98c6a38771ab335"  # DrKLO/Telegram 13.2.2 (7303)
   NDK_VERSION: "27.2.12479018"
   # Keep SDK + Gradle home INSIDE the project dir: GitLab cache only
   # supports paths relative to $CI_PROJECT_DIR (GitHub cached an absolute
@@ -98,7 +98,7 @@ build:
       echo "All required CI/CD variables are present."
     # --- Mirror: "Fetch upstream Telegram source (pinned)" ----------------
     # GitHub cloned HEAD with --depth 1 --recurse-submodules; the pin only
-    # held because HEAD was f32ffee. Here the commit is pinned explicitly:
+    # held because HEAD was 21f7d10. Here the commit is pinned explicitly:
     # fetch by full SHA, detach, then init submodules shallowly.
     - |
       set -e
@@ -284,16 +284,16 @@ release:
   rules:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   script:
-    - echo "Creating release v13.0.2-amingram.${CI_PIPELINE_IID}"
+    - echo "Creating release v13.2.2-amingram.${CI_PIPELINE_IID}"
   release:
-    tag_name: "v13.0.2-amingram.$CI_PIPELINE_IID"
+    tag_name: "v13.2.2-amingram.$CI_PIPELINE_IID"
     name: "AminGram $CI_PIPELINE_IID"
     description: |
-      Automated AminGram build (Telegram 13.0.2 overlay, upstream f32ffee).
+      Automated AminGram build (Telegram 13.2.2 overlay, upstream 21f7d10).
       Signed with the AminGram keystore. Pipeline: $CI_PIPELINE_URL
     assets:
       links:
         - name: "AminGram.apk"
-          url: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/amingram/13.0.2-amingram.$CI_PIPELINE_IID/AminGram.apk"
+          url: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/amingram/13.2.2-amingram.$CI_PIPELINE_IID/AminGram.apk"
         - name: "Build job artifacts"
           url: "$CI_PROJECT_URL/-/pipelines/$CI_PIPELINE_ID"

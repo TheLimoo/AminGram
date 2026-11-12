@@ -1,7 +1,7 @@
 # Upstream pin
 
 - Source: https://github.com/DrKLO/Telegram
-- Pinned at: version 13.0.2, commit f32ffee ("update to 13.0.2 (7175)")
+- Pinned at: version 13.2.2, commit 21f7d10 ("update to 13.2.2 (7303)")
 - The CI clones upstream fresh, copies this overlay's `TMessagesProj/` files
   in, applies `patches/`, injects API credentials from repo secrets
   (API_ID / API_HASH) into BuildVars.java, and builds

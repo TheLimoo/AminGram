@@ -19,10 +19,10 @@ jobs:
       - name: Fetch upstream Telegram source (pinned)
         run: |
           # Submodules are cloned at HEAD's pins; checkout alone leaves them
-          # behind f32ffee (e.g. tgcalls lost MtProtoIceTransport.cpp upstream,
+          # behind 21f7d10 (e.g. tgcalls lost MtProtoIceTransport.cpp upstream,
           # which broke CMake). Re-pin them explicitly after checkout.
           git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/DrKLO/Telegram.git upstream
-          cd upstream && git fetch --depth 1 origin f32ffeec763f0bdbf4bec25b52d654f77bff733d && git checkout FETCH_HEAD && git submodule update --init --recursive --depth 1 && git log --oneline -1
+          cd upstream && git fetch --depth 1 origin 21f7d109da6ab3506c9e9577f98c6a38771ab335 && git checkout FETCH_HEAD && git submodule update --init --recursive --depth 1 && git log --oneline -1
 
       - name: Apply AminGram overlay
         run: |
@@ -188,7 +188,7 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v13.0.2-amingram.${{ github.run_number }}
+          tag_name: v13.2.2-amingram.${{ github.run_number }}
           name: AminGram ${{ github.run_number }}
           files: upstream/TMessagesProj_App/build/outputs/apk/afat/release/*.apk
           fail_on_unmatched_files: true

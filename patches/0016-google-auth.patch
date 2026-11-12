@@ -2,9 +2,10 @@ diff --git a/TMessagesProj/build.gradle b/TMessagesProj/build.gradle
 index 25f6831..7fa74b9 100644
 --- a/TMessagesProj/build.gradle
 +++ b/TMessagesProj/build.gradle
-@@ -67,7 +67,7 @@ dependencies {
-     implementation 'com.google.firebase:firebase-datatransport:18.1.0'
-     implementation 'com.google.firebase:firebase-appindexing:20.0.0'
+@@ -63,8 +63,8 @@ dependencies {
+     compileOnly 'org.checkerframework:checker-qual:2.5.2'
+     compileOnly 'org.checkerframework:checker-compat-qual:2.5.0'
+ 
      implementation 'com.google.android.gms:play-services-maps:18.1.0'
 -    implementation 'com.google.android.gms:play-services-auth:20.4.0'
 +    implementation 'com.google.android.gms:play-services-auth:21.6.0'
