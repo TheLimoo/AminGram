@@ -19,6 +19,7 @@ import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.R;
 import org.telegram.messenger.amin.pyplugins.PyDevServer;
 import org.telegram.messenger.amin.pyplugins.PyPlugin;
+import org.telegram.messenger.amin.pyplugins.PyPluginAnalysis;
 import org.telegram.messenger.amin.pyplugins.PyPluginRepo;
 import org.telegram.messenger.amin.pyplugins.PyPluginsBootstrap;
 import org.telegram.messenger.amin.pyplugins.PyPluginsController;

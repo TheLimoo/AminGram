@@ -2998,3 +2998,43 @@ independent verification caught them before commit:
 - `add_hook("tl_*")` / ConnectionsManager interception: still
   deferred (M2). GPL-3.0 vs clean-room decision still open —
   M4 stayed clean-room, no exteraless code copied.
+
+### Fix 1 — overnight CI watch (2026-11-15 ~21:00 UTC, run 43757229145 on 85f3919: FAILED)
+
+The M4 run got past configure (the abiFilters fix worked) and
+compiled for 35m39s, then failed with 2 failures, both real code
+errors that no local check had caught (local JDK checks are
+parse-only — they do not resolve symbols — and the M1/M2/M3 runs
+never reached compilation, so these bugs were latent since M1):
+
+1. **Manifest merger** (`:TMessagesProj_App:processAfatReleaseMainManifest`):
+   `uses-sdk:minSdkVersion 23 cannot be smaller than version 24
+   declared in library [:TMessagesProj]`. M0 raised the library's
+   minSdk 23→24 for Chaquopy but never raised the app modules'.
+   Fix: new patch **0029** — minSdkVersion 23→24 in all four app
+   modules (`TMessagesProj_App`, `_AppHockeyApp`, `_AppHuawei`,
+   `_AppStandalone`), regenerated from a staged commit in the
+   replay tree, never hand-edited. +4 upstream files: honest
+   count now **38** touched (cap 40, headroom 2).
+2. **Compile errors in the plugin UI** (`:TMessagesProj:compileReleaseJavaWithJavac`,
+   3 errors):
+   - `AminPyPluginActivity.java:481` (singular, M1 selector
+     dialog): `builder.setSingleChoiceItems(...)` — Telegram's
+     `AlertDialog.Builder` has no such method (only `setItems`).
+     Fixed with `setItems`, the same tap-to-choose pattern
+     `AminDnsTunnelActivity.showChooser` already uses; the
+     now-unused current-selection tracking was removed.
+   - `AminPyPluginsActivity.java:696,704` (plural, M4 hub):
+     `package PyPluginAnalysis does not exist` — the file used
+     the simple name without importing it (the fully-qualified
+     calls next to it compiled fine). Fixed: added the import.
+     An audit of both activity files found no other simple
+     names used without an import (remaining hits were method
+     names, string literals, and the classes' own names).
+
+Verification of Fix 1: patch series 0001–0029 `git apply`
+clean on a fresh pristine `21f7d10` tree; JDK parse OK (2
+changed files); Java TestM4 73/73; CPython M4 8/8; secret scan
+zero. No local Gradle build possible; CI is the only build
+proof. Pushed as the fix commit on top of 85f3919; the new CI
+run is watched the same way (max 2 fix attempts total).

@@ -467,18 +467,16 @@ public class AminPyPluginActivity extends BaseFragment {
         if (getParentActivity() == null || row.options.isEmpty()) {
             return;
         }
-        String current = row.displayValue();
         String[] labels = new String[row.options.size()];
-        int checked = -1;
         for (int i = 0; i < row.options.size(); i++) {
             labels[i] = row.options.get(i).label;
-            if (row.options.get(i).value.equals(current)) {
-                checked = i;
-            }
         }
         AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
         builder.setTitle(row.text);
-        builder.setSingleChoiceItems(labels, checked, (dialog, which) -> {
+        // Telegram's AlertDialog.Builder has no setSingleChoiceItems;
+        // setItems is its list-picker API (tap = choose + dismiss),
+        // the same pattern AminDnsTunnelActivity.showChooser uses.
+        builder.setItems(labels, (dialog, which) -> {
             dialog.dismiss();
             PyPluginSettingsRow.Option opt = row.options.get(which);
             writePySetting(row, opt.value,
