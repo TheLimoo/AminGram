@@ -28,31 +28,15 @@ jobs:
         run: |
           cp -r TMessagesProj upstream/
           cd upstream
-          git apply ../patches/0001-settings-plugins-entry.patch
-          git apply ../patches/0002-rebrand-package.patch
-          git apply ../patches/0003-phase2-hooks.patch
-          git apply ../patches/0004-videobg-rebrand.patch
-          git apply ../patches/0006-message-pipeline-hook.patch
-          git apply ../patches/0007-icon-changer.patch
-          git apply ../patches/0008-hide-stories.patch
-          git apply ../patches/0009-profile-user-id.patch
-          git apply ../patches/0010-js-runtime-gradle.patch
-          git apply ../patches/0011-hidden-chats-dialogs-filter.patch
-          git apply ../patches/0012-ghost-stories.patch
-          git apply ../patches/0013-outgoing-command-hook.patch
-          git apply ../patches/0014-attach-menu-plugins.patch
-          git apply ../patches/0016-google-auth.patch
-          git apply ../patches/0017-hide-sponsored.patch
-          git apply ../patches/0018-message-details.patch
-          git apply ../patches/0019-screenshot-unlock.patch
-          git apply ../patches/0020-context-menu-items.patch
-          git apply ../patches/0021-dns-tunnel.patch
-          git apply ../patches/0023-font-selector.patch
-          git apply ../patches/0024-stage2-native-features.patch
-          git apply ../patches/0025-pyplugins-gradle.patch
-          git apply ../patches/0026-pyplugins-init.patch
-          git apply ../patches/0027-pyplugins-hooks.patch
-          git apply ../patches/0028-pyplugins-settings-hooks.patch
+          # Apply every patch in patches/ in filename order.
+          # (A hardcoded list silently dropped 0029 in Fix 1:
+          # the patch existed in the repo but the workflow
+          # never applied it, so the minSdk fix never reached
+          # the build. A loop cannot drift from the directory.)
+          for p in ../patches/*.patch; do
+            echo "git apply $p"
+            git apply "$p"
+          done
           python3 - <<'SPEEDEOF'
           flo_path = "TMessagesProj/src/main/java/org/telegram/messenger/FileLoadOperation.java"
           with open(flo_path, "r", encoding="utf-8") as f:

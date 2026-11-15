@@ -3038,3 +3038,34 @@ changed files); Java TestM4 73/73; CPython M4 8/8; secret scan
 zero. No local Gradle build possible; CI is the only build
 proof. Pushed as the fix commit on top of 85f3919; the new CI
 run is watched the same way (max 2 fix attempts total).
+
+### Fix 2 — overnight CI watch (2026-11-15 ~21:45 UTC, run 43761381685 on b08991d: FAILED)
+
+The Fix 1 run compiled clean (the 3 Java errors were gone —
+only 1 failure left) but failed with the SAME manifest merger
+error: `uses-sdk:minSdkVersion 23 cannot be smaller than
+version 24 declared in library [:TMessagesProj]`.
+
+Root cause was NOT the patch: patch 0029 exists in the repo and
+applies clean on pristine. The **workflow itself** was the bug:
+`.github/workflows/build.yml` ("Apply AminGram overlay") had a
+HARDCODED list of `git apply` lines ending at 0028 — patch 0029
+was never applied in CI. The log proves it: the step's output
+lists `git apply ../patches/0001…0028` and no 0029.
+
+Fix: the hardcoded list is replaced by a loop over
+`../patches/*.patch` in filename order (with a comment
+explaining why). A loop cannot drift from the directory, so no
+future patch can be silently dropped the same way. This adds 0
+upstream files (build.yml is the repo's own file); honest count
+stays 38 (cap 40, headroom 2).
+
+Verification of Fix 2: YAML parses; the exact workflow step
+was simulated on a fresh pristine `21f7d10` tree (same layout
+as the runner: overlay copy, then the loop) — all 26 patches
+apply in order including 0029, app minSdk is 24, library minSdk
+is 24, abiFilters present. Secret scan zero. No local Gradle
+build possible; CI is the only build proof. Pushed as the fix
+commit on top of b08991d; this is fix attempt 2 of 2 — if this
+run also fails, no further pushes; the diagnosis goes to the
+parent instead.
