@@ -2243,3 +2243,200 @@ New: `amin/pyplugins/PyPluginSettingsRow.java`,
   (needs CI build + Amin's phone test: install
   settings_demo.plugin, toggle rows, restart, verify values
   persist, Bulletin shows on switch change).
+
+## v2.5.2 — Python (.plugin) engine, M2 hooks (2026-11-15, NOT pushed)
+
+On top of M1 commit 4212787, one local commit. Licence-neutral
+clean-room only (no exteraless/exteraGram code copied; from the
+public SDK docs + AminGram's own code). JS engine, DNS, AI
+untouched.
+
+### What M2 adds
+
+**Hook registry (`amin/pyplugins/PyHookRegistry.java`, new)** —
+the exteraGram SDK's event-interception surface, reimplemented
+on AminHooks call sites (NOT native method hooking):
+- Named hooks `add_hook(name, match_substring, priority)`:
+  observe-only, async on the Python thread. Fired for
+  `"message"` (incoming, post-delivery) and `"app_start" /
+  "app_stop" / "app_pause" / "app_resume"`. A non-default return
+  value is logged and ignored — the event has already happened.
+- Send-message hooks `add_on_send_message_hook(priority)`:
+  the ONE synchronous Python call in the engine. Runs for EVERY
+  outgoing message from `AminHooks.onOutgoingMessage` (not just
+  "/" commands). Priority order, highest first; MODIFY rewrites
+  the text (later hooks see it), MODIFY_FINAL rewrites and stops,
+  CANCEL suppresses. Bounded by an 800 ms latch wait — timeout or
+  a throwing hook means DEFAULT (message sends unchanged). A hook
+  must not send a message synchronously from inside the callback
+  (nested send waits on the same Python thread and times out).
+- Menu items (`MenuItemData`, `ui/menu.py`): MESSAGE_CONTEXT_MENU
+  (patch 0020 call site, shares the 4-slot cap with JS, JS first)
+  and CHAT_ACTION_MENU (patch 0014 call site). Conditions are
+  evaluated in Java at menu-build time (no Python round-trip on
+  the UI thread). Taps dispatch async to `on_click`, or to the
+  plugin's `on_menu_action(location, data)` when none was given.
+  DRAWER_MENU / MAIN_MENU / PROFILE_ACTION_MENU items are
+  accepted and stored but never shown — no upstream hook point
+  exists yet (M3 decision, not silently dropped).
+- Registrations live only while the plugin is loaded:
+  unregistered on unload and before re-registration on load, so
+  a stale callback can never fire.
+
+**MVEL-subset conditions (`amin/pyplugins/PyMenuCondition.java`,
+new)** — pure Java, no Android/Chaquopy dependency: `and`/`or`/
+`not`, `== != < > <= >=`, `contains`, `startswith`, parentheses,
+literals (bool/number/quoted string/`null`), dotted identifiers
+(`message.out`, `chat.type`, `account`). Unknown identifiers
+resolve to null; invalid syntax fails CLOSED (item hidden).
+Deliberately NOT supported: method calls, indexing, arithmetic,
+assignment, `in`, ternary. Full MVEL was rejected (new
+dependency + its own reflection surface).
+
+**LaunchActivity lifecycle (patch 0027 — +1 upstream file,
+`org.telegram.ui.LaunchActivity`, total now 33 vs the 30 cap;
+raise to 40 still needs Amin's approval):** onCreate → START
+(once per process — activity recreation is not an app start),
+onResume → RESUME, onPause → PAUSE, onDestroy → STOP (only when
+`isFinishing()`). One FQ line each, via `AminHooks`
+(`onPyLaunchCreate/Resume/Pause/Destroy`).
+
+**`client_utils` finished (M2):** `get_last_fragment()` (returns
+the Java BaseFragment, or None), `get_fragment_stack()`
+(`INavigationLayout.getFragmentStack`, verified in pristine
+21f7d10), `confirm_sensitive_action(action, amount, recipient,
+on_confirm)` — a confirmation bulletin; the action must ONLY run
+inside `on_confirm` (no tap = no confirmation). This is the gate
+future mediated Stars/gift/security actions must call; no SDK
+method currently spends Stars or transfers gifts, and direct
+reflection calls bypass it (install analysis + hub copy say so).
+
+**`hook_utils.py` (new):** `add_hook` /
+`add_on_send_message_hook` / `HookResult` / `HookStrategy`
+re-exported; reflection helpers `find_class` / `get_field` /
+`set_field` / `call_method` (every use logged to the plugin);
+`hook_method` raises NotImplementedError — native before/after
+hooking is M3 (DEX bridge), not this registry.
+
+**`extera_utils.py` (new):** HTML text helpers (`bold`,
+`italic`, `code`, `pre`, `link`, `mention`, `escape_html`) and
+`ClassProxy` / `proxy_class` (attribute-forwarding wrapper, no
+hooking).
+
+**`base_plugin.py`:** `HookStrategy` / `HookResult` (string,
+dict, or object return forms all understood), `add_hook` /
+`add_on_send_message_hook` in direct + decorator forms
+(decorator tags `_amin_hook` / `_amin_send_hook`; the host
+registers them at load via `amin_loader.
+register_decorated_hooks`), `add_menu_item` / `remove_menu_item`
+/ `on_menu_action`. Bare `@add_on_send_message_hook` (no parens)
+is a decorator when called with no plugin context (import time)
+and a direct registration otherwise — without this, the bare
+form registered under "engine" at import time, fired under the
+wrong plugin id, and was never unregistered (caught by the M2
+stub tests; same hazard documented for direct registration
+outside a plugin context, which now logs a warning).
+
+**`AminHooks` wiring (overlay only, no patch change):**
+`onOutgoingMessage` runs the Python send-hook chain FIRST for
+every outgoing message, then the existing JS "/" suppression +
+async `on_command` fan-out (a rewrite that drops the leading
+"/" also drops the fan-out — the hook owns the message).
+Context-menu conditions get `{chat: {id, type}, message: {id,
+text, out, dialog_id, date}, account}`; chat type is
+best-effort (negative id → group unless the chat is a channel;
+positive id → private, "bot" for bots). Attach-menu conditions
+see only `{account}` (no chat/message at that call site).
+Menu ids are namespaced `py:ctx:<pluginId>:<ordinal>` /
+`py:attach:<pluginId>:<ordinal>` so JS dispatch is untouched.
+
+**Fixture:** `assets/amingram_pyplugins/hooks_demo.plugin`
+(decorator hooks, `/shout` MODIFY rewrite, context menu with
+`message.out == true`, attach menu, extera_utils + hook_utils
+use).
+
+### Deliberately deferred (M2 decision, recorded)
+
+- **TL request/response/update interception via
+  ConnectionsManager: DEFERRED to M3.** The update stream
+  already reaches plugins through `processUpdateArray`
+  (patch 0006), and the send path is covered by the send-hook
+  chain. Intercepting `sendRequest` would need a new hook point
+  in a core RPC flow whose exact request/response lifecycle was
+  not verified in M2; a wrong hook there risks corrupting
+  requests for the whole app. It needs its own spike, not a
+  drive-by patch.
+- DRAWER_MENU / MAIN_MENU / PROFILE_ACTION_MENU rendering
+  (no hook points; M3).
+- Python↔JS relay (M4).
+
+### M2 verification (2026-11-15, all local, before any push)
+
+- **Patch-series replay (git apply only — GNU patch is banned
+  for this series, see M1):** copy of the pristine 21f7d10 tree
+  (`verify-scratch/pristine`, the M1 codeload tarball tree),
+  overlay copied in (`cp -r TMessagesProj`, CI step), all 25
+  patches 0001–0027 applied in CI order — **25/25 OK**, zero
+  failures. All **166** overlay files byte-identical in the
+  replayed tree (0 mismatches). The 4 M2 calls land in
+  LaunchActivity at lines 411 (onCreate), 6906 (onPause), 7107
+  (onDestroy), 7224 (onResume). NOTE: the first replay attempt
+  used `verify-scratch/pristine`, which turned out to be an
+  older tree (LaunchActivity 9249 lines, all patches failed) —
+  the real 21f7d10 tree is the M1 codeload tarball
+  (`m1-upstream/upstream.tar.gz`, top dir `Telegram-21f7d10`),
+  re-extracted as `verify-scratch/m2/pristine21`. Patch 0027's
+  anchors and hunk counts were re-derived from that tree (its
+  first draft had wrong hunk counts and failed `git apply` with
+  "patch fragment without header" — fixed, not forced).
+- **JDK 17 syntax parse:** ParseCheck (JavacTask parse-only,
+  `verify-scratch/m2/ParseCheck.java`) PARSE OK on all 6 touched
+  Java files (PyHookRegistry, PyMenuCondition, PyPluginHost,
+  PyPluginsController, PyHookDispatcher, AminHooks). NOTE:
+  `-proc:only` does NOT do a syntax-only check (it still
+  resolves symbols); the M0/M1 "parse" claim used the same
+  JavacTask approach.
+- **Python:** `py_compile` OK on all 12 Python files (incl. the
+  hooks_demo fixture). CPython stub tests
+  `verify-scratch/m2/test_pyplugins_m2.py` **56/56** (new stub
+  `verify-scratch/m2/java.py` — the M0/M1 harness lived in /tmp
+  and was wiped by a runtime restart; the M2 harness lives in
+  the persistent workspace). Caught and fixed 1 real bug (bare
+  `@add_on_send_message_hook` registering under "engine", above).
+  M0/M1 regression inside the suite: hello_py loads,
+  settings_demo still serialises 9 rows.
+- **Java logic tests:** `verify-scratch/m2/TestM2.java`
+  **37/37** (PyMenuCondition, compiled + run on plain JDK 17:
+  comparisons, and/or/not, parens, contains/startswith, nulls,
+  fail-closed invalid syntax/arithmetic/method calls).
+- **Secret scan:** zero — pattern scan over the full M2 diff
+  (modified + new files) for keys/tokens/passwords/private keys.
+- **API cross-check vs pristine 21f7d10 source (not just
+  stubs):** `INavigationLayout.getFragmentStack()`,
+  `LaunchActivity.getLastFragment()`,
+  `MessagesController.getChat(Long)` / `getUser(Long)`,
+  `ChatObject.isChannel(Chat)`, `UserConfig.selectedAccount`,
+  `SendMessageParams.peer` (already used by JsPluginManager),
+  `BulletinFactory.createSimpleBulletin` 4-arg overload (already
+  used by M1) — all present with the signatures used.
+- **NOT verified locally (needs CI + device):** no local
+  Gradle build (no Android SDK on this VM); the synchronous
+  send-hook latch has never run under Chaquopy (timeout and
+  modify/cancel semantics are code-reviewed, not executed);
+  menu rendering, AppEvent dispatch, and the fragment helpers
+  are unproven on device. CI green proves compilation only.
+
+### Gaps / stubs left (M3 needs)
+
+- `add_hook("tl_*")` / ConnectionsManager interception: deferred
+  (above).
+- DEX bridge (XposedBridge shim vs AliuHook): M3 spike first
+  (decompile MaterialSettingsList DEX, list exact hook targets).
+- ZwyLib as a library-plugin + MaterialSettingsList: M3.
+- `__requirements__` still refused (pip = M4).
+- Python engine still default OFF; on-device behaviour unproven
+  (needs CI build + Amin's phone test: install hooks_demo,
+  `/shout hello` rewrites, long-press an outgoing message for
+  the Demo menu item, background/foreground for app_resume log,
+  attach menu shows the Demo item).
+

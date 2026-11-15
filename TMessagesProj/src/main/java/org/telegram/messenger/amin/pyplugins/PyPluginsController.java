@@ -470,8 +470,19 @@ public final class PyPluginsController {
                 // context so SDK helpers called from on_plugin_load
                 // log under this plugin, not "engine".
                 loader.callAttr("call_lifecycle", instance, "on_plugin_load");
+                // M2: register decorator-tagged hooks (@add_hook /
+                // @add_on_send_message_hook). A stale registration
+                // from a previous load is cleared first.
+                PyHookRegistry.unregisterPlugin(pluginId);
+                try {
+                    loader.callAttr("register_decorated_hooks", instance);
+                } catch (Throwable t) {
+                    PyPluginLog.append(context, pluginId,
+                            "Hook registration failed: " + PyPluginHost.shortError(t));
+                }
             } catch (Throwable t) {
                 instances.remove(pluginId);
+                PyHookRegistry.unregisterPlugin(pluginId);
                 throw t;
             }
             consecutiveFailures.remove(pluginId);
@@ -490,6 +501,9 @@ public final class PyPluginsController {
         if (pluginId == null) {
             return;
         }
+        // M2: drop the plugin's hook + menu registrations first,
+        // so no callback can fire while the module is unloading.
+        PyHookRegistry.unregisterPlugin(pluginId);
         PyObject instance = instances.remove(pluginId);
         if (instance == null) {
             return;
@@ -525,6 +539,16 @@ public final class PyPluginsController {
      *  which is not a valid module name. */
     static String moduleName(String pluginId) {
         return "pyplugin_" + pluginId.replace('-', '_').replace('.', '_');
+    }
+
+    /** The loaded Python instance for a plugin, or null when it
+     *  is not loaded. Used by the hook registry to dispatch a
+     *  menu tap to the plugin's {@code on_menu_action}. */
+    static synchronized PyObject instanceFor(String pluginId) {
+        if (pluginId == null) {
+            return null;
+        }
+        return instances.get(pluginId);
     }
 
     // ------------------------------------------------------------------

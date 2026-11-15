@@ -51,6 +51,7 @@ jobs:
           git apply ../patches/0024-stage2-native-features.patch
           git apply ../patches/0025-pyplugins-gradle.patch
           git apply ../patches/0026-pyplugins-init.patch
+          git apply ../patches/0027-pyplugins-hooks.patch
           python3 - <<'SPEEDEOF'
           flo_path = "TMessagesProj/src/main/java/org/telegram/messenger/FileLoadOperation.java"
           with open(flo_path, "r", encoding="utf-8") as f:

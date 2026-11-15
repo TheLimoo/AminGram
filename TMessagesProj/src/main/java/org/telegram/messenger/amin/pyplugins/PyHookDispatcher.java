@@ -1,9 +1,13 @@
 package org.telegram.messenger.amin.pyplugins;
 
 import org.telegram.messenger.ApplicationLoader;
+import org.telegram.messenger.SendMessagesHelper;
+import org.telegram.messenger.UserConfig;
 import org.telegram.tgnet.TLRPC;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Fan-out from {@code AminHooks} into the Python engine — M0.
@@ -69,6 +73,63 @@ public final class PyHookDispatcher {
                 }
             }
         } catch (Throwable ignored) {
+        }
+    }
+
+    /** App lifecycle events (patch 0027, LaunchActivity):
+     *  {@code "start"/"stop"/"pause"/"resume"} — dispatched to
+     *  named hooks {@code "app_start"} etc. Cheap no-op when the
+     *  engine is off. */
+    public static void onAppEvent(String event) {
+        try {
+            if (event == null) {
+                return;
+            }
+            if (ApplicationLoader.applicationContext == null
+                    || !PyPluginsController.isEngineEnabled(
+                            ApplicationLoader.applicationContext)) {
+                return;
+            }
+            Map<String, Object> data = new HashMap<>();
+            data.put("event", event);
+            PyHookRegistry.dispatchHookAsync("app_" + event, data);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** Synchronous send-message hook chain (M2). Runs for EVERY
+     *  outgoing message, not just "/" commands. Returns true when
+     *  a hook cancelled the message (the caller suppresses it);
+     *  rewrites {@code params.message} in place on MODIFY /
+     *  MODIFY_FINAL and returns false (the message sends with the
+     *  new text). Fast path: no registered send hooks means no
+     *  Python call at all. */
+    public static boolean onOutgoingMessageSync(SendMessagesHelper.SendMessageParams params) {
+        try {
+            if (params == null || params.message == null) {
+                return false;
+            }
+            if (ApplicationLoader.applicationContext == null
+                    || !PyPluginsController.isEngineEnabled(
+                            ApplicationLoader.applicationContext)) {
+                return false;
+            }
+            if (!PyHookRegistry.hasSendHooks()) {
+                return false;
+            }
+            long dialogId = params.peer;
+            int account = UserConfig.selectedAccount;
+            PyHookRegistry.SendOutcome outcome = PyHookRegistry.dispatchSendHook(
+                    params.message, dialogId, account);
+            if (outcome.cancel) {
+                return true;
+            }
+            if (!outcome.text.equals(params.message)) {
+                params.message = outcome.text;
+            }
+            return false;
+        } catch (Throwable ignored) {
+            return false;
         }
     }
 

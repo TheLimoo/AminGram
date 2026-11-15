@@ -1,0 +1,89 @@
+"""hooks_demo — M2 fixture plugin (NOT auto-installed).
+
+Exercises the M2 hook registry end to end:
+- @add_hook("message") decorator (observe-only named hook)
+- @add_on_send_message_hook decorator (rewrites "/shout ..." to
+  upper-case text; MODIFY, not cancel — the message still sends)
+- @add_hook("app_resume") decorator (logs AppEvent RESUME)
+- MenuItemData: a message context-menu item shown only for
+  outgoing messages (condition: message.out == true) and an
+  attach-menu item (no condition)
+- extera_utils text formatting + hook_utils reflection helpers
+  (find_class only — no real reflection target in the fixture)
+
+Install from the Python plugins page to test on device. Every
+behaviour is also covered by the CPython stub tests.
+"""
+
+from base_plugin import (
+    BasePlugin,
+    HookResult,
+    HookStrategy,
+    add_hook,
+    add_on_send_message_hook,
+)
+from ui.menu import (
+    MenuItemData,
+    CHAT_ACTION_MENU,
+    MESSAGE_CONTEXT_MENU,
+)
+import extera_utils
+import hook_utils
+
+__id__ = "hooks_demo"
+__name__ = "HooksDemo"
+__description__ = "M2 fixture: hooks, send-hook rewrite, menus."
+__author__ = "AminGram"
+__version__ = "1.0"
+__app_version__ = ">=12.10.6"
+__category__ = ["tools"]
+
+
+class HooksDemo(BasePlugin):
+
+    def on_plugin_load(self):
+        self.logger.info("HooksDemo loaded")
+        # Direct-form registration (not a decorator): the same
+        # hook registered twice would fire twice, so M2 fixtures
+        # register menus here, once, at load time.
+        self.add_menu_item(MenuItemData(
+            "Demo: shout it", MESSAGE_CONTEXT_MENU,
+            condition="message.out == true",
+            on_click=self._on_menu_shout))
+        self.add_menu_item(MenuItemData(
+            "Demo: attach", CHAT_ACTION_MENU,
+            on_click=self._on_menu_attach))
+        # hook_utils surface used (logged, no-op target).
+        hook_utils.find_class(
+            "org.telegram.messenger.amin.pyplugins.PyPluginHost")
+
+    def on_plugin_unload(self):
+        self.logger.info("HooksDemo unloaded")
+
+    @add_hook("message")
+    def on_message_hook(self, data):
+        self.logger.info("saw message %s" % (data.get("message_id"),))
+        return HookResult(HookStrategy.DEFAULT)
+
+    @add_on_send_message_hook
+    def on_send_hook(self, data):
+        text = data.get("text", "")
+        if text.startswith("/shout "):
+            # MODIFY: later hooks see the rewritten text.
+            return HookResult(HookStrategy.MODIFY,
+                              text[len("/shout "):].upper())
+        return HookStrategy.DEFAULT
+
+    @add_hook("app_resume")
+    def on_resume_hook(self, data):
+        self.logger.info("app resumed")
+
+    def _on_menu_shout(self, data):
+        self.logger.info(
+            "menu shout on message %s: %s"
+            % (data.get("message_id"), data.get("text", "")))
+
+    def _on_menu_attach(self, data):
+        self.logger.info(
+            "menu attach in chat %s: %s"
+            % (data.get("chat_id"), extera_utils.bold("hello")))

@@ -116,6 +116,77 @@ def has_method(instance, name):
         return False
 
 
+def register_decorated_hooks(instance):
+    """Register a plugin's decorator-tagged hooks (M2).
+
+    Scans the instance for methods tagged by ``@add_hook`` /
+    ``@add_on_send_message_hook`` (attributes ``_amin_hook`` /
+    ``_amin_send_hook`` set by the decorators in base_plugin) and
+    registers each with the Java PyHookRegistry. Called by the
+    host right after on_plugin_load. Returns the number of hooks
+    registered. A tagging mistake (bad tuple shape) is logged
+    via the host and skipped — one bad decorator must not kill
+    the plugin load.
+    """
+    from java import jclass
+
+    plugin_id = _plugin_id_of(instance)
+    count = 0
+    try:
+        registry = jclass(
+            "org.telegram.messenger.amin.pyplugins.PyHookRegistry")
+    except Exception:
+        return 0
+    for attr_name in dir(instance):
+        if attr_name.startswith("__"):
+            continue
+        try:
+            method = getattr(instance, attr_name)
+        except Exception:
+            continue
+        if not callable(method):
+            continue
+        try:
+            tag = getattr(method, "_amin_hook", None)
+        except Exception:
+            tag = None
+        if tag is not None:
+            try:
+                name, match_substring, priority = tag
+                registry.registerHook(plugin_id, str(name),
+                                      bool(match_substring),
+                                      int(priority), method)
+                count += 1
+            except Exception as exc:
+                try:
+                    jclass("org.telegram.messenger.amin.pyplugins"
+                           ".PyPluginHost").log(
+                        plugin_id,
+                        "bad @add_hook on %s: %s" % (attr_name, exc))
+                except Exception:
+                    pass
+        try:
+            stag = getattr(method, "_amin_send_hook", None)
+        except Exception:
+            stag = None
+        if stag is not None:
+            try:
+                (priority,) = stag
+                registry.registerSendHook(plugin_id, int(priority),
+                                          method)
+                count += 1
+            except Exception as exc:
+                try:
+                    jclass("org.telegram.messenger.amin.pyplugins"
+                           ".PyPluginHost").log(
+                        plugin_id,
+                        "bad @add_on_send_message_hook on %s: %s"
+                        % (attr_name, exc))
+                except Exception:
+                    pass
+    return count
+
+
 def call_optional(instance, name, arg=None):
     """Call instance.<name>(arg) if it exists; return its result,
     or None when the method is absent. Lets Java dispatch M0

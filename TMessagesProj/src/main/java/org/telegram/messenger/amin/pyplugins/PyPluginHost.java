@@ -202,6 +202,120 @@ public final class PyPluginHost {
         }
     }
 
+    /** The currently visible fragment (M2,
+     *  {@code client_utils.get_last_fragment}), or null when no
+     *  fragment is available. The caller (a plugin) receives the
+     *  Java BaseFragment and may call e.g. presentFragment on it. */
+    public static BaseFragment getLastFragment() {
+        try {
+            return LaunchActivity.getLastFragment();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** The fragment stack as Java fragments (M2,
+     *  {@code client_utils.get_fragment_stack}): the last
+     *  fragment's parent layout stack, or a best-effort list
+     *  holding just the last fragment when the layout is not
+     *  reachable. Never null, never throws. */
+    public static java.util.List<BaseFragment> getFragmentStack() {
+        java.util.List<BaseFragment> out = new java.util.ArrayList<>();
+        try {
+            BaseFragment last = LaunchActivity.getLastFragment();
+            if (last == null) {
+                return out;
+            }
+            try {
+                org.telegram.ui.ActionBar.INavigationLayout layout =
+                        last.getParentLayout();
+                if (layout != null) {
+                    java.util.List<BaseFragment> stack = layout.getFragmentStack();
+                    if (stack != null) {
+                        out.addAll(stack);
+                        return out;
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+            out.add(last);
+        } catch (Throwable ignored) {
+        }
+        return out;
+    }
+
+    /** Sensitive-action confirmation (M2,
+     *  {@code client_utils.confirm_sensitive_action}): shows a
+     *  bulletin "Plugin <id> wants to <action>" with amount /
+     *  recipient when given, and a Confirm button. The
+     *  {@code onConfirm} callback runs on the Python thread ONLY
+     *  when the user taps Confirm — no tap means no confirmation,
+     *  and the action must not run. This is the gate future
+     *  mediated Stars/gift/security actions must call; no SDK
+     *  method currently spends Stars or transfers gifts, and
+     *  direct reflection calls bypass it (the install-time
+     *  analysis and the hub copy say so). */
+    public static void confirmSensitiveAction(final String pluginId, final String action,
+                                              final String amount, final String recipient,
+                                              final PyObject onConfirm) {
+        try {
+            if (pluginId == null || action == null) {
+                return;
+            }
+            StringBuilder text = new StringBuilder();
+            text.append("Plugin ").append(pluginId).append(" wants to ").append(action);
+            if (amount != null && !amount.isEmpty()) {
+                text.append("\nAmount: ").append(amount);
+            }
+            if (recipient != null && !recipient.isEmpty()) {
+                text.append("\nRecipient: ").append(recipient);
+            }
+            final String message = text.toString();
+            log(pluginId, "confirmation requested: " + action
+                    + (amount == null || amount.isEmpty() ? "" : " (" + amount + ")"));
+            AndroidUtilities.runOnUIThread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        BaseFragment fragment = LaunchActivity.getLastFragment();
+                        if (fragment == null) {
+                            log(pluginId, "confirmation has no fragment — denied.");
+                            return;
+                        }
+                        BulletinFactory factory = BulletinFactory.of(fragment);
+                        factory.createSimpleBulletin(R.raw.contact_check, message,
+                                "Confirm", new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        if (onConfirm == null) {
+                                            return;
+                                        }
+                                        log(pluginId, "confirmation granted: " + action);
+                                        PyPluginsBootstrap.post(new Runnable() {
+                                            @Override
+                                            public void run() {
+                                                try {
+                                                    onConfirm.call();
+                                                } catch (Throwable t) {
+                                                    log(pluginId, "confirm callback failed: "
+                                                            + shortError(t));
+                                                    PyPluginsController.recordDispatchFailure(
+                                                            ApplicationLoader.applicationContext,
+                                                            pluginId, t);
+                                                }
+                                            }
+                                        });
+                                    }
+                                }).show();
+                    } catch (Throwable t) {
+                        log(pluginId, "confirmation failed, denied: " + shortError(t));
+                    }
+                }
+            });
+        } catch (Throwable ignored) {
+        }
+    }
+
     /** A plugin changed a setting with reload_settings=True (or
      *  imported settings): the open plugin page, if any, re-reads
      *  create_settings(). No-op when the page is not open. */

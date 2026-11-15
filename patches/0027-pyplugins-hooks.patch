@@ -1,0 +1,52 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
+index 0000000..0000000 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
+@@ -405,8 +405,12 @@ public class LaunchActivity extends BaseActivity implements INavigationLayout.De
+     protected void onCreate(Bundle savedInstanceState) {
+         isActive = true;
+         activeInstanceCount++;
++        // AminGram (M2): Python (.plugin) AppEvent START — fired
++        // once per process by AminHooks (activity recreation is not
++        // an app start). Cheap no-op while the engine is off.
++        org.telegram.messenger.amin.AminHooks.onPyLaunchCreate();
+         if (BuildVars.DEBUG_VERSION) {
+             StrictMode.setVmPolicy(new StrictMode.VmPolicy.Builder(StrictMode.getVmPolicy())
+                 .detectLeakedClosableObjects()
+                 .penaltyLog()
+                 .build());
+@@ -6898,7 +6898,9 @@ public class LaunchActivity extends BaseActivity implements INavigationLayout.De
+     protected void onPause() {
+         super.onPause();
+         isResumed = false;
++        // AminGram (M2): Python (.plugin) AppEvent PAUSE.
++        org.telegram.messenger.amin.AminHooks.onPyLaunchPause();
+         WidgetMedia.onAppPaused(true);
+         PipCoordinator.getInstance().onActivityPause(this);
+         NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.stopAllHeavyOperations, 4096);
+         ApplicationLoader.mainInterfacePaused = true;
+@@ -7095,9 +7095,12 @@ public class LaunchActivity extends BaseActivity implements INavigationLayout.De
+     protected void onDestroy() {
+         GramWalletStorageAuth.onActivityDestroyed(this);
+         PipCoordinator.getInstance().onActivityDestroy(this);
+         isActive = false;
++        // AminGram (M2): Python (.plugin) AppEvent STOP — only
++        // when genuinely finishing (see AminHooks.onPyLaunchDestroy).
++        org.telegram.messenger.amin.AminHooks.onPyLaunchDestroy(isFinishing());
+         activeInstanceCount--;
+         if (debugThemeReceiver != null) {
+             unregisterReceiver(debugThemeReceiver);
+             debugThemeReceiver = null;
+         }
+@@ -7210,9 +7210,11 @@ public class LaunchActivity extends BaseActivity implements INavigationLayout.De
+     protected void onResume() {
+         super.onResume();
+         WidgetMedia.onAppPaused(false);
+         isResumed = true;
++        // AminGram (M2): Python (.plugin) AppEvent RESUME.
++        org.telegram.messenger.amin.AminHooks.onPyLaunchResume();
+         PipCoordinator.getInstance().onActivityResume(this);
+         if (onResumeStaticCallback != null) {
+             onResumeStaticCallback.run();
+             onResumeStaticCallback = null;
+         }

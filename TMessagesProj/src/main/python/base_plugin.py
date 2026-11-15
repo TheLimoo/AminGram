@@ -18,6 +18,8 @@ instead of a silent no-op.
 import json
 import logging
 
+import amin_context
+
 from java import jclass
 
 
@@ -26,6 +28,133 @@ class AppEvent:
     STOP = "stop"
     PAUSE = "pause"
     RESUME = "resume"
+
+
+class HookStrategy:
+    """Verdicts a send-message hook may return (M2)."""
+    DEFAULT = "default"        # send the message unchanged
+    CANCEL = "cancel"          # suppress the message entirely
+    MODIFY = "modify"          # rewrite the text, later hooks see it
+    MODIFY_FINAL = "modify_final"  # rewrite and stop the chain
+
+
+class HookResult:
+    """Structured return value for a send-message hook.
+
+    A hook may also return a plain string (the strategy) or a
+    dict ({"strategy": ..., "text": ...}); all three forms are
+    understood by the host. Returning None means DEFAULT.
+    """
+
+    def __init__(self, strategy=HookStrategy.DEFAULT, text=None):
+        self.strategy = strategy
+        self.text = text
+
+    def to_dict(self):
+        out = {"strategy": self.strategy}
+        if self.text is not None:
+            out["text"] = self.text
+        return out
+
+
+def _registry():
+    return jclass(
+        "org.telegram.messenger.amin.pyplugins.PyHookRegistry")
+
+
+def _warn_outside_context(what):
+    """Log that a registration happened with no plugin context
+    (module import time): it is registered under "engine", is
+    not unloaded with any plugin, and is almost certainly a
+    mistake — registration belongs in on_plugin_load or behind
+    a decorator."""
+    try:
+        host = jclass(
+            "org.telegram.messenger.amin.pyplugins.PyPluginHost")
+        host.log("engine",
+                 what + " outside a plugin context (import time?) — "
+                 "registered under 'engine', not unloaded with a plugin")
+    except Exception:
+        pass
+
+
+def add_hook(name, callback=None, match_substring=False, priority=0):
+    """Register a named hook (M2, observe-only).
+
+    Three forms::
+
+        add_hook("message", self.on_msg)          # direct
+        @add_hook("message")                       # decorator
+        def on_msg(self, data): ...
+        @add_hook                                  # bare decorator
+        def message(self, data): ...              # name = method name
+
+    The decorator forms only tag the method (``_amin_hook``); the
+    host registers it when the plugin loads. The direct form
+    registers immediately. ``match_substring`` fires the hook when
+    the event name contains the registered name. Hooks run by
+    priority, highest first. Named hooks cannot cancel or modify
+    anything — by the time they run, the event has happened; a
+    non-default return value is logged and ignored. For
+    intercepting outgoing messages use
+    :func:`add_on_send_message_hook`.
+    """
+    if callable(name):
+        # Bare @add_hook with no name: the method name is the hook.
+        fn = name
+        fn._amin_hook = (fn.__name__, False, 0)
+        return fn
+    if isinstance(callback, bool):
+        match_substring = callback
+        callback = None
+    if callback is None:
+        def decorator(fn):
+            fn._amin_hook = (name, match_substring, priority)
+            return fn
+        return decorator
+    if amin_context.get_current() == "engine":
+        _warn_outside_context("add_hook(%r)" % (name,))
+    _registry().registerHook(
+        amin_context.get_current(), str(name), bool(match_substring),
+        int(priority), callback)
+    return callback
+
+
+def add_on_send_message_hook(callback=None, priority=0):
+    """Register a send-message hook (M2).
+
+    Three forms, like :func:`add_hook`: direct
+    (``add_on_send_message_hook(self.on_send)``), decorator with
+    parens (``@add_on_send_message_hook(priority=1)``), and bare
+    decorator (``@add_on_send_message_hook``). The bare form is
+    ambiguous with the direct form — it is a decorator when
+    called with no plugin context set (class-definition / import
+    time) and a direct registration otherwise. The callback
+    receives ``{"text", "dialog_id", "account"}`` and returns a
+    strategy: a string, a dict, or a :class:`HookResult`. The
+    send path waits for the verdict, bounded by 800 ms — a
+    timeout or a throwing hook means DEFAULT. See PyHookRegistry
+    for the full contract (a hook must not send a message
+    synchronously from inside the callback).
+    """
+    if callback is None:
+        def decorator(fn):
+            fn._amin_send_hook = (priority,)
+            return fn
+        return decorator
+    if callable(callback) and amin_context.get_current() == "engine":
+        # Bare @add_on_send_message_hook at class-definition time:
+        # tag it for load-time registration instead of registering
+        # under "engine" (caught by the M2 stub tests — without
+        # this, the hook would fire under the wrong plugin id and
+        # never be unregistered on unload).
+        callback._amin_send_hook = (priority,)
+        return callback
+    if amin_context.get_current() == "engine":
+        _warn_outside_context("add_on_send_message_hook")
+    _registry().registerSendHook(
+        amin_context.get_current(), int(priority), callback)
+    return callback
 
 
 class BasePlugin:
@@ -163,13 +292,45 @@ class BasePlugin:
         except Exception:
             pass
 
-    # -- M1/M2 surface: present, but loudly unimplemented in M0 -----
+    # -- hooks + menus (M2) -----------------------------------------
 
-    def add_hook(self, *args, **kwargs):
-        raise NotImplementedError(
-            "add_hook is M2 (hook registry). This plugin needs a newer "
-            "AminGram Python engine.")
+    def add_hook(self, name, callback=None, match_substring=False,
+                 priority=0):
+        """See module-level :func:`add_hook`."""
+        return add_hook(name, callback, match_substring, priority)
 
-    def add_on_send_message_hook(self, *args, **kwargs):
+    def add_on_send_message_hook(self, callback=None, priority=0):
+        """See module-level :func:`add_on_send_message_hook`."""
+        return add_on_send_message_hook(callback, priority)
+
+    def add_menu_item(self, item):
+        """Register a :class:`ui.menu.MenuItemData` with the host.
+        Returns the item's ordinal within this plugin's items for
+        its location. Items for locations with no hook point yet
+        (drawer / main / profile menus) are stored but never shown
+        until a later milestone adds the hook points."""
+        from ui.menu import MenuItemData
+
+        if not isinstance(item, MenuItemData):
+            raise TypeError("add_menu_item needs a MenuItemData")
+        return _registry().registerMenuItem(
+            self._plugin_id, item.location, item.text,
+            item.condition, item.icon, item.on_click)
+
+    def remove_menu_item(self, location, text):
+        """Remove the first menu item of this plugin with the
+        given location and text. No-op when there is none."""
+        _registry().removeMenuItem(self._plugin_id, location, text)
+
+    def on_menu_action(self, location, data):
+        """Called when a menu item without an ``on_click`` callback
+        is tapped. Override in the plugin. ``data`` is a dict with
+        ``location``, ``plugin_id`` and (for context-menu items)
+        ``chat_id``, ``message_id``, ``text``, ``out``."""
+        pass
+
+    # -- M2 surface: present, but loudly unimplemented --------------
+
+    def _not_implemented(self, name):
         raise NotImplementedError(
-            "add_on_send_message_hook is M2 (hook registry).")
+            "%s is not implemented yet (a later milestone)." % name)
