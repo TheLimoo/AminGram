@@ -11,8 +11,9 @@ import java.util.List;
  * behaviour hidden in a DEX, an obfuscated string or a downloaded
  * payload cannot be seen here, and the review screen says so.
  * A plugin is never refused for an analysis finding alone (except
- * {@code __requirements__}, which M0 cannot install); the user
- * approves the specific report to install.
+ * {@code __requirements__}, which AminGram does not install —
+ * M4 final decision, see MODS.md); the user approves the
+ * specific report to install.
  *
  * Detection is substring-based on purpose: M0 must not depend on
  * Python being started at install time.
@@ -122,10 +123,13 @@ public final class PyPluginAnalysis {
                     false));
         }
         if (plugin != null && !plugin.requirements.isEmpty()) {
+            // M4 FINAL: __requirements__ stays refused (see MODS.md
+            // M4 — a pip installer would download and execute
+            // arbitrary code from PyPI at install time).
             out.add(new Finding("requirements",
                     "Needs PyPI packages (" + join(plugin.requirements)
-                    + ") — AminGram cannot install PyPI packages yet "
-                    + "(pip support is planned for M4); install is refused.",
+                    + ") — AminGram does not install PyPI packages; "
+                    + "install is refused.",
                     false));
         }
         if (out.isEmpty()) {

@@ -1,18 +1,5 @@
-diff --git a/build.gradle b/build.gradle
-index e04698a..684d3f5 100644
---- a/build.gradle
-+++ b/build.gradle
-@@ -11,6 +11,8 @@ buildscript {
-         classpath 'com.huawei.agconnect:agcp:1.9.1.301'
-         classpath 'com.google.firebase:firebase-crashlytics-gradle:3.0.8'
-         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.0"
-+        // AminGram (M0): Chaquopy Gradle plugin for the Python engine.
-+        classpath 'com.chaquo.python:gradle:17.2.0'
-     }
- }
- repositories {
 diff --git a/TMessagesProj/build.gradle b/TMessagesProj/build.gradle
-index 6c29cc7..1b45a22 100644
+index 6c29cc7..6387f88 100644
 --- a/TMessagesProj/build.gradle
 +++ b/TMessagesProj/build.gradle
 @@ -3,6 +3,7 @@ import org.gradle.nativeplatform.platform.internal.DefaultNativePlatform
@@ -23,7 +10,7 @@ index 6c29cc7..1b45a22 100644
  
  idea {
      module {
-@@ -147,7 +148,9 @@ android {
+@@ -147,9 +148,23 @@ android {
      }
  
      defaultConfig {
@@ -33,8 +20,22 @@ index 6c29cc7..1b45a22 100644
 +        minSdkVersion 24
          targetSdkVersion 36
  
++        // AminGram (M4 fix, CI runs 43751207829 / 43752502295):
++        // Chaquopy requires ndk.abiFilters in the module it is
++        // applied to ("Variant 'debug': Chaquopy requires
++        // ndk.abiFilters", PythonPlugin.getAbis, Gradle configure
++        // time, ~1m26s in). Upstream has no abiFilters in this
++        // library module at all; the four ABIs match the app
++        // module's product flavors, and Python 3.11 keeps the
++        // 32-bit slices (3.12+ would be 64-bit only).
++        ndk {
++            abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
++        }
++
          vectorDrawables.generatedDensities = ['mdpi', 'hdpi', 'xhdpi', 'xxhdpi']
-@@ -247,6 +250,21 @@ android {
+ 
+         multiDexEnabled true
+@@ -247,6 +262,31 @@ android {
  }
  
  
@@ -50,6 +51,16 @@ index 6c29cc7..1b45a22 100644
 +    defaultConfig {
 +        version "3.11"
 +        buildPython "python3.11"
++        // AminGram (M4): bytecode compilation is Chaquopy's
++        // default, but only as a best-effort warning — when it
++        // fails, the app still builds and compiles on the phone
++        // (slower startup, more storage). src = true makes it a
++        // REQUIRED build step: the build fails instead of shipping
++        // uncompiled sources. stdlib ships pre-compiled already
++        // (stdlib-pyc.zip), so this only covers our own sources.
++        pyc {
++            src = true
++        }
 +    }
 +}
 +
@@ -84,3 +95,16 @@ index 2e64f1a..7dfd535 100644
 +-keepnames class org.telegram.ui.Components.UniversalRecyclerView
 +-keepnames class org.telegram.messenger.LocaleController
 +-keepnames class org.telegram.messenger.ApplicationLoader
+diff --git a/build.gradle b/build.gradle
+index e04698a..684d3f5 100644
+--- a/build.gradle
++++ b/build.gradle
+@@ -11,6 +11,8 @@ buildscript {
+         classpath 'com.huawei.agconnect:agcp:1.9.1.301'
+         classpath 'com.google.firebase:firebase-crashlytics-gradle:3.0.8'
+         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.0"
++        // AminGram (M0): Chaquopy Gradle plugin for the Python engine.
++        classpath 'com.chaquo.python:gradle:17.2.0'
+     }
+ }
+ repositories {

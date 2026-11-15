@@ -68,4 +68,25 @@ public final class PyPluginsPrefs {
     /** Python version pinned for the Chaquopy build (3.11 = last
      *  version with 32-bit ABI support; 3.12+ is 64-bit only). */
     public static final String PYTHON_VERSION = "3.11";
+
+    // --------------------------------------------------------------
+    // M4 — catalog / unknown sources / DevServer
+    // --------------------------------------------------------------
+
+    /** M4: allow catalogs from hosts the user has not explicitly
+     *  added. Default false: every remote catalog is an unknown
+     *  source until the user turns this on in the hub. */
+    public static final String KEY_UNKNOWN_SOURCES = "unknown_sources";
+
+    /** M4: catalog index URLs the user added, one per line
+     *  (extera-plugins.json documents). Empty by default — there
+     *  is no bundled catalog and no bundled plugin. */
+    public static final String KEY_REPO_URLS = "repo_urls";
+
+    /** M4: DevServer (localhost only) enabled flag. Default
+     *  false; the hub turns it on explicitly and it auto-stops. */
+    public static final String KEY_DEVSERVER = "devserver_enabled";
+
+    /** M4: max Elyx archive size, 10 MB. */
+    public static final int MAX_ARCHIVE_BYTES = 10 * 1024 * 1024;
 }

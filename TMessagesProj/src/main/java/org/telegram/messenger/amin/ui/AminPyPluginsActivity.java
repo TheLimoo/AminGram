@@ -3,10 +3,12 @@ package org.telegram.messenger.amin.ui;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.TextView;
 
@@ -15,7 +17,9 @@ import androidx.recyclerview.widget.RecyclerView;
 
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.R;
+import org.telegram.messenger.amin.pyplugins.PyDevServer;
 import org.telegram.messenger.amin.pyplugins.PyPlugin;
+import org.telegram.messenger.amin.pyplugins.PyPluginRepo;
 import org.telegram.messenger.amin.pyplugins.PyPluginsBootstrap;
 import org.telegram.messenger.amin.pyplugins.PyPluginsController;
 import org.telegram.messenger.amin.pyplugins.PyPluginsPrefs;
@@ -41,6 +45,10 @@ import java.util.List;
  * one row per installed Python plugin (tap opens its page), and
  * "Add plugin from file…" (system document picker, sideload
  * only — no catalog until M4).
+ *
+ * M4 adds: catalogs (extera-plugins.json, SHA-256 verified
+ * downloads, unknown-sources gate default OFF) and the DevServer
+ * (localhost only, token auth, auto-stops).
  *
  * The install review (static-analysis report) is shown as a
  * confirm dialog before the file is installed: the user approves
@@ -107,12 +115,6 @@ public class AminPyPluginsActivity extends BaseFragment {
         rebuild();
         fragmentView = layout;
         return layout;
-    }
-
-    @Override
-    public void onResume() {
-        super.onResume();
-        rebuild();
     }
 
     private void rebuild() {
@@ -184,9 +186,84 @@ public class AminPyPluginsActivity extends BaseFragment {
         add.kind = KIND_ACTION;
         add.seg = SEG_ONLY;
         add.title = "Add plugin from file…";
-        add.value = ".plugin";
+        add.value = ".plugin · .elyx";
         add.action = "add_plugin_file";
         rows.add(add);
+
+        // M4: catalogs.
+        Row catalogHeader = new Row();
+        catalogHeader.kind = KIND_HEADER;
+        catalogHeader.title = "Catalogs";
+        rows.add(catalogHeader);
+
+        Row unknown = new Row();
+        unknown.kind = KIND_CHECK;
+        unknown.seg = SEG_FIRST;
+        unknown.title = "Allow unknown sources";
+        unknown.action = "unknown_sources";
+        unknown.checked = isUnknownSources(context);
+        rows.add(unknown);
+
+        Row unknownInfo = new Row();
+        unknownInfo.kind = KIND_INFO;
+        unknownInfo.seg = SEG_MID;
+        unknownInfo.title = isUnknownSources(context)
+                ? "On — any https catalog URL can be added. Downloads are still SHA-256 checked against the catalog."
+                : "Off — catalogs are refused unless you turn this on. There is no bundled catalog.";
+        rows.add(unknownInfo);
+
+        List<String> repoUrls = repoUrls(context);
+        for (int i = 0; i < repoUrls.size(); i++) {
+            Row repo = new Row();
+            repo.kind = KIND_ACTION;
+            repo.seg = i == repoUrls.size() - 1 ? SEG_LAST : SEG_MID;
+            repo.title = PyPluginRepo.hostOf(repoUrls.get(i));
+            repo.value = repoUrls.get(i);
+            repo.action = "refresh_catalog";
+            rows.add(repo);
+        }
+
+        Row addCatalog = new Row();
+        addCatalog.kind = KIND_ACTION;
+        addCatalog.seg = SEG_LAST;
+        addCatalog.title = "Add catalog…";
+        addCatalog.value = "extera-plugins.json";
+        addCatalog.action = "add_catalog";
+        rows.add(addCatalog);
+
+        // M4: DevServer (localhost only, token auth, auto-stops).
+        Row devHeader = new Row();
+        devHeader.kind = KIND_HEADER;
+        devHeader.title = "Development";
+        rows.add(devHeader);
+
+        Row dev = new Row();
+        dev.kind = KIND_CHECK;
+        dev.seg = SEG_FIRST;
+        dev.title = "Dev server (localhost only)";
+        dev.action = "devserver";
+        dev.checked = PyDevServer.getInstance().isRunning();
+        rows.add(dev);
+
+        Row devInfo = new Row();
+        devInfo.kind = KIND_INFO;
+        devInfo.seg = SEG_LAST;
+        if (PyDevServer.getInstance().isRunning()) {
+            String token = PyDevServer.getInstance().getToken();
+            devInfo.title = "Listening on 127.0.0.1:" + PyDevServer.getInstance().getPort()
+                    + " — reachable only from this phone. Token (keep it "
+                    + "private, it changes on every start): "
+                    + (token == null ? "…" : token)
+                    + ". POST a .plugin / .elyx file to /plugin with "
+                    + "header X-Dev-Token. Stops 60 s after the app goes "
+                    + "to background, or when you leave this page.";
+        } else {
+            devInfo.title = "Off. When on, your computer can push a plugin "
+                    + "file to this phone over 127.0.0.1 only — nothing on "
+                    + "the network can reach it. Uploads go through the "
+                    + "same install review as a file.";
+        }
+        rows.add(devInfo);
 
         Row footer = new Row();
         footer.kind = KIND_FOOTER;
@@ -196,7 +273,9 @@ public class AminPyPluginsActivity extends BaseFragment {
                 + "and load native code. The install review shows what the "
                 + "source text contains; hidden or downloaded code would not "
                 + "show up there. M0: single-file .plugin only, sideload only, "
-                + "no PyPI packages. M3: DEX loads only with per-plugin consent.";
+                + "no PyPI packages. M3: DEX loads only with per-plugin consent. "
+                + "M4: .elyx archives and catalogs (SHA-256 checked); PyPI "
+                + "packages are still not installed.";
         rows.add(footer);
 
         if (adapter != null) {
@@ -239,11 +318,294 @@ public class AminPyPluginsActivity extends BaseFragment {
                 case "add_plugin_file":
                     pickPluginFile();
                     break;
+                case "unknown_sources": {
+                    boolean now = !isUnknownSources(context);
+                    context.getSharedPreferences(PyPluginsPrefs.PREFS, Context.MODE_PRIVATE)
+                            .edit().putBoolean(PyPluginsPrefs.KEY_UNKNOWN_SOURCES, now).apply();
+                    bulletin(now ? R.raw.contact_check : R.raw.error,
+                            now ? "Unknown sources on" : "Unknown sources off");
+                    rebuild();
+                    break;
+                }
+                case "add_catalog":
+                    addCatalogDialog();
+                    break;
+                case "refresh_catalog":
+                    refreshCatalog(row.value);
+                    break;
+                case "devserver": {
+                    if (PyDevServer.getInstance().isRunning()) {
+                        PyDevServer.getInstance().stop();
+                        bulletin(R.raw.error, "Dev server stopped");
+                    } else {
+                        String error = PyDevServer.getInstance().start();
+                        if (error != null) {
+                            bulletin(R.raw.error, error);
+                        } else {
+                            bulletin(R.raw.contact_check,
+                                    "Dev server on 127.0.0.1:"
+                                            + PyDevServer.getInstance().getPort());
+                        }
+                    }
+                    rebuild();
+                    break;
+                }
                 default:
                     break;
             }
         } catch (Throwable ignored) {
         }
+    }
+
+    @Override
+    public void onPause() {
+        super.onPause();
+        // M4: a dev server left running dies 60 s after background.
+        if (PyDevServer.getInstance().isRunning()) {
+            PyDevServer.getInstance().scheduleAutoStop();
+        }
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        PyDevServer.getInstance().cancelAutoStop();
+        rebuild();
+    }
+
+    @Override
+    public void onFragmentDestroy() {
+        super.onFragmentDestroy();
+        // M4: leaving the hub stops the dev server outright.
+        PyDevServer.getInstance().cancelAutoStop();
+        PyDevServer.getInstance().stop();
+    }
+
+    // --------------------------------------------------------------
+    // M4 — catalogs
+    // --------------------------------------------------------------
+
+    private static boolean isUnknownSources(Context context) {
+        return context.getSharedPreferences(PyPluginsPrefs.PREFS, Context.MODE_PRIVATE)
+                .getBoolean(PyPluginsPrefs.KEY_UNKNOWN_SOURCES, false);
+    }
+
+    private static List<String> repoUrls(Context context) {
+        List<String> out = new ArrayList<>();
+        String raw = context.getSharedPreferences(PyPluginsPrefs.PREFS, Context.MODE_PRIVATE)
+                .getString(PyPluginsPrefs.KEY_REPO_URLS, "");
+        if (raw == null) {
+            return out;
+        }
+        for (String line : raw.split("\n")) {
+            String url = line.trim();
+            if (!url.isEmpty() && !out.contains(url)) {
+                out.add(url);
+            }
+        }
+        return out;
+    }
+
+    private static void saveRepoUrls(Context context, List<String> urls) {
+        StringBuilder sb = new StringBuilder();
+        for (String url : urls) {
+            if (sb.length() > 0) {
+                sb.append("\n");
+            }
+            sb.append(url);
+        }
+        context.getSharedPreferences(PyPluginsPrefs.PREFS, Context.MODE_PRIVATE)
+                .edit().putString(PyPluginsPrefs.KEY_REPO_URLS, sb.toString()).apply();
+    }
+
+    /** Asks for a catalog URL, checks the unknown-sources gate,
+     *  and stores it. The index is fetched only when the row is
+     *  tapped (refreshCatalog). */
+    private void addCatalogDialog() {
+        Context context = getContext();
+        if (context == null) {
+            return;
+        }
+        if (!isUnknownSources(context)) {
+            bulletin(R.raw.error,
+                    "Unknown sources are off — turn them on first.");
+            return;
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle("Add catalog");
+        builder.setMessage("URL of an extera-plugins.json index "
+                + "(https). Downloads from it are SHA-256 checked "
+                + "against the catalog before install.");
+        final EditText input = new EditText(context);
+        input.setHint("https://example.com/extera-plugins.json");
+        builder.setView(input);
+        builder.setPositiveButton("Add", (dialog, which) -> {
+            String url = input.getText() == null ? "" : input.getText().toString().trim();
+            if (!(url.startsWith("https://") || url.startsWith("http://"))
+                    || PyPluginRepo.hostOf(url).isEmpty()) {
+                bulletin(R.raw.error, "That is not an http(s) URL.");
+                return;
+            }
+            List<String> urls = repoUrls(context);
+            if (!urls.contains(url)) {
+                urls.add(url);
+                saveRepoUrls(context, urls);
+            }
+            bulletin(R.raw.contact_check, "Catalog added — tap it to refresh.");
+            rebuild();
+        });
+        builder.setNegativeButton("Cancel", null);
+        builder.show();
+    }
+
+    /** Fetches a catalog index on a background thread, then shows
+     *  its entries. The fetch is plain HTTPS (a website JSON, not
+     *  a Telegram file); parsing + verification are in
+     *  PyPluginRepo and run before anything is shown. */
+    private void refreshCatalog(final String url) {
+        final Context context = getContext();
+        if (context == null || url == null) {
+            return;
+        }
+        new Thread(() -> {
+            String error = null;
+            String json = null;
+            try {
+                java.net.URL u = new java.net.URL(url);
+                java.net.HttpURLConnection conn =
+                        (java.net.HttpURLConnection) u.openConnection();
+                conn.setConnectTimeout(15000);
+                conn.setReadTimeout(15000);
+                conn.setRequestProperty("User-Agent", "AminGram-pyplugins");
+                if (conn.getResponseCode() != 200) {
+                    error = "Catalog returned HTTP " + conn.getResponseCode() + ".";
+                } else {
+                    ByteArrayOutputStream buf = new ByteArrayOutputStream();
+                    try (InputStream in = conn.getInputStream()) {
+                        byte[] chunk = new byte[8192];
+                        int n;
+                        while ((n = in.read(chunk)) != -1) {
+                            buf.write(chunk, 0, n);
+                            if (buf.size() > PyPluginRepo.MAX_INDEX_BYTES) {
+                                break;
+                            }
+                        }
+                    }
+                    json = new String(buf.toByteArray(), "UTF-8");
+                }
+            } catch (Throwable t) {
+                error = "Could not fetch the catalog: " + t.getMessage();
+            }
+            final String fetchError = error;
+            final String fetchedJson = json;
+            AndroidUtilities.runOnUIThread(() -> {
+                if (fetchError != null) {
+                    bulletin(R.raw.error, fetchError);
+                    return;
+                }
+                PyPluginRepo.IndexResult result = PyPluginRepo.parseIndex(fetchedJson);
+                if (result.error != null) {
+                    bulletin(R.raw.error, result.error);
+                    return;
+                }
+                showCatalogEntries(result, url);
+            });
+        }).start();
+    }
+
+    /** Lists a catalog's entries; tapping one downloads it,
+     *  verifies size + SHA-256, and opens the install review. */
+    private void showCatalogEntries(final PyPluginRepo.IndexResult result, String url) {
+        Context context = getContext();
+        if (context == null) {
+            return;
+        }
+        if (result.entries.isEmpty()) {
+            bulletin(R.raw.error, "Catalog is empty"
+                    + (result.dropped > 0 ? " (" + result.dropped + " bad entries dropped)." : "."));
+            return;
+        }
+        String[] names = new String[result.entries.size()];
+        for (int i = 0; i < result.entries.size(); i++) {
+            PyPluginRepo.Entry e = result.entries.get(i);
+            names[i] = e.name + " v" + e.version
+                    + (e.author.isEmpty() ? "" : " · " + e.author);
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle(result.name.isEmpty() ? "Catalog" : result.name);
+        builder.setItems(names, (dialog, which) -> {
+            downloadAndInstallEntry(result.entries.get(which));
+        });
+        builder.setNegativeButton("Close", null);
+        builder.show();
+    }
+
+    private void downloadAndInstallEntry(final PyPluginRepo.Entry entry) {
+        final Context context = getContext();
+        if (context == null) {
+            return;
+        }
+        new Thread(() -> {
+            String error = null;
+            byte[] bytes = null;
+            try {
+                java.net.URL u = new java.net.URL(entry.url);
+                java.net.HttpURLConnection conn =
+                        (java.net.HttpURLConnection) u.openConnection();
+                conn.setConnectTimeout(15000);
+                conn.setReadTimeout(60000);
+                conn.setRequestProperty("User-Agent", "AminGram-pyplugins");
+                if (conn.getResponseCode() != 200) {
+                    error = "Download returned HTTP " + conn.getResponseCode() + ".";
+                } else {
+                    ByteArrayOutputStream buf = new ByteArrayOutputStream();
+                    try (InputStream in = conn.getInputStream()) {
+                        byte[] chunk = new byte[8192];
+                        int n;
+                        while ((n = in.read(chunk)) != -1) {
+                            buf.write(chunk, 0, n);
+                            if (buf.size() > PyPluginRepo.MAX_PLUGIN_BYTES) {
+                                break;
+                            }
+                        }
+                    }
+                    bytes = buf.toByteArray();
+                }
+            } catch (Throwable t) {
+                error = "Download failed: " + t.getMessage();
+            }
+            final String dlError = error;
+            final byte[] dlBytes = bytes;
+            AndroidUtilities.runOnUIThread(() -> {
+                if (dlError != null) {
+                    bulletin(R.raw.error, dlError);
+                    return;
+                }
+                // SHA-256 + size check against the catalog entry.
+                // A mismatch deletes the bytes — nothing is installed.
+                java.io.File tmp = null;
+                try {
+                    tmp = java.io.File.createTempFile("catalog-", ".plugin");
+                    try (java.io.FileOutputStream out =
+                                 new java.io.FileOutputStream(tmp)) {
+                        out.write(dlBytes);
+                    }
+                    String mismatch = PyPluginRepo.verifyFile(entry, tmp);
+                    if (mismatch != null) {
+                        bulletin(R.raw.error, mismatch);
+                        return;
+                    }
+                } catch (Throwable t) {
+                    bulletin(R.raw.error, "Could not verify the download.");
+                    return;
+                } finally {
+                    if (tmp != null) {
+                        tmp.delete();
+                    }
+                }
+                confirmInstall(dlBytes);
+            });
+        }).start();
     }
 
     private void pickPluginFile() {
@@ -312,6 +674,11 @@ public class AminPyPluginsActivity extends BaseFragment {
         if (context == null || getParentActivity() == null) {
             return;
         }
+        // M4: ZIP magic — a .elyx / .eaf archive gets its own review.
+        if (bytes.length >= 2 && bytes[0] == 'P' && bytes[1] == 'K') {
+            confirmInstallElyx(bytes);
+            return;
+        }
         String source;
         try {
             source = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
@@ -335,6 +702,71 @@ public class AminPyPluginsActivity extends BaseFragment {
         }
         report.append("\n\nThis plugin runs with full app access. The source text shows:\n");
         for (PyPluginAnalysis.Finding f : findings) {
+            report.append("• ").append(f.text).append("\n");
+        }
+        report.append("\nHidden or downloaded code would not show up here. Install only files from sources you trust.");
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle("Install Python plugin?");
+        builder.setMessage(report.toString());
+        builder.setPositiveButton("Install", (dialog, which) -> {
+            String error = PyPluginsController.installFromBytes(context, bytes, "file");
+            if (error == null) {
+                bulletin(R.raw.contact_check, "Plugin installed");
+                rebuild();
+            } else {
+                bulletin(R.raw.error, error);
+            }
+        });
+        builder.setNegativeButton("Cancel", null);
+        showDialog(builder.create());
+    }
+
+    /** Install review for a .elyx / .eaf archive (M4): the entry
+     *  source and every extra module are analysed; the report
+     *  names the archive's entry file. */
+    private void confirmInstallElyx(final byte[] bytes) {
+        final Context context = getContext();
+        if (context == null || getParentActivity() == null) {
+            return;
+        }
+        org.telegram.messenger.amin.pyplugins.PyElyxLoader.Loaded loaded;
+        try {
+            loaded = org.telegram.messenger.amin.pyplugins.PyElyxLoader.load(
+                    new java.io.ByteArrayInputStream(bytes));
+        } catch (Throwable t) {
+            bulletin(R.raw.error, "Could not read the archive.");
+            return;
+        }
+        if (loaded.error != null) {
+            bulletin(R.raw.error, loaded.error);
+            return;
+        }
+        org.telegram.messenger.amin.pyplugins.PyPluginMetadata.Parsed parsed =
+                org.telegram.messenger.amin.pyplugins.PyPluginMetadata.parse(loaded.entrySource);
+        if (parsed.error != null) {
+            bulletin(R.raw.error, parsed.error);
+            return;
+        }
+        final PyPlugin plugin = parsed.plugin;
+        List<org.telegram.messenger.amin.pyplugins.PyPluginAnalysis.Finding> findings =
+                org.telegram.messenger.amin.pyplugins.PyPluginAnalysis.analyze(
+                        loaded.entrySource, plugin);
+        for (java.util.Map.Entry<String, String> module : loaded.modules.entrySet()) {
+            findings.addAll(
+                    org.telegram.messenger.amin.pyplugins.PyPluginAnalysis.analyze(
+                            module.getValue(), plugin));
+        }
+        StringBuilder report = new StringBuilder();
+        report.append(plugin.name).append(" v").append(plugin.version);
+        if (!plugin.author.isEmpty()) {
+            report.append(" by ").append(plugin.author);
+        }
+        report.append(" (.elyx archive, entry ").append(loaded.entryName);
+        if (!loaded.modules.isEmpty()) {
+            report.append(", +").append(loaded.modules.size()).append(" module(s)");
+        }
+        report.append(")\n\nThis plugin runs with full app access. The source text shows:\n");
+        for (org.telegram.messenger.amin.pyplugins.PyPluginAnalysis.Finding f : findings) {
             report.append("• ").append(f.text).append("\n");
         }
         report.append("\nHidden or downloaded code would not show up here. Install only files from sources you trust.");

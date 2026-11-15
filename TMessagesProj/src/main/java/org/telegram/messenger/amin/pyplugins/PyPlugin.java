@@ -48,6 +48,16 @@ public final class PyPlugin {
      *  False for old installs (the JSON key is absent there) and
      *  for plugins the analysis cleared. */
     public boolean needsDexConsent;
+    /** M4: install format — "plugin" (single-file .plugin) or
+     *  "elyx" (multi-file .elyx archive, installed as a
+     *  directory). Old installs have no key and read as "plugin". */
+    public String format = "plugin";
+    /** M4: true when the module defines no BasePlugin subclass
+     *  and was loaded as a library (M4 load fallback): its
+     *  modules are importable by other plugins, but it has no
+     *  lifecycle, no settings UI and no hooks. Set at load time,
+     *  not at install. */
+    public boolean library;
 
     public JSONObject toJson() {
         JSONObject o = new JSONObject();
@@ -83,6 +93,8 @@ public final class PyPlugin {
             o.put("analysis", an);
             o.put("dexConsent", dexConsent);
             o.put("needsDexConsent", needsDexConsent);
+            o.put("format", format == null ? "plugin" : format);
+            o.put("library", library);
         } catch (Exception ignored) {
         }
         return o;
@@ -130,6 +142,8 @@ public final class PyPlugin {
         }
         plugin.dexConsent = o.optBoolean("dexConsent", false);
         plugin.needsDexConsent = o.optBoolean("needsDexConsent", false);
+        plugin.format = o.optString("format", "plugin");
+        plugin.library = o.optBoolean("library", false);
         return plugin;
     }
 }

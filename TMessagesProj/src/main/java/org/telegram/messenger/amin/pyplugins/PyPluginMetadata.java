@@ -19,9 +19,12 @@ import java.util.regex.Pattern;
  * top-level {@code __name__ = "..."} / {@code __name__ = [...]}
  * forms is equivalent to the AST for exactly the fields below,
  * and it is testable without Chaquopy. Anything non-literal
- * (concatenation, variables, function calls, multi-line values)
- * is rejected with a readable error, exactly as the AST loader
- * would reject it.
+ * (variables, function calls, triple-quoted values) is rejected
+ * with a readable error, exactly as the AST loader would reject
+ * it. One multi-line form IS accepted: parenthesised implicit
+ * string concatenation ({@code __description__ = ("a" "b")}) —
+ * CPython folds that into one literal Constant, so the AST
+ * loader accepts it, and MaterialSettingsList itself uses it.
  *
  * Required: {@code __id__}, {@code __name__}. Everything else has
  * a default. {@code __id__}: 2–32 chars, starts with a letter,
@@ -60,6 +63,58 @@ public final class PyPluginMetadata {
         public String error;
     }
 
+    /** Mutable string fields collected while parsing. */
+    private static final class StrFields {
+        String id;
+        String name;
+        String description = "";
+        String author = "";
+        String version = "1.0";
+        String icon = "";
+        String appVersion = "";
+        String sdkVersion = "";
+    }
+
+    private static void setStringField(StrFields f, String key, String value) {
+        switch (key) {
+            case "id": f.id = value; break;
+            case "name": f.name = value; break;
+            case "description": f.description = value; break;
+            case "author": f.author = value; break;
+            case "version": f.version = value; break;
+            case "icon": f.icon = value; break;
+            case "app_version": f.appVersion = value; break;
+            case "sdk_version": f.sdkVersion = value; break;
+            default: break; // unknown string metadata: ignored
+        }
+    }
+
+    /** Paren depth of a line, ignoring characters inside string literals. */
+    private static int parenDepth(String line) {
+        int depth = 0;
+        boolean inSingle = false;
+        boolean inDouble = false;
+        for (int i = 0; i < line.length(); i++) {
+            char c = line.charAt(i);
+            if (c == '\\' && (inSingle || inDouble) && i + 1 < line.length()) {
+                i++;
+                continue;
+            }
+            if (c == '\'' && !inDouble) {
+                inSingle = !inSingle;
+            } else if (c == '"' && !inSingle) {
+                inDouble = !inDouble;
+            } else if (!inSingle && !inDouble) {
+                if (c == '(') {
+                    depth++;
+                } else if (c == ')') {
+                    depth--;
+                }
+            }
+        }
+        return depth;
+    }
+
     public static Parsed parse(String source) {
         Parsed out = new Parsed();
         if (source == null || source.trim().isEmpty()) {
@@ -67,43 +122,63 @@ public final class PyPluginMetadata {
             return out;
         }
         // Multi-file Elyx archives are a ZIP, not Python source.
+        // (M4: installFromBytes routes ZIPs to PyElyxLoader before
+        // this is ever reached; this stays as a defence in depth.)
         if (source.startsWith("PK\u0003\u0004")) {
-            out.error = "This is a .elyx multi-file archive — M0 accepts "
-                    + "single-file .plugin only.";
+            out.error = "This is a .elyx multi-file archive, not a "
+                    + "single-file .plugin.";
             return out;
         }
-        String id = null;
-        String name = null;
-        String description = "";
-        String author = "";
-        String version = "1.0";
-        String icon = "";
-        String appVersion = "";
-        String sdkVersion = "";
+        StrFields f = new StrFields();
         List<String> categories = new ArrayList<>();
         List<String> requirements = new ArrayList<>();
         boolean sawAnyMeta = false;
-        for (String rawLine : source.split("\n")) {
-            String line = rawLine.trim();
+        String[] rawLines = source.split("\n");
+        for (int li = 0; li < rawLines.length; li++) {
+            String line = rawLines[li].trim();
             if (!line.startsWith("__")) {
                 continue;
+            }
+            // Parenthesised implicit concatenation — the one multi-line
+            // form that IS a literal in Python (CPython folds adjacent
+            // string literals into one Constant, so the AST loader
+            // accepts it). MaterialSettingsList itself writes its
+            // __description__ this way; rejecting it meant the very
+            // plugin this port exists for could not install.
+            Matcher pm = Pattern.compile("^__([a-z]+(?:_[a-z]+)*)__\\s*=\\s*\\(.*$")
+                    .matcher(line);
+            if (pm.matches() && parenDepth(line) > 0) {
+                StringBuilder block = new StringBuilder(line);
+                int depth = parenDepth(line);
+                while (depth > 0 && li + 1 < rawLines.length) {
+                    li++;
+                    block.append("\n").append(rawLines[li]);
+                    depth += parenDepth(rawLines[li]);
+                }
+                if (depth == 0) {
+                    Matcher qm = QUOTED_ITEM.matcher(block.toString());
+                    StringBuilder value = new StringBuilder();
+                    boolean any = false;
+                    while (qm.find()) {
+                        value.append(qm.group(1) != null ? qm.group(1) : qm.group(2));
+                        any = true;
+                    }
+                    if (any) {
+                        sawAnyMeta = true;
+                        setStringField(f, pm.group(1), value.toString());
+                        continue;
+                    }
+                }
+                out.error = "Metadata must be literal values: the line '"
+                        + line + "' is not a plain string or list.";
+                return out;
             }
             Matcher sm = STRING_ASSIGN.matcher(line);
             if (sm.matches()) {
                 sawAnyMeta = true;
                 String key = sm.group(1);
                 String value = sm.group(3) != null ? sm.group(3) : sm.group(4);
-                switch (key) {
-                    case "id": id = value; break;
-                    case "name": name = value; break;
-                    case "description": description = value; break;
-                    case "author": author = value; break;
-                    case "version": version = value; break;
-                    case "icon": icon = value; break;
-                    case "app_version": appVersion = value; break;
-                    case "sdk_version": sdkVersion = value; break;
-                    default: break; // unknown string metadata: ignored
-                }
+                setStringField(f, key, value);
                 continue;
             }
             Matcher lm = LIST_ASSIGN.matcher(line);
@@ -125,26 +200,27 @@ public final class PyPluginMetadata {
             }
             // A __-assignment that is neither a literal string nor a
             // literal list: non-literal metadata — reject, as the AST
-            // loader would. (Triple-quoted / multi-line values and
-            // concatenations land here too.)
+            // loader would. (Triple-quoted values and +-concatenation
+            // land here; parenthesised implicit concatenation is
+            // handled above and is a literal.)
             if (line.matches("^__[a-z_]+\\s*=.*")) {
                 out.error = "Metadata must be literal values: the line '"
                         + line + "' is not a plain string or list.";
                 return out;
             }
         }
-        if (!sawAnyMeta || id == null || name == null) {
+        if (!sawAnyMeta || f.id == null || f.name == null) {
             out.error = "Missing metadata: a .plugin file must define "
                     + "__id__ and __name__ as literal values.";
             return out;
         }
-        if (!ID_PATTERN.matcher(id).matches()) {
-            out.error = "Invalid __id__ '" + id + "': 2–32 chars, starts "
+        if (!ID_PATTERN.matcher(f.id).matches()) {
+            out.error = "Invalid __id__ '" + f.id + "': 2–32 chars, starts "
                     + "with a letter, only letters, digits, '_' and '-'.";
             return out;
         }
-        if (!isSemver(version)) {
-            out.error = "Invalid __version__ '" + version + "': use semver "
+        if (!isSemver(f.version)) {
+            out.error = "Invalid __version__ '" + f.version + "': use semver "
                     + "like 1.1.1.";
             return out;
         }
@@ -158,25 +234,25 @@ public final class PyPluginMetadata {
                 return out;
             }
         }
-        if (!appVersion.isEmpty() && !satisfies(appVersion, PyPluginsPrefs.APP_VERSION)) {
-            out.error = "This plugin needs app version " + appVersion
+        if (!f.appVersion.isEmpty() && !satisfies(f.appVersion, PyPluginsPrefs.APP_VERSION)) {
+            out.error = "This plugin needs app version " + f.appVersion
                     + "; AminGram is " + PyPluginsPrefs.APP_VERSION + ".";
             return out;
         }
-        if (!sdkVersion.isEmpty() && !satisfies(sdkVersion, PyPluginsPrefs.SDK_VERSION)) {
-            out.error = "This plugin needs SDK version " + sdkVersion
+        if (!f.sdkVersion.isEmpty() && !satisfies(f.sdkVersion, PyPluginsPrefs.SDK_VERSION)) {
+            out.error = "This plugin needs SDK version " + f.sdkVersion
                     + "; AminGram implements " + PyPluginsPrefs.SDK_VERSION + ".";
             return out;
         }
         PyPlugin plugin = new PyPlugin();
-        plugin.id = id;
-        plugin.name = name;
-        plugin.description = description;
-        plugin.author = author;
-        plugin.version = version;
-        plugin.icon = icon;
-        plugin.appVersion = appVersion;
-        plugin.sdkVersion = sdkVersion;
+        plugin.id = f.id;
+        plugin.name = f.name;
+        plugin.description = f.description;
+        plugin.author = f.author;
+        plugin.version = f.version;
+        plugin.icon = f.icon;
+        plugin.appVersion = f.appVersion;
+        plugin.sdkVersion = f.sdkVersion;
         plugin.categories.addAll(categories);
         plugin.requirements.addAll(requirements);
         out.plugin = plugin;

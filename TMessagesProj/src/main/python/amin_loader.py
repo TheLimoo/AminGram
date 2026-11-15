@@ -31,10 +31,11 @@ import amin_context
 _setting_callbacks = {}
 
 
-def load_plugin(file_path, module_name):
-    """Import the .plugin file and return a BasePlugin instance."""
-    from base_plugin import BasePlugin
+def _import_module(file_path, module_name):
+    """Import a .plugin / .py file as a module and return it.
 
+    Shared by load_plugin and load_library (M4). A failed import
+    removes the half-loaded module from sys.modules."""
     # .plugin is not a known Python suffix, so spec_from_file_location
     # would return a spec with loader=None; pass SourceFileLoader
     # explicitly (caught by the CPython stub test 2026-11-15 — without
@@ -50,6 +51,22 @@ def load_plugin(file_path, module_name):
     except Exception:
         sys.modules.pop(module_name, None)
         raise
+    return module
+
+
+def load_library(file_path, module_name):
+    """Import a module that defines NO BasePlugin subclass (M4
+    library fallback, e.g. ZwyLib): the module stays in
+    sys.modules so other plugins can import it, and the module
+    itself is returned. No lifecycle, no hooks, no settings."""
+    return _import_module(file_path, module_name)
+
+
+def load_plugin(file_path, module_name):
+    """Import the .plugin file and return a BasePlugin instance."""
+    from base_plugin import BasePlugin
+
+    module = _import_module(file_path, module_name)
 
     candidates = []
     for value in vars(module).values():

@@ -16,7 +16,12 @@ Base: official Telegram for Android (DrKLO/Telegram), tracked at release tags.
 Rule: ALL custom code lives under `org.telegram.messenger.amin.**`.
 Upstream files may only be touched with minimal hook calls into that package.
 Every upstream file touched is listed here — this list is the rebase contract.
-Target: keep this list under 30 files, each with 1–3 line hooks.
+Target: keep this list under 40 files, each with 1–3 line hooks.
+(Rebase cap raised 30 → 40 by Amin, 2026-11-15 23:20. Counting
+rule: patch files + CI inline edits together, each distinct
+upstream file counted once. Current count at M3: 34 files
+(32 via patches + 2 CI inline edits), headroom 6. M4 adds
+zero new upstream files.)
 
 ## Overlay file overrides (whole-file copies over upstream, v1.1)
 - `TMessagesProj/src/main/res/mipmap-anydpi-v26/ic_launcher.xml` +
@@ -1930,7 +1935,7 @@ Upstream pin moved in both CIs (GitHub build.yml + GitLab UPSTREAM_SHA), release
 - **Downloader Pro (`media-dl.js`, v3.0.3)**: Fixed X/Twitter URL matching (`/i/web/status/`, `mobile.twitter.com`, `vxtwitter.com`, `fxtwitter.com`, `fixupx.com`), added TikTok short-link fallback (`vm.tiktok.com` / `vt.tiktok.com`), and aligned timeouts/caps.
 - **Quick Replies (`quick-replies.js`, v1.1.1)**: Updated description and notes now that outgoing `/tpl` commands are suppressed by the platform.
 
-## v2.5 — Python (.plugin) engine, M0 skeleton (2026-11-15, NOT pushed)
+## v2.5 — Python (.plugin) engine, M0 skeleton (2026-11-15, pushed 22:43 as part of 4212787)
 
 Licence-neutral clean-room port of the exteraGram Python plugin
 engine (Phase 0: exteraGram repo is archived, no plugins/ dir;
@@ -1969,9 +1974,9 @@ New patches (apply in CI order after 0024):
 
 New upstream files touched: root build.gradle (+1). Honest
 touched-file count is now 32 (was 31 incl. the two CI inline
-edits). The 30-file rebase cap is exceeded — M0 design proposes
-raising it to 40 (see Phase 1 design §5); M0/M1 add no further
-upstream files.
+edits). (Historical note: at M0 the 30-file cap was exceeded;
+the raise to 40 was APPROVED by Amin 2026-11-15 23:20, see the
+header rule. M0/M1 add no further upstream files.)
 
 Documented exception to the amin.** rule (facades only, no
 logic): com.exteragram.messenger.plugins.PluginsController
@@ -2070,7 +2075,7 @@ CI is the only build proof, and green CI proves compilation only.
   tests: 16/16 passing (hello_py load/unload, last-defined-wins,
   settings round-trip, run_on_queue, bulletin fallback).
 
-## v2.5.1 — Python (.plugin) engine, M1 settings UI (2026-11-15, NOT pushed)
+## v2.5.1 — Python (.plugin) engine, M1 settings UI (2026-11-15, pushed 22:43 as 4212787)
 
 On top of M0 commit c234f32, one local commit. Licence-neutral
 clean-room only (no exteraless/exteraGram code). Zero new upstream
@@ -2244,7 +2249,7 @@ New: `amin/pyplugins/PyPluginSettingsRow.java`,
   settings_demo.plugin, toggle rows, restart, verify values
   persist, Bulletin shows on switch change).
 
-## v2.5.2 — Python (.plugin) engine, M2 hooks (2026-11-15, NOT pushed)
+## v2.5.2 — Python (.plugin) engine, M2 hooks (2026-11-15, pushed 22:57 as 7344795)
 
 On top of M1 commit 4212787, one local commit. Licence-neutral
 clean-room only (no exteraless/exteraGram code copied; from the
@@ -2294,8 +2299,8 @@ assignment, `in`, ternary. Full MVEL was rejected (new
 dependency + its own reflection surface).
 
 **LaunchActivity lifecycle (patch 0027 — +1 upstream file,
-`org.telegram.ui.LaunchActivity`, total now 33 vs the 30 cap;
-raise to 40 still needs Amin's approval):** onCreate → START
+`org.telegram.ui.LaunchActivity`, total now 33 vs the 40 cap
+(raised 30 → 40 by Amin, 2026-11-15 23:20):** onCreate → START
 (once per process — activity recreation is not an app start),
 onResume → RESUME, onPause → PAUSE, onDestroy → STOP (only when
 `isFinishing()`). One FQ line each, via `AminHooks`
@@ -2440,7 +2445,7 @@ use).
   the Demo menu item, background/foreground for app_resume log,
   attach menu shows the Demo item).
 
-## v2.5.3 — Python (.plugin) engine, M3 DEX bridge + ZwyLib (2026-11-15, NOT pushed)
+## v2.5.3 — Python (.plugin) engine, M3 DEX bridge + ZwyLib (2026-11-15, pushed 23:19 as 006653e; CI failed, abiFilters — see M4)
 
 M3 scope, in order: (1) decompile the DEX inside
 MaterialSettingsList v1.1.1, (2) shim-vs-AliuHook decision from
@@ -2549,8 +2554,9 @@ and the three new members (R8 must not rename/strip what the
 DEX resolves by name). New upstream files touched: Theme.java
 (+1). Honest touched-file count is now **34** (32 files via
 patches + the 2 CI inline edits to FileLoadOperation /
-FileUploadOperation). The 30-file rebase cap is exceeded — the
-raise to 40 proposed in M0 is still unapproved by Amin.
+FileUploadOperation). The 40-file rebase cap (raised 30 → 40
+by Amin, 2026-11-15 23:20; patch files + CI inline edits
+counted together) leaves headroom 6.
 
 New overlay Java (documented exceptions to the amin.** rule —
 the DEX resolves these literal names):
@@ -2747,6 +2753,248 @@ jadx output (`/tmp/m3/`, scratch).
   library-plugin load path is still an M4 gap.
 - `add_hook("tl_*")` / ConnectionsManager interception: still
   deferred (M2). `__requirements__` still refused (pip = M4).
-- Patch-cap raise 30→40 still unapproved; honest count is now
-  34 (32 patch files + 2 CI inline edits).
+- Patch cap 30→40 APPROVED by Amin 2026-11-15 23:20; honest
+  count is now 34 (32 patch files + 2 CI inline edits), headroom 6.
+  Counting rule: patch files + CI inline edits together, each
+  distinct upstream file counted once. M4 adds zero new upstream files.
 
+## v2.5.4 — Python (.plugin) engine, M4 catalog + Elyx + DevServer + security (2026-11-15)
+
+M4 closes the plugin engine: catalog/repo loading, `.elyx`/`.eaf`
+archives, library plugins, a localhost DevServer, the final
+`__requirements__` decision, APK-size/startup work, and the full
+security review. Zero new upstream files (still 34 touched, cap
+40 approved 2026-11-15 23:20).
+
+### CI fix — Chaquopy abiFilters (the reason M1/M2/M3 all failed)
+
+- CI runs 43751207829 (M1, 4212787), 43752502295 (M2, 7344795)
+  and 43754597643 (M3, 006653e) ALL failed at step 15 "Build
+  release APK (afat)", Gradle configure, ~1m26s in, with the
+  SAME error (verified from the actual job logs, not a guess):
+  `Variant 'debug': Chaquopy requires ndk.abiFilters` from
+  `PythonPlugin.getAbis` (PythonPlugin.kt:268). Patch apply
+  (step 4) succeeded in all three runs — the patch series was
+  fine; the build never reached compilation.
+- Root cause: patch 0025 added the Chaquopy plugin but never set
+  `ndk.abiFilters` in `TMessagesProj/build.gradle`
+  `defaultConfig`. Upstream has no abiFilters in that library
+  module at all. Fix (patch 0025, regenerated from a staged
+  commit, never hand-edited):
+  `ndk { abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64' }`
+  — the four ABIs match the app module's product flavors, and
+  Python 3.11 keeps the 32-bit slices.
+- Also in 0025: `pyc { src = true }` — Chaquopy compiles
+  `.py`→`.pyc` by default but only best-effort (warns and ships
+  sources on failure); `src = true` makes it a required build
+  step, so a broken .py fails the build instead of shipping
+  source. Stdlib trimming is a no-op: Chaquopy already ships
+  stdlib as `stdlib-pyc.zip` with test modules, `ensurepip`
+  and `pydoc_data` removed; there is no supported per-module
+  exclusion knob.
+- The M3 CI failure above is EXPECTED: the fix lands in this
+  M4 push, not in the M3 run. The next CI run is the first one
+  that can go green.
+
+### What M4 adds
+
+- `PyPluginRepo.java` — catalog loader: `extera-plugins.json`
+  schema 1 (`parseIndex`, max 1 MB / 500 entries, bad entries
+  dropped with a count), `verifyEntry` (id, semver, http(s)
+  URL, 64-hex sha256, size 1 B–10 MB), `sha256Hex`,
+  `verifyFile` (size then SHA-256; a mismatch is rejected and
+  the bytes deleted, never installed), `hostOf`,
+  `scanMessages` (collects `.plugin`/`.elyx`/`.eaf` documents
+  from channel messages as candidates — no id/sha256 there;
+  install gates still run after download). No networking in
+  the class; the hub fetches.
+- `PyElyxLoader.java` — `.elyx`/`.eaf` ZIP loader:
+  `refmap.yml` (`entry:`/`main:`) → `src/main.py` → lone
+  `src/*.py` (else refused as ambiguous); keeps only
+  `refmap.yml`, `metainfo.yml`, `src/*.py`, `strings/*.yml`;
+  Zip-Slip (absolute/`..`) refuses the whole archive;
+  symlinks refused; caps 10 MB archive / 2 MB per file / 200
+  entries; flat `key: value` YAML parser (no YAML evaluator).
+- `PyDevServerHttp.java` + `PyDevServer.java` — DevServer:
+  loopback-only bind (failure never falls back to `0.0.0.0`),
+  32-char random token fresh per start, never logged/stored,
+  `POST /plugin` (max 10 MB) + `GET /status` only, constant-time
+  token compare, auto-stop 60 s after background (cancellable),
+  stop on leaving the hub, uploads go through the normal install
+  gates. Default OFF, explicit start.
+- `PyPluginsController.java` — `installFromBytes` routes ZIP
+  magic to `installElyx` (10 MB cap; entry + modules analysed;
+  metainfo id/version must match entry source; writes
+  `<id>/__main__.py` + `src/` + `strings/`); library fallback
+  in `loadPlugin` (on "no BasePlugin subclass", calls
+  `load_library`, marks `plugin.library`, logs, no
+  lifecycle/hooks); `loadedLibraries` set; `unloadPlugin` /
+  `delete()` handle libraries and Elyx dirs; stale-storage
+  cleanup when a reinstall changes format plugin↔elyx.
+- `PyPlugin.java` — `format` (`"plugin"`/`"elyx"`, old installs
+  default `"plugin"`) + `library` boolean, JSON round-trip.
+- `PyPluginsPrefs.java` — `KEY_UNKNOWN_SOURCES` (default
+  false), `KEY_REPO_URLS`, `KEY_DEVSERVER`, `MAX_ARCHIVE_BYTES`.
+- `amin_loader.py` — extracted `_import_module()`; new
+  `load_library(file_path, module_name)` (imports, keeps in
+  `sys.modules`, no subclass required); `load_plugin` uses the
+  shared importer.
+- `AminPyPluginsActivity.java` — Catalogs section
+  (unknown-sources toggle, saved catalog rows, Add-catalog
+  dialog with gate check, `refreshCatalog` plain-HTTPS fetch
+  on a background thread → entry list dialog →
+  `downloadAndInstallEntry` with SHA-256/size verify before
+  `confirmInstall`); DevServer section (toggle + info row
+  showing `127.0.0.1:PORT` and the live token);
+  `confirmInstallElyx` review (entry + all modules analysed);
+  `onPause` schedules auto-stop, `onResume` cancels it,
+  `onFragmentDestroy` stops the server; footer updated to M4.
+- `.gitignore` — added `__pycache__/`.
+
+### Final decisions (M4)
+
+- `__requirements__` / pip: KEEP BLOCKING (final). A pip
+  installer would download and execute arbitrary code from
+  PyPI at install time — exactly what the install gates exist
+  to stop — and add megabytes of wheels. The refusal message
+  now says so in the controller, the analysis finding, and here.
+- Python↔JS relay bridge: deferred. No concrete plugin needs
+  it; the bridge would be a new cross-engine attack surface
+  with no consumer. Revisit if a plugin requires it.
+- ABI splits: deferred. Per-app ABI flavors live in
+  `TMessagesProj_App/build.gradle`, an upstream file M4 may
+  not touch; Chaquopy's own FAQ says splits/app bundles help
+  little for its native components (flavor-per-ABI is the
+  recommended route). Needs a parent-approved upstream-file
+  change in a later milestone.
+- Channel-history loading for catalog scanning: `scanMessages`
+  extraction is done; the one SearchMessages request to load a
+  channel's history into it is NOT wired in the hub (catalog
+  fetch covers the main flow). Recorded gap.
+
+### Verification-found bugs fixed by the parent during M4 review (2026-11-15 ~23:40)
+
+These were NOT in the M4 agent's report — the parent's
+independent verification caught them before commit:
+
+1. `PyElyxLoader.isSymlink` called
+   `ZipEntry.getExternalAttributes()`, which does NOT exist on
+   `java.util.zip.ZipEntry` — neither on the JDK nor on Android.
+   The M4 code would have failed CI compilation exactly like
+   the abiFilters bug did. Fixed: `load(InputStream)` now reads
+   the archive (capped 10 MB) and `load(byte[])` parses the ZIP
+   central directory by hand (`centralDirectoryAttrs`) for the
+   Unix file-type bits; `isSymlinkAttrs` checks the 0120000 bit.
+   Test helper `zipRaw` in TestM4 had the same non-existent
+   `setExternalAttributes` call — it now patches the central
+   directory bytes directly (`patchCentralAttrs`).
+2. `PyDevServerHttp.serveOne` closed the socket after a non-200
+   response without draining a POST body, so a client that sent
+   a body (curl) got TCP RST ("Connection reset") instead of
+   the 403/404. Fixed: drain a small POST body (≤ MAX_BODY)
+   before answering a non-200 status; never drain an oversized
+   body (413 must not read it).
+3. `PyPluginMetadata.parse` rejected parenthesised implicit
+   string concatenation (`__description__ = ("a" "b")`) — but
+   CPython folds that into one literal Constant, so the real AST
+   loader accepts it, and MaterialSettingsList itself writes its
+   `__description__` exactly that way. The flagship plugin
+   could NOT have installed. Fixed: the parser now joins
+   parenthesised adjacent string literals (paren depth counted
+   outside string literals); `+-concatenation`, variables and
+   triple-quoted values are still refused. TestM4 now asserts
+   the real MSL file parses (id `material_settings_list`,
+   version `1.1.1`, description contains "Redesigns" + "ZwyLib").
+4. Test-harness fixes (scratch only, not repo code): the M4
+   CPython test had no `java` stub on its path (load_plugin
+   imports base_plugin, which imports jclass at module level —
+   its docstring wrongly claimed java is never imported); it
+   now reuses the M3 stub. The M2 suite's old `hook_method()`
+   no-arg expectation is obsolete since M3 gave hook_method
+   required args — it now checks the real rule (unknown target
+   → NotImplementedError). The serveOne live-loopback test was
+   replaced with a fake-socket test: this VM's sandbox
+   intercepts localhost TCP (verified with a repro — the client
+   received the sandbox's own message instead of the server's
+   response), so a live-socket test cannot pass here; the fake
+   socket exercises the same serveOne code path, and real
+   loopback is CI / on-device territory.
+
+### Verification (parent, 2026-11-15 ~23:40, all local, no Android SDK)
+
+- **JDK 17 parse:** `ParseCheck` OK, 19 files (all new/changed
+  Java incl. `PyPluginsController`, `AminPyPluginsActivity`,
+  `PyDevServer`, `PyPluginsPrefs`).
+- **Patch series replay:** 0001–0028 `git apply` clean on a
+  fresh pristine `21f7d10` tree (codeload tarball, verified
+  pristine: no `AminGram`/`messenger.amin`/`pyplugins`
+  references before applying); patch 0025's abiFilters present
+  in the replayed `TMessagesProj/build.gradle`.
+- **Java logic tests:** `verify-scratch/m4/javatest/TestM4.java`
+  **73/73** (catalog repo incl. tampered/size-mismatch rejects,
+  Elyx incl. Zip-Slip/symlink/oversize/not-a-zip, DevServer HTTP
+  incl. fake-socket serveOne 403/200/upload, PyPlugin JSON
+  round-trip, PK refusal, MSL analysis proof dex+reflection+
+  blob+needsDexConsent, synthetic network/files/messages,
+  clean-plugin + requirements findings).
+- **CPython tests:** M4 `test_pyplugins_m4.py` **8/8**
+  (load_library, load_plugin library refusal + sys.modules
+  cleanup, hello regression, syntax-error cleanup); M2 suite
+  **56/56**; M3 suite **62/62** (regression, unchanged).
+- **Secret scan:** zero — pattern scan over the full M4 diff
+  (tracked modifications + all new files).
+- **NOT verified locally (needs CI + device):** no local Gradle
+  build (no Android SDK on this VM); CI is the only build proof
+  for the abiFilters fix; cold-start time with the Python engine
+  OFF vs ON and APK size delta are unmeasurable locally.
+
+### Security review (M4, hub-copy language)
+
+- Catalog downloads are SHA-256 + size checked against the
+  catalog entry; a mismatch is rejected and the bytes deleted,
+  never parsed or executed. Unknown sources are OFF by default;
+  there is no bundled catalog or plugin.
+- Elyx archives: Zip-Slip and symlinks refuse the whole
+  archive; only `src/*.py`, `refmap.yml`, `metainfo.yml`,
+  `strings/*.yml` are kept; entry resolution is deterministic
+  (refmap → `src/main.py` → lone file, else refused); entry +
+  every module go through the same install-time analysis as a
+  single-file plugin.
+- DevServer binds `127.0.0.1` only, token auth on every request,
+  only `POST /plugin` and `GET /status` exist, auto-stops 60 s
+  after background and on leaving the hub; uploads are as
+  untrusted as any file.
+- `__requirements__` stays refused (see above).
+- **Known limitations (do not over-claim in the hub):**
+  analysis is source-text only — behaviour hidden in a DEX, an
+  obfuscated string, or a downloaded payload cannot be seen; a
+  plugin that passes review still runs with full app access;
+  DEX loads need per-plugin consent but a consented DEX is
+  unsandboxed; the catalog index itself is only as trustworthy
+  as its host + the SHA-256 pins inside it.
+
+### Gaps / stubs left (after M4 — on-device test list for Amin)
+
+- On-device verdict (needs CI green + Amin's phone test): M0–M3
+  items as before (hello_py, settings_demo, hooks_demo,
+  MaterialSettingsList 8 toggles, DEX consent ON/OFF), PLUS M4:
+  add a test catalog URL with unknown sources on → refresh →
+  install → verify a tampered download is rejected; sideload a
+  `.elyx` (refmap + `src/main.py` + a module + strings) →
+  verify it loads and its module is importable; sideload a
+  library-only `.plugin` (no BasePlugin subclass) → verify it
+  loads as a library and another plugin can import it; start
+  DevServer → `curl -X POST --data-binary @x.plugin -H
+  "X-Dev-Token: <token>" http://127.0.0.1:42690/plugin` from
+  his computer → verify install; confirm it stops on leaving
+  the hub. Cold-start time with Python engine OFF (must be
+  ~unchanged) vs ON; APK size delta (expected ~95–105 MB vs
+  AminGram 42's 85.4 MB).
+- `add_autoupdater_task` still a no-op stub (by design).
+  Channel-history scan wiring not done (see above).
+  `R.drawable.ic_foreground_solid` still missing upstream —
+  dead in practice (see M3 gaps).
+- ExpandableSwitchManager renders flat (no collapsible groups).
+- `add_hook("tl_*")` / ConnectionsManager interception: still
+  deferred (M2). GPL-3.0 vs clean-room decision still open —
+  M4 stayed clean-room, no exteraless code copied.

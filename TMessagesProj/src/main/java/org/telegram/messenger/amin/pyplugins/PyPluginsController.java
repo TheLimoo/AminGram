@@ -79,6 +79,10 @@ public final class PyPluginsController {
     private static final Map<String, PyObject> instances = new HashMap<>();
     private static final Map<String, Integer> consecutiveFailures = new HashMap<>();
     private static final Set<String> broken = new HashSet<>();
+    /** M4: plugin ids loaded as libraries (no BasePlugin subclass).
+     *  Their modules stay importable; they have no instance, no
+     *  lifecycle and no hooks. */
+    private static final Set<String> loadedLibraries = new HashSet<>();
     /** Settings-reload listeners (M1): the open plugin page
      *  registers a WeakReference so a dead fragment is never
      *  kept alive by the engine. */
@@ -212,6 +216,20 @@ public final class PyPluginsController {
         return new File(dir, pluginId + ".plugin");
     }
 
+    /** Entry-point file a plugin loads from (M4): single-file
+     *  plugins load {@code <id>.plugin}; Elyx plugins load
+     *  {@code <id>/__main__.py} from their install directory. */
+    public static File pluginEntryFile(Context context, PyPlugin plugin) {
+        if (context == null || plugin == null) {
+            return null;
+        }
+        if ("elyx".equals(plugin.format)) {
+            File dir = new File(context.getFilesDir(), PyPluginsPrefs.PLUGIN_DIR);
+            return new File(new File(dir, plugin.id), "__main__.py");
+        }
+        return pluginFile(context, plugin.id);
+    }
+
     public static File pluginDir(Context context) {
         if (context == null) {
             return null;
@@ -234,12 +252,16 @@ public final class PyPluginsController {
         if (bytes == null || bytes.length == 0) {
             return "Empty plugin file.";
         }
+        // M4: ZIP magic — a .elyx / .eaf multi-file archive.
+        // Archives get their own 10 MB cap and their own loader.
+        if (bytes.length >= 2 && bytes[0] == 'P' && bytes[1] == 'K') {
+            if (bytes.length > PyElyxLoader.MAX_ARCHIVE_BYTES) {
+                return "Archive is too large (max 10 MB).";
+            }
+            return installElyx(context, bytes, sourceTag);
+        }
         if (bytes.length > PyPluginsPrefs.MAX_PLUGIN_BYTES) {
             return "Plugin file is too large (max 2 MB).";
-        }
-        if (bytes.length >= 2 && bytes[0] == 'P' && bytes[1] == 'K') {
-            return "This is a .elyx multi-file archive — M0 accepts "
-                    + "single-file .plugin only.";
         }
         String source;
         try {
@@ -262,10 +284,17 @@ public final class PyPluginsController {
         }
         PyPlugin plugin = parsed.plugin;
         if (!plugin.requirements.isEmpty()) {
+            // M4 FINAL (see MODS.md): __requirements__ stays
+            // refused. A pip installer would download and execute
+            // arbitrary code from PyPI at install time — that is
+            // exactly the attack the install-time gates exist to
+            // stop — and it would add megabytes of wheels to the
+            // APK. A plugin that needs PyPI packages cannot be
+            // installed; its author can vendor the needed code.
             return "This plugin needs PyPI packages ("
                     + join(plugin.requirements)
-                    + ") — AminGram cannot install PyPI packages yet "
-                    + "(pip support is planned for M4).";
+                    + ") — AminGram does not install PyPI packages. "
+                    + "A plugin that needs them cannot be installed.";
         }
         List<PyPluginAnalysis.Finding> findings = PyPluginAnalysis.analyze(source, plugin);
         plugin.analysis.clear();
@@ -287,12 +316,170 @@ public final class PyPluginsController {
             return "Could not save the plugin file: " + PyPluginHost.shortError(t);
         }
 
+        return registerInstalled(context, plugin, sourceTag);
+    }
+
+    /** Installs a .elyx / .eaf archive (M4). Returns null on
+     *  success, or a readable refusal. Never starts Python.
+     *  The entry source goes through the SAME gates as a
+     *  single-file plugin; the metainfo id/name/version must
+     *  match the entry source's metadata when both are present. */
+    public static synchronized String installElyx(Context context, byte[] bytes,
+                                                  String sourceTag) {
+        if (context == null) {
+            return "No context.";
+        }
+        PyElyxLoader.Loaded loaded;
+        try {
+            loaded = PyElyxLoader.load(
+                    new java.io.ByteArrayInputStream(bytes));
+        } catch (Throwable t) {
+            return "Could not read the archive.";
+        }
+        if (loaded.error != null) {
+            return loaded.error;
+        }
+        PyPluginMetadata.Parsed parsed = PyPluginMetadata.parse(loaded.entrySource);
+        if (parsed.error != null) {
+            return parsed.error;
+        }
+        PyPlugin plugin = parsed.plugin;
+        String metaId = loaded.metainfo.get("id");
+        if (metaId != null && !metaId.isEmpty() && !metaId.equals(plugin.id)) {
+            return "metainfo.yml id '" + metaId + "' does not match "
+                    + "the plugin source id '" + plugin.id + "'.";
+        }
+        String metaVersion = loaded.metainfo.get("version");
+        if (metaVersion != null && !metaVersion.isEmpty()
+                && !metaVersion.equals(plugin.version)) {
+            return "metainfo.yml version '" + metaVersion + "' does not "
+                    + "match the plugin source version '" + plugin.version + "'.";
+        }
+        if (!plugin.requirements.isEmpty()) {
+            return "This plugin needs PyPI packages ("
+                    + join(plugin.requirements)
+                    + ") — AminGram does not install PyPI packages. "
+                    + "A plugin that needs them cannot be installed.";
+        }
+        List<PyPluginAnalysis.Finding> findings =
+                PyPluginAnalysis.analyze(loaded.entrySource, plugin);
+        for (Map.Entry<String, String> module : loaded.modules.entrySet()) {
+            List<PyPluginAnalysis.Finding> extra =
+                    PyPluginAnalysis.analyze(module.getValue(), plugin);
+            for (PyPluginAnalysis.Finding f : extra) {
+                findings.add(f);
+            }
+        }
+        plugin.analysis.clear();
+        plugin.analysis.addAll(PyPluginAnalysis.toLines(findings));
+        plugin.needsDexConsent = PyPluginAnalysis.needsDexConsent(findings);
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(bytes);
+            StringBuilder sb = new StringBuilder();
+            for (byte b : hash) {
+                sb.append(String.format("%02x", b));
+            }
+            plugin.fingerprint = sb.toString();
+        } catch (Throwable t) {
+            plugin.fingerprint = "";
+        }
+        plugin.installSource = sourceTag == null ? "elyx" : sourceTag;
+        plugin.installedAt = System.currentTimeMillis();
+        plugin.format = "elyx";
+
+        File dir = pluginDir(context);
+        if (dir == null) {
+            return "Could not create the plugin directory.";
+        }
+        // Write <id>/__main__.py (entry) + src/*.py + strings/*.yml.
+        // Names come from PyElyxLoader, which already refused
+        // absolute paths and ".." — nothing here can escape <id>/.
+        File pluginDir = new File(dir, plugin.id);
+        deleteRecursive(pluginDir);
+        pluginDir.mkdirs();
+        String written = writeElyxFiles(pluginDir, loaded);
+        if (written != null) {
+            deleteRecursive(pluginDir);
+            return written;
+        }
+        return registerInstalled(context, plugin, sourceTag);
+    }
+
+    /** Writes an Elyx archive's kept files under {@code pluginDir}.
+     *  Returns null on success, or a readable error. */
+    private static String writeElyxFiles(File pluginDir, PyElyxLoader.Loaded loaded) {
+        try {
+            File main = new File(pluginDir, "__main__.py");
+            try (FileOutputStream out = new FileOutputStream(main)) {
+                out.write(loaded.entrySource.getBytes(StandardCharsets.UTF_8));
+            }
+            for (Map.Entry<String, String> module : loaded.modules.entrySet()) {
+                File f = new File(pluginDir, module.getKey());
+                f.getParentFile().mkdirs();
+                try (FileOutputStream out = new FileOutputStream(f)) {
+                    out.write(module.getValue().getBytes(StandardCharsets.UTF_8));
+                }
+            }
+            for (Map.Entry<String, Map<String, String>> strings : loaded.strings.entrySet()) {
+                File f = new File(pluginDir, strings.getKey());
+                f.getParentFile().mkdirs();
+                StringBuilder sb = new StringBuilder();
+                for (Map.Entry<String, String> kv : strings.getValue().entrySet()) {
+                    sb.append(kv.getKey()).append(": ").append(kv.getValue()).append("\n");
+                }
+                try (FileOutputStream out = new FileOutputStream(f)) {
+                    out.write(sb.toString().getBytes(StandardCharsets.UTF_8));
+                }
+            }
+        } catch (Throwable t) {
+            return "Could not save the plugin files: " + PyPluginHost.shortError(t);
+        }
+        return null;
+    }
+
+    /** Deletes a file or a directory tree ( Elyx plugin dirs). */
+    static void deleteRecursive(File file) {
+        if (file == null || !file.exists()) {
+            return;
+        }
+        if (file.isDirectory()) {
+            File[] children = file.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    deleteRecursive(child);
+                }
+            }
+        }
+        file.delete();
+    }
+
+    /** Shared tail of installFromSource / installElyx: cache,
+     *  persist, and load-now when the engine is on. Returns null. */
+    private static String registerInstalled(Context context, PyPlugin plugin,
+                                            String sourceTag) {
         PyPlugin existing = get(context, plugin.id);
         if (existing != null) {
             // Reinstall in place: keep the user's enabled state and
             // settings; clear the error/broken flags (JS parity).
             plugin.enabled = existing.enabled;
             plugin.dexConsent = existing.dexConsent;
+            if (!existing.format.equals(plugin.format)) {
+                // Format changed on reinstall (plugin <-> elyx):
+                // drop the old storage so the stale file or dir
+                // cannot be loaded by mistake.
+                if ("elyx".equals(existing.format)) {
+                    File oldDir = pluginDir(context);
+                    if (oldDir != null) {
+                        deleteRecursive(new File(oldDir, plugin.id));
+                    }
+                } else {
+                    File old = pluginFile(context, plugin.id);
+                    if (old != null) {
+                        old.delete();
+                    }
+                }
+            }
             // M3: but a reinstall that newly needs DEX consent does
             // not inherit "enabled" past the consent — the new
             // version cannot load until the user grants it.
@@ -461,9 +648,18 @@ public final class PyPluginsController {
             context.getSharedPreferences(PyPluginsPrefs.PREFS, Context.MODE_PRIVATE)
                     .edit().remove(PyPluginsPrefs.KEY_META_PREFIX + pluginId).apply();
         }
-        File file = pluginFile(context, pluginId);
-        if (file != null) {
-            file.delete();
+        // M4: Elyx plugins live in a directory; single-file
+        // plugins are one file.
+        if (plugin != null && "elyx".equals(plugin.format)) {
+            File dir = pluginDir(context);
+            if (dir != null) {
+                deleteRecursive(new File(dir, pluginId));
+            }
+        } else {
+            File file = pluginFile(context, pluginId);
+            if (file != null) {
+                file.delete();
+            }
         }
         PyPluginLog.clear(context, pluginId);
         PyPluginSettings.clear(context, pluginId);
@@ -507,13 +703,13 @@ public final class PyPluginsController {
                     + "'Allow DEX / native code' on the plugin page first.");
             return;
         }
-        if (instances.containsKey(pluginId)) {
+        if (instances.containsKey(pluginId) || loadedLibraries.contains(pluginId)) {
             return;
         }
         if (broken.contains(pluginId)) {
             return;
         }
-        File file = pluginFile(context, pluginId);
+        File file = pluginEntryFile(context, plugin);
         if (file == null || !file.exists()) {
             setError(context, pluginId,
                     new IllegalStateException("plugin file is missing"));
@@ -535,8 +731,31 @@ public final class PyPluginsController {
                 path.callAttr("append", dirPath);
             }
             PyObject loader = py.getModule("amin_loader");
-            PyObject instance = loader.callAttr("load_plugin",
-                    file.getAbsolutePath(), moduleName(pluginId));
+            PyObject instance;
+            try {
+                instance = loader.callAttr("load_plugin",
+                        file.getAbsolutePath(), moduleName(pluginId));
+            } catch (Throwable loadFailed) {
+                // M4 library fallback: a module with no BasePlugin
+                // subclass is not an error — it is a library
+                // (e.g. ZwyLib). Import it once so other plugins
+                // can use it, mark it, and stop: no lifecycle,
+                // no hooks, no settings UI.
+                if (!PyPluginHost.shortError(loadFailed)
+                        .contains("no BasePlugin subclass")) {
+                    throw loadFailed;
+                }
+                loader.callAttr("load_library",
+                        file.getAbsolutePath(), moduleName(pluginId));
+                loadedLibraries.add(pluginId);
+                plugin.library = true;
+                persistMeta(context, plugin);
+                consecutiveFailures.remove(pluginId);
+                PyPluginLog.append(context, pluginId,
+                        "Loaded as a library (no BasePlugin subclass) — "
+                        + "its modules are importable, it has no UI.");
+                return;
+            }
             // The authoritative id (metadata __id__) — the Python
             // side cannot derive it from the module name ('-' is
             // not a valid module-name character).
@@ -586,6 +805,21 @@ public final class PyPluginsController {
         PyHookRegistry.unregisterPlugin(pluginId);
         // M3: same for the Python-bridge settings hooks.
         PySettingsHookRegistry.unregisterPlugin(pluginId);
+        // M4: a library has no instance and no lifecycle — just
+        // drop its module.
+        if (loadedLibraries.remove(pluginId)) {
+            try {
+                if (Python.isStarted()) {
+                    Python.getInstance().getModule("amin_loader")
+                            .callAttr("unload_plugin", moduleName(pluginId));
+                }
+            } catch (Throwable ignored) {
+            }
+            if (context != null) {
+                PyPluginLog.append(context, pluginId, "Library unloaded.");
+            }
+            return;
+        }
         PyObject instance = instances.remove(pluginId);
         if (instance == null) {
             return;
