@@ -2,6 +2,8 @@ package org.telegram.messenger.amin.ui;
 
 import android.content.Context;
 import android.graphics.drawable.GradientDrawable;
+import android.text.InputType;
+import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
@@ -13,6 +15,8 @@ import androidx.recyclerview.widget.RecyclerView;
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.R;
 import org.telegram.messenger.amin.pyplugins.PyPlugin;
+import org.telegram.messenger.amin.pyplugins.PyPluginSettings;
+import org.telegram.messenger.amin.pyplugins.PyPluginSettingsRow;
 import org.telegram.messenger.amin.pyplugins.PyPluginsController;
 import org.telegram.messenger.amin.pyplugins.PyPluginsPrefs;
 import org.telegram.ui.ActionBar.ActionBar;
@@ -23,6 +27,7 @@ import org.telegram.ui.Cells.TextCell;
 import org.telegram.ui.Cells.TextCheckCell;
 import org.telegram.ui.Cells.TextInfoPrivacyCell;
 import org.telegram.ui.Components.BulletinFactory;
+import org.telegram.ui.Components.EditTextBoldCursor;
 import org.telegram.ui.Components.RecyclerListView;
 
 import java.util.ArrayList;
@@ -49,6 +54,13 @@ public class AminPyPluginActivity extends BaseFragment {
     private static final int KIND_ACTION = 2;
     private static final int KIND_CHECK = 3;
     private static final int KIND_FOOTER = 4;
+    /** M1 settings rows: switch (TextCheckCell), value rows
+     *  (selector / input / text — TextCell with a value), info
+     *  rows (text / custom / unsupported — InfoView), divider. */
+    private static final int KIND_SET_SWITCH = 5;
+    private static final int KIND_SET_VALUE = 6;
+    private static final int KIND_SET_INFO = 7;
+    private static final int KIND_SET_DIVIDER = 8;
 
     private static final int SEG_NONE = 0;
     private static final int SEG_ONLY = 1;
@@ -63,12 +75,35 @@ public class AminPyPluginActivity extends BaseFragment {
         String value;
         String action;
         boolean checked;
+        /** M1: the settings row this list row renders (null for
+         *  non-settings rows). */
+        PyPluginSettingsRow setting;
     }
 
     private final String pluginId;
     private RecyclerListView listView;
     private PyAdapter adapter;
     private final List<Row> rows = new ArrayList<>();
+
+    /** M1 settings state: rows fetched once from
+     *  create_settings() (async, on the Python thread), then
+     *  re-fetched after any write or reload notification. */
+    private List<PyPluginSettingsRow> settingsRows;
+    private boolean settingsLoading;
+    private boolean settingsLoaded;
+    private String settingsError;
+    /** Held strongly by the fragment (the controller only keeps
+     *  a WeakReference to it, so a dead fragment is never kept
+     *  alive by the engine). */
+    private final Runnable settingsReloadListener = new Runnable() {
+        @Override
+        public void run() {
+            settingsLoaded = false;
+            settingsRows = null;
+            settingsError = null;
+            rebuild();
+        }
+    };
 
     public AminPyPluginActivity(String pluginId) {
         this.pluginId = pluginId;
@@ -107,7 +142,17 @@ public class AminPyPluginActivity extends BaseFragment {
     @Override
     public void onResume() {
         super.onResume();
+        // M1: a plugin that stores a setting with
+        // reload_settings=True re-reads create_settings() here.
+        PyPluginsController.registerSettingsReloadListener(
+                pluginId, settingsReloadListener);
         rebuild();
+    }
+
+    @Override
+    public void onPause() {
+        super.onPause();
+        PyPluginsController.unregisterSettingsReloadListener(pluginId);
     }
 
     private void rebuild() {
@@ -180,6 +225,41 @@ public class AminPyPluginActivity extends BaseFragment {
         enable.checked = plugin.enabled && !plugin.errored;
         rows.add(enable);
 
+        // ---- M1: Settings (create_settings()) ----
+        Row settingsHeader = new Row();
+        settingsHeader.kind = KIND_HEADER;
+        settingsHeader.title = "Settings";
+        rows.add(settingsHeader);
+
+        if (!settingsLoaded && !settingsLoading) {
+            fetchSettingsRows();
+            Row loading = new Row();
+            loading.kind = KIND_INFO;
+            loading.seg = SEG_ONLY;
+            loading.title = "Loading settings…";
+            rows.add(loading);
+        } else if (settingsLoading) {
+            Row loading = new Row();
+            loading.kind = KIND_INFO;
+            loading.seg = SEG_ONLY;
+            loading.title = "Loading settings…";
+            rows.add(loading);
+        } else if (settingsError != null) {
+            Row err = new Row();
+            err.kind = KIND_INFO;
+            err.seg = SEG_ONLY;
+            err.title = "Settings could not be loaded:\n" + settingsError;
+            rows.add(err);
+        } else if (settingsRows == null || settingsRows.isEmpty()) {
+            Row none = new Row();
+            none.kind = KIND_INFO;
+            none.seg = SEG_ONLY;
+            none.title = "This plugin has no settings.";
+            rows.add(none);
+        } else {
+            addSettingsRows(rows, settingsRows);
+        }
+
         Row analysisHeader = new Row();
         analysisHeader.kind = KIND_HEADER;
         analysisHeader.title = "Install-time analysis";
@@ -224,15 +304,210 @@ public class AminPyPluginActivity extends BaseFragment {
 
         Row footer = new Row();
         footer.kind = KIND_FOOTER;
-        footer.title = "M0 bounds: settings UI (create_settings) is M1; "
-                + "command suppression is M2; DEX loading and ZwyLib are "
-                + "M3. A plugin that needs any of those will fail loudly "
-                + "instead of pretending to work.";
+        footer.title = "M1 bounds: settings UI (create_settings) is here; "
+                + "command suppression and get_last_fragment are M2; "
+                + "DEX loading and ZwyLib are M3. A plugin that needs "
+                + "any of those will fail loudly instead of pretending "
+                + "to work.";
         rows.add(footer);
 
         if (adapter != null) {
             adapter.notifyDataSetChanged();
         }
+    }
+
+    // ------------------------------------------------------------------
+    // M1 settings
+    // ------------------------------------------------------------------
+
+    /** Async fetch of create_settings() rows (Python thread);
+     *  the callback runs on the UI thread and rebuilds the page. */
+    private void fetchSettingsRows() {
+        Context context = getContext();
+        if (context == null) {
+            return;
+        }
+        settingsLoading = true;
+        PyPluginsController.fetchSettingsRows(context, pluginId,
+                new PyPluginsController.SettingsRowsCallback() {
+                    @Override
+                    public void onResult(List<PyPluginSettingsRow> fetched, String error) {
+                        settingsLoading = false;
+                        settingsLoaded = true;
+                        settingsRows = fetched;
+                        settingsError = error;
+                        rebuild();
+                    }
+                });
+    }
+
+    /** Maps parsed settings rows onto list rows. Carded rows
+     *  (switch / value / info) share one card per run; headers
+     *  and dividers break the run. */
+    private static void addSettingsRows(List<Row> out, List<PyPluginSettingsRow> settings) {
+        int runStart = -1;
+        for (int i = 0; i < settings.size(); i++) {
+            PyPluginSettingsRow s = settings.get(i);
+            Row r = new Row();
+            r.setting = s;
+            if ("header".equals(s.type)) {
+                closeSettingsRun(out, runStart);
+                runStart = -1;
+                r.kind = KIND_HEADER;
+                r.title = s.text;
+                out.add(r);
+                continue;
+            }
+            if ("divider".equals(s.type)) {
+                closeSettingsRun(out, runStart);
+                runStart = -1;
+                r.kind = KIND_SET_DIVIDER;
+                out.add(r);
+                continue;
+            }
+            if (runStart < 0) {
+                runStart = out.size();
+            }
+            if ("switch".equals(s.type)) {
+                r.kind = KIND_SET_SWITCH;
+                r.title = s.text;
+                r.action = "setting_switch";
+                r.checked = s.switchValue();
+            } else if ("selector".equals(s.type) || "input".equals(s.type)
+                    || "edittext".equals(s.type) || "slider".equals(s.type)) {
+                r.kind = KIND_SET_VALUE;
+                r.title = s.text;
+                r.value = s.displayValue();
+                r.action = "selector".equals(s.type)
+                        ? "setting_selector" : "setting_input";
+            } else {
+                // text / custom / unsupported: display-only.
+                r.kind = KIND_SET_INFO;
+                r.title = "unsupported".equals(s.type)
+                        ? "Unsupported setting type '" + s.originalType + "': " + s.text
+                        : (s.text + (s.displayValue().isEmpty()
+                                ? "" : "\n" + s.displayValue()));
+            }
+            out.add(r);
+        }
+        closeSettingsRun(out, runStart);
+    }
+
+    /** Assigns FIRST / MID / LAST / ONLY segments to the carded
+     *  rows of one run (rows added at [runStart, out.size())). */
+    private static void closeSettingsRun(List<Row> out, int runStart) {
+        if (runStart < 0) {
+            return;
+        }
+        int count = out.size() - runStart;
+        if (count <= 0) {
+            return;
+        }
+        for (int i = runStart; i < out.size(); i++) {
+            Row r = out.get(i);
+            if (count == 1) {
+                r.seg = SEG_ONLY;
+            } else if (i == runStart) {
+                r.seg = SEG_FIRST;
+            } else if (i == out.size() - 1) {
+                r.seg = SEG_LAST;
+            } else {
+                r.seg = SEG_MID;
+            }
+        }
+    }
+
+    /** The one write path for settings rows: persist the stored
+     *  value (bool/number as a JSON literal, text as plain text —
+     *  the same shapes Python's set_setting stores), run the
+     *  row's on_change + on_settings_changed on the Python
+     *  thread, then re-fetch so reloads and dependent rows
+     *  refresh. */
+    private void writePySetting(PyPluginSettingsRow row, String storedValue,
+                                String jsonValue) {
+        Context context = getContext();
+        if (context == null || row.key == null) {
+            return;
+        }
+        PyPluginSettings.setSetting(pluginId, row.key, storedValue);
+        PyPluginsController.dispatchSettingChanged(context, pluginId,
+                row.key, jsonValue);
+        settingsLoaded = false;
+        settingsRows = null;
+        settingsError = null;
+        rebuild();
+    }
+
+    /** Selector picker: tap an option to write it immediately. */
+    private void showSelectorDialog(final PyPluginSettingsRow row) {
+        if (getParentActivity() == null || row.options.isEmpty()) {
+            return;
+        }
+        String current = row.displayValue();
+        String[] labels = new String[row.options.size()];
+        int checked = -1;
+        for (int i = 0; i < row.options.size(); i++) {
+            labels[i] = row.options.get(i).label;
+            if (row.options.get(i).value.equals(current)) {
+                checked = i;
+            }
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle(row.text);
+        builder.setSingleChoiceItems(labels, checked, (dialog, which) -> {
+            dialog.dismiss();
+            PyPluginSettingsRow.Option opt = row.options.get(which);
+            writePySetting(row, opt.value,
+                    org.json.JSONObject.quote(opt.value));
+        });
+        builder.setNegativeButton("Cancel", null);
+        showDialog(builder.create());
+    }
+
+    /** Text / number input dialog (input, edittext, slider rows). */
+    private void showInputDialog(final PyPluginSettingsRow row) {
+        if (getParentActivity() == null) {
+            return;
+        }
+        Context context = getContext();
+        final EditTextBoldCursor input = new EditTextBoldCursor(context);
+        input.setText(row.displayValue());
+        input.setHint(row.hint == null ? "" : row.hint);
+        if ("number".equals(row.inputType) || "slider".equals(row.type)) {
+            input.setInputType(InputType.TYPE_CLASS_NUMBER
+                    | InputType.TYPE_NUMBER_FLAG_DECIMAL
+                    | InputType.TYPE_NUMBER_FLAG_SIGNED);
+        } else {
+            input.setInputType(InputType.TYPE_CLASS_TEXT);
+        }
+        input.setMinLines(1);
+        input.setGravity(Gravity.TOP);
+        input.setPadding(AndroidUtilities.dp(16), AndroidUtilities.dp(8),
+                AndroidUtilities.dp(16), AndroidUtilities.dp(8));
+        input.setTextColor(Theme.getColor(Theme.key_dialogTextBlack));
+        input.setHintTextColor(Theme.getColor(Theme.key_dialogTextGray2));
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle(row.text);
+        if (row.description != null && !row.description.isEmpty()) {
+            builder.setMessage(row.description);
+        }
+        builder.setView(input);
+        builder.setPositiveButton("Save", (dialog, which) -> {
+            String value = input.getText() == null ? "" : input.getText().toString();
+            if ("number".equals(row.inputType) || "slider".equals(row.type)) {
+                try {
+                    Double.parseDouble(value);
+                } catch (NumberFormatException e) {
+                    bulletin(R.raw.error, "Not a number: " + value);
+                    return;
+                }
+                writePySetting(row, value, value);
+            } else {
+                writePySetting(row, value, org.json.JSONObject.quote(value));
+            }
+        });
+        builder.setNegativeButton("Cancel", null);
+        showDialog(builder.create());
     }
 
     private void onRowClick(int position) {
@@ -256,6 +531,27 @@ public class AminPyPluginActivity extends BaseFragment {
                     bulletin(now ? R.raw.contact_check : R.raw.error,
                             now ? "Plugin enabled" : "Plugin disabled");
                     rebuild();
+                    break;
+                }
+                case "setting_switch": {
+                    if (row.setting == null) {
+                        return;
+                    }
+                    boolean now = !row.setting.switchValue();
+                    writePySetting(row.setting, now ? "true" : "false",
+                            now ? "true" : "false");
+                    break;
+                }
+                case "setting_selector": {
+                    if (row.setting != null) {
+                        showSelectorDialog(row.setting);
+                    }
+                    break;
+                }
+                case "setting_input": {
+                    if (row.setting != null) {
+                        showInputDialog(row.setting);
+                    }
                     break;
                 }
                 case "log": {
@@ -399,7 +695,8 @@ public class AminPyPluginActivity extends BaseFragment {
                 return false;
             }
             int kind = rows.get(position).kind;
-            return kind == KIND_ACTION || kind == KIND_CHECK;
+            return kind == KIND_ACTION || kind == KIND_CHECK
+                    || kind == KIND_SET_SWITCH || kind == KIND_SET_VALUE;
         }
 
         @Override
@@ -417,7 +714,15 @@ public class AminPyPluginActivity extends BaseFragment {
                     view = new TextInfoPrivacyCell(context);
                     break;
                 case KIND_CHECK:
+                case KIND_SET_SWITCH:
                     view = new TextCheckCell(context);
+                    break;
+                case KIND_SET_INFO:
+                    view = new InfoView(context);
+                    break;
+                case KIND_SET_DIVIDER:
+                    view = new View(context);
+                    view.setMinimumHeight(AndroidUtilities.dp(12));
                     break;
                 default:
                     view = new TextCell(context);
@@ -455,6 +760,28 @@ public class AminPyPluginActivity extends BaseFragment {
                     cell.setBackground(segmentDrawable(row.seg, cardFill()));
                     break;
                 }
+                case KIND_SET_SWITCH: {
+                    TextCheckCell cell = (TextCheckCell) holder.itemView;
+                    cell.setTextAndCheck(row.title, row.checked, false);
+                    cell.setBackground(segmentDrawable(row.seg, cardFill()));
+                    break;
+                }
+                case KIND_SET_VALUE: {
+                    TextCell cell = (TextCell) holder.itemView;
+                    boolean divider = row.seg == SEG_MID;
+                    if (row.value != null) {
+                        cell.setTextAndValue(row.title, row.value, divider);
+                    } else {
+                        cell.setText(row.title, divider);
+                    }
+                    cell.setBackground(segmentDrawable(row.seg, cardFill()));
+                    break;
+                }
+                case KIND_SET_INFO:
+                    ((InfoView) holder.itemView).bind(row.title, row.seg);
+                    break;
+                case KIND_SET_DIVIDER:
+                    break;
                 default:
                     TextCell cell = (TextCell) holder.itemView;
                     boolean divider = row.seg == SEG_MID;

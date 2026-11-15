@@ -76,12 +76,31 @@ public final class PyPluginAnalysis {
                     "Can send, edit, delete or forward messages as your account.",
                     false));
         }
-        if (containsAny(s, "TelegramStars", "sendStars", "transfer_gift",
-                "gift", "Stars")) {
+        if (containsAny(s, "TelegramStars", "sendStars", "StarsAmount",
+                "giveaway", "Stars")) {
             out.add(new Finding("stars",
-                    "Touches Stars / gifts — spending is confirmed by AminGram "
+                    "Touches Telegram Stars — spending is confirmed by AminGram "
                     + "only where AminGram mediates the call; direct reflection "
                     + "calls cannot be intercepted.",
+                    false));
+        }
+        if (containsAny(s, "transfer_gift", "sendGift", "send_gift",
+                "gift_slug", "premium_gift", "SendAGift")) {
+            out.add(new Finding("gift",
+                    "Can send or transfer gifts as your account — AminGram "
+                    + "confirms mediated calls only; direct reflection "
+                    + "calls cannot be intercepted.",
+                    false));
+        }
+        if (containsAny(s, "changePassword", "setPassword",
+                "TwoStepVerification", "two_step", "terminateSession",
+                "resetAuthorizations", "deleteAccount", "logOut",
+                "updatePrivacy", "setPrivacy", "blockUser")) {
+            out.add(new Finding("security",
+                    "Touches account security or chat management (password, "
+                    + "sessions, privacy, blocking, account deletion) — "
+                    + "AminGram confirms mediated calls only; direct "
+                    + "reflection calls cannot be intercepted.",
                     false));
         }
         if (containsAny(s, "open(", "os.remove", "os.rename", "shutil",
@@ -105,7 +124,8 @@ public final class PyPluginAnalysis {
         if (plugin != null && !plugin.requirements.isEmpty()) {
             out.add(new Finding("requirements",
                     "Needs PyPI packages (" + join(plugin.requirements)
-                    + ") — M0 cannot install them; install is refused.",
+                    + ") — AminGram cannot install PyPI packages yet "
+                    + "(pip support is planned for M4); install is refused.",
                     false));
         }
         if (out.isEmpty()) {

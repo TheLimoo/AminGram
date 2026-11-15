@@ -106,10 +106,13 @@ public final class PluginsController {
         }
     }
 
-    /** Opens a plugin's settings page. M0: no-op — the per-plugin
-     *  page opens from the hub; kept so the name resolves for
-     *  plugins that call it. M1 wires it to AminPyPluginActivity. */
+    /** Opens a plugin's settings page (M1: wired to
+     *  AminPyPluginActivity via PyPluginsController). */
     public void openPluginSettings(String pluginId) {
-        // M0 stub: documented gap, not a silent behaviour change.
+        try {
+            PyPluginsController.openPluginSettings(
+                    ApplicationLoader.applicationContext, pluginId);
+        } catch (Throwable ignored) {
+        }
     }
 }

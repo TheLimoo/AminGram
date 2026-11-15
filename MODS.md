@@ -2069,3 +2069,177 @@ CI is the only build proof, and green CI proves compilation only.
   removed (only `base_plugin` itself is excluded). CPython stub
   tests: 16/16 passing (hello_py load/unload, last-defined-wins,
   settings round-trip, run_on_queue, bulletin fallback).
+
+## v2.5.1 — Python (.plugin) engine, M1 settings UI (2026-11-15, NOT pushed)
+
+On top of M0 commit c234f32, one local commit. Licence-neutral
+clean-room only (no exteraless/exteraGram code). Zero new upstream
+files — patches/ untouched (0001–0026 byte-identical to M0).
+JS/Rhino engine untouched; DNS/AI untouched.
+
+### What M1 adds
+
+**Settings rows (`create_settings()` rendering).** New overlay
+`pyplugins/PyPluginSettingsRow.java` — pure Java + org.json,
+unit-testable, no Android imports. Parses the JSON payload
+`{"rows": [...], "warnings": [...]}` (or a bare array) produced by
+`amin_loader.serialize_settings()`. Row types: header, switch,
+selector, input, edittext, text, divider, custom, plus slider
+(rendered as a number-input dialog — no native slider row in M1).
+Unknown types are kept as "unsupported" rows, never dropped
+silently. `AminPyPluginActivity` gains a Settings section:
+async fetch via `PyPluginsController.fetchSettingsRows` (callback
+on the UI thread), placeholder / error / no-settings states,
+segment-grouped rows, switch toggles, selector + input dialogs
+via `EditTextBoldCursor`. Single write path `writePySetting`
+persists bool/number as a JSON literal and text as plain text,
+then re-fetches rows. A reload listener is registered in
+`onResume` and unregistered in `onPause` so a plugin calling
+`set_setting(reload_settings=True)` refreshes the page.
+
+**Settings persistence.** `PyPluginSettings.java` gains
+`getAllSettingsJson()` plus `getTextValue` / `getBooleanValue`
+via `JSONTokener` with a partial-parse guard (a corrupt value
+falls back to the declared default instead of crashing the
+page). Per-plugin prefs, survives restart; `reload_settings`
+semantics: `BasePlugin.set_setting(reload_settings=True)` calls
+`requestSettingsReload`, which notifies registered listeners;
+`False` (default) writes silently.
+
+**Real Bulletin.** M0's toast+log fallback in `ui/bulletin.py`
+is replaced: `show_bulletin` / `show_error` now call
+`PyPluginHost.showBulletin` / `showError`, which use
+`LaunchActivity.getLastFragment()` + `BulletinFactory` with the
+4-arg `createSimpleBulletin(icon, text, buttonText, Runnable)`
+overload. Button `on_click` runs on the Python thread. Toast+log
+remains only as the fallback when no fragment is available
+(callback NOT run in that case — documented). The 4-arg
+BulletinFactory overload is the one upstream-API call NOT
+locally verifiable (no Android SDK on the VM); CI build is the
+first check, device the verdict.
+
+**Python SDK additions.**
+- `amin_context.py` — current-plugin tracking for the shared
+  runtime (replaces the "engine" fallback id).
+- `android_utils.py` — `run_on_ui_thread`, `toast`, `log`,
+  copy-to-clipboard write-only. Clipboard READ raises (never
+  silently exfiltrates).
+- `file_utils.py` — sandboxed to
+  `filesDir/pyplugins/<id>/files`; rejects absolute paths and
+  `..` traversal.
+- `ui/settings.py` — row classes Header / Switch / Selector /
+  Input / EditText / Text / Divider / Custom +
+  `SimpleSettingFactory`. Constructor order is AminGram's own
+  `(key, text, ...)` and is documented as possibly differing
+  from exteraGram's real signatures — M3 must verify against a
+  real .plugin that calls `create_settings()`.
+- `amin_loader.py` — `serialize_settings()` emits the JSON
+  payload; `_normalise_row()` accepts dict-style and
+  object-style rows and rejects primitives (a plain-string row
+  used to normalise into garbage because `str.title` is a
+  method — caught by the M1 stub tests, fixed); `_setting_callbacks`
+  registry + `invoke_setting_callback()`; `call_lifecycle()`
+  sets `amin_context` before invoking plugin code.
+- `base_plugin.py` — `set_setting(reload_settings=True)` now
+  requests a reload; real `export_settings` /
+  `import_settings`; `create_settings` documented.
+- `client_utils.py` — `run_on_queue` now uses the current
+  plugin id, not "engine" (M0 stub verified, M1 finished).
+- `ui/bulletin.py` — real Bulletin (above).
+
+**Host / controller.**
+- `PyPluginHost.java` — `showBulletin` / `showError`,
+  `runOnUiThread`, `copyToClipboard`, `pluginFilesDir` (id
+  validated by regex), `requestSettingsReload`.
+- `PyPluginsController.java` — `fetchSettingsRows` +
+  `SettingsRowsCallback` (UI thread), `fillCurrentValues`,
+  settings-reload listener registry held as `WeakReference`
+  (the fragment holds its `Runnable` strongly as a field —
+  a listener stored only weakly would be GC'd immediately),
+  `dispatchSettingChanged` runs the row `on_change` + optional
+  `on_settings_changed(key)`, `openPluginSettings` via the last
+  fragment, lifecycle calls now via `call_lifecycle`.
+- Facade `com.exteragram.messenger.plugins.PluginsController` —
+  `openPluginSettings` wired to `AminPyPluginActivity`.
+- `PyPluginAnalysis.java` — new `gift` and `security`
+  findings; the `stars` finding no longer claims gifts (bare
+  "gift" needle removed); `__requirements__` text now says the
+  M4 pip plan. Non-empty `__requirements__` still blocks install
+  with a clear message (pip support is M4).
+
+**Fixture.** `assets/amingram_pyplugins/settings_demo.plugin`
+— all 8 row types + one dict-style switch; its switch
+`on_change` shows a Bulletin.
+
+### Files changed (10 modified + 5 new, +1080/−56)
+
+Modified: `com/exteragram/messenger/plugins/PluginsController.java`,
+`amin/pyplugins/{PyPluginAnalysis,PyPluginHost,PyPluginSettings,PyPluginsController}.java`,
+`amin/ui/AminPyPluginActivity.java`,
+`python/{amin_loader,base_plugin,client_utils}.py`,
+`python/ui/bulletin.py`.
+New: `amin/pyplugins/PyPluginSettingsRow.java`,
+`python/{amin_context,android_utils,file_utils}.py`,
+`python/ui/settings.py`,
+`assets/amingram_pyplugins/settings_demo.plugin`.
+
+### M1 verification (2026-11-15, all local, before any push)
+
+- **Patch-series replay (full, this time by the CI method):**
+  pristine upstream 21f7d10 fetched as the codeload tarball
+  (blob hash of `SendMessagesHelper.java` cross-checked against
+  the GitHub API blob `55452d3d…`), committed as a scratch repo,
+  overlay copied in (`cp -r TMessagesProj`, CI step), all 24
+  patches 0001–0026 applied in CI order with `git apply` —
+  **24/24 OK**, zero failures. All 160 overlay files present
+  and **byte-identical** in the replayed tree (the 4 icon
+  collisions are the intended rebrand overwrites).
+  NOTE: an earlier GNU-`patch` replay of the same series
+  reported 2 failures (0013 hunk #1, 0023 hunk #2). Both were
+  GNU patch artifacts, not series defects: `git apply` (what CI
+  uses) applies 0013 cleanly on a verified-pristine file, and
+  the 11-line hunk context was proven byte-identical at the
+  target location. Do not use GNU `patch` for this series.
+- **JDK 17 parse:** ParseCheck PARSE OK (7 touched Java files).
+- **Python:** `py_compile` OK on all 9 M1 Python files (incl.
+  the demo fixture). CPython stub tests: M0 suite 16/16, M1
+  suite `/tmp/pytest/test_pyplugins_m1.py` **33/33** (stub
+  `/tmp/pytest/java.py` extended with showBulletin/showError/
+  runOnUiThread/copyToClipboard/pluginFilesDir/
+  requestSettingsReload/getAllSettingsJson). Caught and fixed
+  1 real bug (plain-string settings row, above).
+- **Java logic tests:** fresh compile from current repo sources
+  (UTF-8, test-only org.json stub):
+  `/tmp/javatest/TestM1.java` **22/22** (analysis
+  gift/security/stars, SettingsRow parsing incl. demo payload,
+  options, defaults, unsupported, bare array, malformed/null
+  payloads), `/tmp/javatest/TestMeta.java` **25/25**. Required
+  extending the test stub (`opt`, `optDouble`, `isNull`,
+  `optJSONObject`, recursive value parsing) and fixing 2
+  production-code portability issues (`new JSONArray(String)`
+  → wrap in JSONObject; `optString(i, "")` → `opt(i)` + null
+  check). Real org.json has those APIs; the fix keeps the code
+  testable against the stub.
+- **Secret scan:** zero — pattern scan over all 15 M1 files
+  (modified + new) for keys/tokens/passwords/private keys.
+  The only "token" hits in the raw diff are `JSONTokener`
+  (org.json class name).
+- **No local Gradle build** (no Android SDK on this VM) — CI is
+  the only build proof; green CI proves compilation only, never
+  device behaviour.
+
+### Gaps / stubs left (M2 needs)
+
+- `createSimpleBulletin` 4-arg overload not locally verifiable
+  (CI first, device the verdict).
+- `ui.settings` constructor order is AminGram's own; verify
+  against a real exteraGram plugin's `create_settings()` in M3.
+- Slider rows render as number-input dialogs (no native slider
+  in M1).
+- `get_last_fragment` / `add_hook` / menus still M2.
+- DEX / ZwyLib / MaterialSettingsList still M3.
+- `__requirements__` still refused (pip = M4).
+- Python engine still default OFF; on-device behaviour unproven
+  (needs CI build + Amin's phone test: install
+  settings_demo.plugin, toggle rows, restart, verify values
+  persist, Bulletin shows on switch change).

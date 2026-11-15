@@ -8,9 +8,11 @@ or exteraless code was used.
 
 M0 surface: on_plugin_load / on_plugin_unload, create_settings,
 get_setting / set_setting, self.logger, AppEvent constants.
-Hook registration (add_hook), menus and create_settings rendering
-are M1/M2; a plugin that calls them in M0 gets a clear
-NotImplementedError instead of a silent no-op.
+M1 adds: create_settings rendering (see the method), real
+export/import_settings, set_setting(reload_settings=True).
+Hook registration (add_hook), menus and get_last_fragment are
+M2; a plugin that calls them gets a clear NotImplementedError
+instead of a silent no-op.
 """
 
 import json
@@ -75,8 +77,25 @@ class BasePlugin:
         pass
 
     def create_settings(self):
-        """M1: return a list of settings rows for the plugin page.
-        M0: the host ignores the return value."""
+        """Return a list of settings rows for the plugin page (M1).
+
+        Each row is a dict or a ``ui.settings`` row object:
+        header / switch / selector / input / edittext / text /
+        divider / custom. Dict form, e.g.::
+
+            {"type": "switch", "key": "enabled",
+             "text": "Enable", "default": True}
+            {"type": "selector", "key": "mode", "text": "Mode",
+             "options": ["fast", "slow"], "default": "fast"}
+            {"type": "input", "key": "name", "text": "Name",
+             "default": "", "hint": "..."}
+
+        Rows are read from the plugin's stored settings (see
+        get_setting); a row's ``default`` is used only when no
+        value is stored yet. Changing a row on the page persists
+        it and runs its ``on_change`` (when one was given) plus
+        ``on_settings_changed(key)`` when the plugin defines it.
+        """
         return []
 
     # -- settings persistence ---------------------------------------
@@ -104,14 +123,45 @@ class BasePlugin:
             else:
                 raw = json.dumps(value)
             settings.setSetting(self._plugin_id, str(key), raw)
+            if reload_settings:
+                host = jclass(
+                    "org.telegram.messenger.amin.pyplugins.PyPluginHost")
+                host.requestSettingsReload(self._plugin_id)
         except Exception:
             pass
 
     def export_settings(self):
-        return {}
+        """All stored settings as a plain dict (values JSON-decoded
+        when possible, so a bool stays a bool)."""
+        try:
+            settings = jclass(
+                "org.telegram.messenger.amin.pyplugins.PyPluginSettings")
+            raw = settings.getAllSettingsJson(self._plugin_id)
+            data = json.loads(raw) if raw else {}
+            out = {}
+            for key, value in data.items():
+                try:
+                    out[key] = json.loads(value)
+                except Exception:
+                    out[key] = value
+            return out
+        except Exception:
+            return {}
 
     def import_settings(self, data):
-        pass
+        """Write every entry of a dict (as from export_settings)
+        then reload the settings page once, if it is open."""
+        if not isinstance(data, dict):
+            return
+        try:
+            for key, value in data.items():
+                self.set_setting(key, value, reload_settings=False)
+            if data:
+                host = jclass(
+                    "org.telegram.messenger.amin.pyplugins.PyPluginHost")
+                host.requestSettingsReload(self._plugin_id)
+        except Exception:
+            pass
 
     # -- M1/M2 surface: present, but loudly unimplemented in M0 -----
 

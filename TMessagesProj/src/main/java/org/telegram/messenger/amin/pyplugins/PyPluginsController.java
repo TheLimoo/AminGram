@@ -8,8 +8,12 @@ import com.chaquo.python.Python;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ApplicationLoader;
+import org.telegram.messenger.amin.ui.AminPyPluginActivity;
 import org.telegram.tgnet.TLRPC;
+import org.telegram.ui.ActionBar.BaseFragment;
+import org.telegram.ui.LaunchActivity;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -65,6 +69,11 @@ public final class PyPluginsController {
     private static final Map<String, PyObject> instances = new HashMap<>();
     private static final Map<String, Integer> consecutiveFailures = new HashMap<>();
     private static final Set<String> broken = new HashSet<>();
+    /** Settings-reload listeners (M1): the open plugin page
+     *  registers a WeakReference so a dead fragment is never
+     *  kept alive by the engine. */
+    private static final Map<String, java.lang.ref.WeakReference<Runnable>> settingsListeners =
+            new HashMap<>();
 
     // ------------------------------------------------------------------
     // Prefs / cache
@@ -245,7 +254,8 @@ public final class PyPluginsController {
         if (!plugin.requirements.isEmpty()) {
             return "This plugin needs PyPI packages ("
                     + join(plugin.requirements)
-                    + ") — M0 cannot install them.";
+                    + ") — AminGram cannot install PyPI packages yet "
+                    + "(pip support is planned for M4).";
         }
         List<PyPluginAnalysis.Finding> findings = PyPluginAnalysis.analyze(source, plugin);
         plugin.analysis.clear();
@@ -456,7 +466,10 @@ public final class PyPluginsController {
             }
             instances.put(pluginId, instance);
             try {
-                instance.callAttr("on_plugin_load");
+                // call_lifecycle (M1) sets the current-plugin
+                // context so SDK helpers called from on_plugin_load
+                // log under this plugin, not "engine".
+                loader.callAttr("call_lifecycle", instance, "on_plugin_load");
             } catch (Throwable t) {
                 instances.remove(pluginId);
                 throw t;
@@ -484,7 +497,8 @@ public final class PyPluginsController {
         try {
             if (Python.isStarted()) {
                 try {
-                    instance.callAttr("on_plugin_unload");
+                    Python.getInstance().getModule("amin_loader")
+                            .callAttr("call_lifecycle", instance, "on_plugin_unload");
                 } catch (Throwable ignored) {
                 }
                 try {
@@ -511,6 +525,210 @@ public final class PyPluginsController {
      *  which is not a valid module name. */
     static String moduleName(String pluginId) {
         return "pyplugin_" + pluginId.replace('-', '_').replace('.', '_');
+    }
+
+    // ------------------------------------------------------------------
+    // Settings (M1)
+    // ------------------------------------------------------------------
+
+    /** Callback for {@link #fetchSettingsRows}: always invoked on
+     *  the UI thread. {@code rows} is null when {@code error} is set. */
+    public interface SettingsRowsCallback {
+        void onResult(List<PyPluginSettingsRow> rows, String error);
+    }
+
+    /** Fetches a plugin's create_settings() rows on the Python
+     *  thread and returns them (with current stored values filled
+     *  in) on the UI thread. A create_settings() failure is
+     *  reported as an error, never as fake rows. */
+    public static void fetchSettingsRows(final Context context, final String pluginId,
+                                         final SettingsRowsCallback callback) {
+        if (callback == null) {
+            return;
+        }
+        final Context appContext = context == null ? null : context.getApplicationContext();
+        PyPluginsBootstrap.post(new Runnable() {
+            @Override
+            public void run() {
+                List<PyPluginSettingsRow> rows = null;
+                String error = null;
+                List<String> warnings = new ArrayList<>();
+                try {
+                    if (!Python.isStarted()
+                            && !PyPluginsBootstrap.ensureStarted(appContext, true)) {
+                        error = "Python engine is not running.";
+                    } else {
+                        PyObject instance = instances.get(pluginId);
+                        if (instance == null) {
+                            error = "Plugin is not loaded. Enable it and try again.";
+                        } else {
+                            PyObject result = Python.getInstance().getModule("amin_loader")
+                                    .callAttr("serialize_settings", instance);
+                            String json = result == null ? null : result.toString();
+                            PyPluginSettingsRow.Parsed parsed =
+                                    PyPluginSettingsRow.fromJson(json);
+                            warnings.addAll(parsed.warnings);
+                            rows = parsed.rows;
+                            fillCurrentValues(pluginId, rows);
+                        }
+                    }
+                } catch (Throwable t) {
+                    rows = null;
+                    error = "create_settings() failed: " + PyPluginHost.shortError(t);
+                    if (appContext != null) {
+                        PyPluginLog.append(appContext, pluginId,
+                                "Settings failed: " + PyPluginHost.shortError(t));
+                    }
+                }
+                if (!warnings.isEmpty() && appContext != null) {
+                    for (String w : warnings) {
+                        PyPluginLog.append(appContext, pluginId, "Settings: " + w);
+                    }
+                }
+                final List<PyPluginSettingsRow> finalRows = rows;
+                final String finalError = error;
+                AndroidUtilities.runOnUIThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            callback.onResult(finalRows, finalError);
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    /** Fills current stored values into parsed rows (switch state
+     *  from the boolean getter, everything else as text). */
+    private static void fillCurrentValues(String pluginId, List<PyPluginSettingsRow> rows) {
+        if (rows == null) {
+            return;
+        }
+        for (PyPluginSettingsRow row : rows) {
+            if (!row.isInteractive()) {
+                continue;
+            }
+            try {
+                if ("switch".equals(row.type)) {
+                    row.currentBool = PyPluginSettings.getBooleanValue(
+                            pluginId, row.key, row.defaultAsBool());
+                    row.currentValue = row.currentBool ? "true" : "false";
+                } else {
+                    row.currentValue = PyPluginSettings.getTextValue(
+                            pluginId, row.key, null);
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    /** Registers the open plugin page's reload callback (M1).
+     *  Held weakly — a dead fragment is never kept alive. */
+    public static synchronized void registerSettingsReloadListener(String pluginId, Runnable r) {
+        if (pluginId == null) {
+            return;
+        }
+        if (r == null) {
+            settingsListeners.remove(pluginId);
+        } else {
+            settingsListeners.put(pluginId,
+                    new java.lang.ref.WeakReference<Runnable>(r));
+        }
+    }
+
+    public static synchronized void unregisterSettingsReloadListener(String pluginId) {
+        if (pluginId != null) {
+            settingsListeners.remove(pluginId);
+        }
+    }
+
+    /** A plugin stored a setting with reload_settings=True (or
+     *  imported settings): re-read create_settings() on the open
+     *  page, if any. No-op when the page is not open. */
+    public static void notifySettingsChanged(String pluginId) {
+        if (pluginId == null) {
+            return;
+        }
+        java.lang.ref.WeakReference<Runnable> ref;
+        synchronized (PyPluginsController.class) {
+            ref = settingsListeners.get(pluginId);
+        }
+        if (ref == null) {
+            return;
+        }
+        final Runnable listener = ref.get();
+        if (listener == null) {
+            synchronized (PyPluginsController.class) {
+                settingsListeners.remove(pluginId);
+            }
+            return;
+        }
+        AndroidUtilities.runOnUIThread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    listener.run();
+                } catch (Throwable ignored) {
+                }
+            }
+        });
+    }
+
+    /** Runs after a user changes a setting row on the plugin page:
+     *  the row's registered on_change callable (when one was given
+     *  in create_settings()) plus the plugin's optional
+     *  on_settings_changed(key). Failures are logged and count
+     *  towards the error-storm rule, like any dispatch failure. */
+    public static void dispatchSettingChanged(final Context context, final String pluginId,
+                                              final String key, final String jsonValue) {
+        if (pluginId == null || key == null) {
+            return;
+        }
+        final Context appContext = context == null ? null : context.getApplicationContext();
+        PyPluginsBootstrap.post(new Runnable() {
+            @Override
+            public void run() {
+                PyObject instance = instances.get(pluginId);
+                if (instance == null || !Python.isStarted()) {
+                    return;
+                }
+                try {
+                    Python.getInstance().getModule("amin_loader")
+                            .callAttr("invoke_setting_callback", pluginId, key, jsonValue);
+                    Python.getInstance().getModule("amin_loader")
+                            .callAttr("call_optional", instance, "on_settings_changed", key);
+                    consecutiveFailures.remove(pluginId);
+                } catch (Throwable t) {
+                    recordDispatchFailure(appContext, pluginId, t);
+                }
+            }
+        });
+    }
+
+    /** Opens a plugin's settings page (M1 wiring for the
+     *  PluginsController facade's openPluginSettings). No-op when
+     *  no fragment is available to present from. */
+    public static void openPluginSettings(final Context context, final String pluginId) {
+        if (context == null || pluginId == null) {
+            return;
+        }
+        AndroidUtilities.runOnUIThread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    BaseFragment fragment = LaunchActivity.getLastFragment();
+                    if (fragment != null) {
+                        fragment.presentFragment(new AminPyPluginActivity(pluginId));
+                    } else {
+                        PyPluginLog.append(context, pluginId,
+                                "openPluginSettings: no fragment available.");
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+        });
     }
 
     // ------------------------------------------------------------------
