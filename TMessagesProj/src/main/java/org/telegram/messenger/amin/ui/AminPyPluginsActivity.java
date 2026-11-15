@@ -196,7 +196,7 @@ public class AminPyPluginsActivity extends BaseFragment {
                 + "and load native code. The install review shows what the "
                 + "source text contains; hidden or downloaded code would not "
                 + "show up there. M0: single-file .plugin only, sideload only, "
-                + "no PyPI packages, no DEX consent yet (M3).";
+                + "no PyPI packages. M3: DEX loads only with per-plugin consent.";
         rows.add(footer);
 
         if (adapter != null) {

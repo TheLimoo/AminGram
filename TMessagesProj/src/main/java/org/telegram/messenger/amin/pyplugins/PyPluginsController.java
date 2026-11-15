@@ -56,6 +56,16 @@ import java.util.Set;
  *       failures) auto-disabled — it never crashes the app or
  *       other plugins. Native-hook crashes cannot be caught this
  *       way; M0 loads no DEX and installs no native hooks.</li>
+ *   <li>M3: DEX loading is gated by per-plugin consent
+ *       ({@link PyPlugin#needsDexConsent} /
+ *       {@link PyPlugin#dexConsent}). A plugin whose analysis
+ *       flagged DEX / native code installs disabled, cannot be
+ *       enabled and cannot load until the user grants consent on
+ *       the plugin page ({@link #setDexConsent}); the DEX itself
+ *       runs through the source-level hook points in
+ *       {@link PySettingsHookRegistry}, never through native
+ *       hooking. Unloading also removes the plugin's
+ *       Python-bridge settings hooks.</li>
  * </ul>
  */
 public final class PyPluginsController {
@@ -260,6 +270,8 @@ public final class PyPluginsController {
         List<PyPluginAnalysis.Finding> findings = PyPluginAnalysis.analyze(source, plugin);
         plugin.analysis.clear();
         plugin.analysis.addAll(PyPluginAnalysis.toLines(findings));
+        // M3: DEX / native-code findings need the separate consent.
+        plugin.needsDexConsent = PyPluginAnalysis.needsDexConsent(findings);
         plugin.fingerprint = sha256Hex(source);
         plugin.installSource = sourceTag == null ? "file" : sourceTag;
         plugin.installedAt = System.currentTimeMillis();
@@ -281,6 +293,12 @@ public final class PyPluginsController {
             // settings; clear the error/broken flags (JS parity).
             plugin.enabled = existing.enabled;
             plugin.dexConsent = existing.dexConsent;
+            // M3: but a reinstall that newly needs DEX consent does
+            // not inherit "enabled" past the consent — the new
+            // version cannot load until the user grants it.
+            if (plugin.needsDexConsent && !plugin.dexConsent) {
+                plugin.enabled = false;
+            }
             broken.remove(plugin.id);
             consecutiveFailures.remove(plugin.id);
             int at = cache.indexOf(existing);
@@ -288,10 +306,15 @@ public final class PyPluginsController {
             PyPluginLog.append(context, plugin.id, "Reinstalled ("
                     + plugin.version + ") — settings kept.");
         } else {
-            plugin.enabled = true;
+            // M3: a plugin that needs DEX consent installs
+            // disabled — it cannot load until the user grants
+            // consent on the plugin page.
+            plugin.enabled = !plugin.needsDexConsent;
             cache.add(plugin);
             PyPluginLog.append(context, plugin.id, "Installed ("
-                    + plugin.version + ").");
+                    + plugin.version + ")."
+                    + (plugin.needsDexConsent
+                            ? " DEX consent required before it can load." : ""));
         }
         persistMeta(context, plugin);
         persistOrder(context);
@@ -333,6 +356,16 @@ public final class PyPluginsController {
         if (context == null || plugin == null) {
             return;
         }
+        // M3: a plugin that needs DEX consent cannot be enabled
+        // until the user grants it on the plugin page. The page
+        // shows its own message; this is the backstop so no other
+        // caller can enable past the consent.
+        if (enabled && plugin.needsDexConsent && !plugin.dexConsent) {
+            PyPluginLog.append(context, plugin.id,
+                    "Enable refused: DEX consent is required — turn on "
+                    + "'Allow DEX / native code' on the plugin page first.");
+            return;
+        }
         plugin.enabled = enabled;
         if (enabled) {
             plugin.errored = false;
@@ -356,6 +389,44 @@ public final class PyPluginsController {
                 }
             }
         });
+    }
+
+    /** Grants or revokes a plugin's DEX consent (M3). Granting
+     *  loads the plugin right away when it is enabled; revoking
+     *  unloads it. The consent is per plugin, default OFF, and
+     *  persists in the plugin meta. */
+    public static synchronized void setDexConsent(Context context, PyPlugin plugin,
+                                                  boolean consent) {
+        if (context == null || plugin == null) {
+            return;
+        }
+        plugin.dexConsent = consent;
+        persistMeta(context, plugin);
+        final Context appContext = context.getApplicationContext();
+        final String pluginId = plugin.id;
+        if (consent) {
+            PyPluginLog.append(context, pluginId,
+                    "DEX consent granted — the plugin's DEX code runs "
+                    + "with full app privileges. Revoke it here to unload.");
+            if (plugin.enabled && !plugin.errored) {
+                PyPluginsBootstrap.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (PyPluginsBootstrap.ensureStarted(appContext, true)) {
+                            loadPlugin(appContext, pluginId);
+                        }
+                    }
+                });
+            }
+        } else {
+            PyPluginLog.append(context, pluginId, "DEX consent revoked.");
+            PyPluginsBootstrap.post(new Runnable() {
+                @Override
+                public void run() {
+                    unloadPlugin(appContext, pluginId);
+                }
+            });
+        }
     }
 
     /** Marks a plugin errored (exteraGram {@code setError} semantics:
@@ -425,6 +496,15 @@ public final class PyPluginsController {
         }
         PyPlugin plugin = get(context, pluginId);
         if (plugin == null || !plugin.enabled || plugin.errored) {
+            return;
+        }
+        // M3: defence in depth — even if the enabled flag was set
+        // before consent existed (e.g. a reinstall that gained a
+        // DEX finding), the plugin must not load without consent.
+        if (plugin.needsDexConsent && !plugin.dexConsent) {
+            PyPluginLog.append(context, pluginId,
+                    "Load refused: DEX consent is required — turn on "
+                    + "'Allow DEX / native code' on the plugin page first.");
             return;
         }
         if (instances.containsKey(pluginId)) {
@@ -504,6 +584,8 @@ public final class PyPluginsController {
         // M2: drop the plugin's hook + menu registrations first,
         // so no callback can fire while the module is unloading.
         PyHookRegistry.unregisterPlugin(pluginId);
+        // M3: same for the Python-bridge settings hooks.
+        PySettingsHookRegistry.unregisterPlugin(pluginId);
         PyObject instance = instances.remove(pluginId);
         if (instance == null) {
             return;

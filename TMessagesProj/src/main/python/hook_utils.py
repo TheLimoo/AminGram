@@ -12,10 +12,12 @@ no exteraGram code was used).
   (``hook_utils: ...``) — reflection is the dangerous surface,
   and the install-time analysis already flags it. These helpers
   reach plain Java objects only; they do NOT hook methods.
-- :func:`hook_method`: NOT implemented in M2. Native / Xposed-
-  style before/after interception of arbitrary Telegram methods
-  belongs to the M3 DEX bridge; calling it raises a clear
-  NotImplementedError instead of pretending to work.
+- :func:`hook_method`: M3 — before/after interception, but ONLY
+  for the three SettingsActivity methods the DEX bridge hooks
+  (see below). Any other target raises a clear
+  NotImplementedError instead of pretending to work: the shim
+  is source-level notification, not native hooking, and there is
+  no source-level point for arbitrary methods.
 """
 
 import amin_context
@@ -74,8 +76,48 @@ def call_method(obj, name, *args):
     return getattr(obj, name)(*args)
 
 
-def hook_method(*args, **kwargs):
-    raise NotImplementedError(
-        "hook_method (native before/after method hooking) is M3 "
-        "(DEX bridge). M2 hooks are the AminHooks registry: "
-        "add_hook / add_on_send_message_hook.")
+def hook_method(class_name, method_name, before=None, after=None):
+    """Hook a method with before/after callables — M3, LIMITED
+    to the three SettingsActivity methods the DEX bridge hooks:
+
+    - ``("org.telegram.ui.SettingsActivity", "fillItems")``
+    - ``("org.telegram.ui.SettingsActivity$SettingCell$Factory",
+        "bindView")``
+    - ``("org.telegram.ui.SettingsActivity$SettingCell",
+        "updateColors")``
+
+    ``before`` / ``after`` (either may be None) receive the
+    ``MethodHookParam`` for the call (``.thisObject`` / ``.args``;
+    for ``fillItems`` ``args[0]`` is the ``ArrayList<UItem>`` being
+    filled, for ``bindView`` ``args[0]`` is the SettingCell view
+    and ``args[1]`` the UItem, for ``updateColors`` ``thisObject``
+    is the cell). Returns the Java Unhook (call ``.unhook()`` to
+    remove the hook); the host also removes it when the plugin
+    unloads. Any other class/method raises NotImplementedError:
+    there is no source-level hook point for it, and AminGram does
+    not bundle native hooking. A throwing callback is logged by
+    the host and the settings call continues.
+
+    Chaquopy interop (``PyObject.call(param)`` on the Java side)
+    is unproven on device until M3's phone test; the CPython
+    stub tests cover the routing and the error paths only.
+    """
+    points = {
+        ("org.telegram.ui.SettingsActivity", "fillItems"): "fillItems",
+        ("org.telegram.ui.SettingsActivity$SettingCell$Factory",
+         "bindView"): "bindView",
+        ("org.telegram.ui.SettingsActivity$SettingCell",
+         "updateColors"): "updateColors",
+    }
+    point = points.get((class_name, method_name))
+    if point is None:
+        raise NotImplementedError(
+            "hook_method: no hook point for %s#%s — AminGram only "
+            "hooks fillItems, bindView and updateColors in "
+            "SettingsActivity (M3 DEX bridge). Arbitrary method "
+            "hooking would need native code, which is not bundled."
+            % (class_name, method_name))
+    registry = jclass(
+        "org.telegram.messenger.amin.pyplugins.PySettingsHookRegistry")
+    return registry.hookByName(amin_context.get_current(), point,
+                               before, after)

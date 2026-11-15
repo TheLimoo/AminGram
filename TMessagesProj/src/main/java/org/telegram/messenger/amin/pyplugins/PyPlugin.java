@@ -42,6 +42,12 @@ public final class PyPlugin {
      *  per-plugin DEX consent (M3). M0: always false on install,
      *  kept here so M3 needs no model change. */
     public boolean dexConsent;
+    /** Set at install (M3) when the analysis flagged DEX / native
+     *  code: the plugin installs disabled and cannot load until
+     *  the user grants {@link #dexConsent} on the plugin page.
+     *  False for old installs (the JSON key is absent there) and
+     *  for plugins the analysis cleared. */
+    public boolean needsDexConsent;
 
     public JSONObject toJson() {
         JSONObject o = new JSONObject();
@@ -76,6 +82,7 @@ public final class PyPlugin {
             }
             o.put("analysis", an);
             o.put("dexConsent", dexConsent);
+            o.put("needsDexConsent", needsDexConsent);
         } catch (Exception ignored) {
         }
         return o;
@@ -122,6 +129,7 @@ public final class PyPlugin {
             }
         }
         plugin.dexConsent = o.optBoolean("dexConsent", false);
+        plugin.needsDexConsent = o.optBoolean("needsDexConsent", false);
         return plugin;
     }
 }

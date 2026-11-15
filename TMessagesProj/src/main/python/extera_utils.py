@@ -14,7 +14,8 @@ pure Python — no host call — so they work in tests too.
 a plugin can construct or call it; ``ClassProxy`` wraps an
 instance and forwards attribute access, logging the wrapping.
 Neither helper installs hooks — for method interception see
-``hook_utils.hook_method`` (M3, not implemented).
+``hook_utils.hook_method`` (M3: the three SettingsActivity
+points only).
 """
 
 import html

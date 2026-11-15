@@ -45,7 +45,10 @@ import java.util.List;
  *
  * No settings UI in M0 — {@code create_settings()} rendering is
  * M1. No DEX consent toggle in M0 — DEX loading is refused
- * until M3; the analysis report flags it.
+ * until M3; the analysis report flags it. M3 adds the toggle:
+ * a plugin whose analysis flagged DEX / native code shows
+ * "Allow DEX / native code" (default OFF) and cannot be enabled
+ * until it is turned on.
  */
 public class AminPyPluginActivity extends BaseFragment {
 
@@ -219,11 +222,32 @@ public class AminPyPluginActivity extends BaseFragment {
 
         Row enable = new Row();
         enable.kind = KIND_CHECK;
-        enable.seg = SEG_ONLY;
+        enable.seg = plugin.needsDexConsent ? SEG_FIRST : SEG_ONLY;
         enable.title = "Enabled";
         enable.action = "toggle";
         enable.checked = plugin.enabled && !plugin.errored;
         rows.add(enable);
+
+        // ---- M3: DEX consent (only for plugins whose analysis
+        // flagged DEX / native code) ----
+        if (plugin.needsDexConsent) {
+            Row dex = new Row();
+            dex.kind = KIND_CHECK;
+            dex.seg = SEG_LAST;
+            dex.title = "Allow DEX / native code";
+            dex.action = "dex_consent";
+            dex.checked = plugin.dexConsent;
+            rows.add(dex);
+
+            Row dexInfo = new Row();
+            dexInfo.kind = KIND_INFO;
+            dexInfo.seg = SEG_ONLY;
+            dexInfo.title = "This plugin loads DEX / native code at runtime. "
+                    + "That code runs with full app privileges and is not "
+                    + "sandboxed — only allow it for a plugin you trust. "
+                    + "Turning it off unloads the plugin.";
+            rows.add(dexInfo);
+        }
 
         // ---- M1: Settings (create_settings()) ----
         Row settingsHeader = new Row();
@@ -304,11 +328,11 @@ public class AminPyPluginActivity extends BaseFragment {
 
         Row footer = new Row();
         footer.kind = KIND_FOOTER;
-        footer.title = "M1 bounds: settings UI (create_settings) is here; "
-                + "command suppression and get_last_fragment are M2; "
-                + "DEX loading and ZwyLib are M3. A plugin that needs "
-                + "any of those will fail loudly instead of pretending "
-                + "to work.";
+        footer.title = "M3: DEX loading and ZwyLib are here — a plugin that "
+                + "needs DEX shows the consent switch above and stays "
+                + "disabled until you allow it. Python plugins run with "
+                + "full app access — install only files from sources you "
+                + "trust, like you trust the app itself.";
         rows.add(footer);
 
         if (adapter != null) {
@@ -527,9 +551,31 @@ public class AminPyPluginActivity extends BaseFragment {
                         return;
                     }
                     boolean now = !(plugin.enabled && !plugin.errored);
+                    // M3: enabling a DEX plugin without consent is
+                    // refused by the controller; say so here instead
+                    // of flipping the switch and doing nothing.
+                    if (now && plugin.needsDexConsent && !plugin.dexConsent) {
+                        bulletin(R.raw.error,
+                                "DEX consent required — turn on "
+                                + "'Allow DEX / native code' below first.");
+                        return;
+                    }
                     PyPluginsController.setEnabled(context, plugin, now);
                     bulletin(now ? R.raw.contact_check : R.raw.error,
                             now ? "Plugin enabled" : "Plugin disabled");
+                    rebuild();
+                    break;
+                }
+                case "dex_consent": {
+                    PyPlugin plugin = PyPluginsController.get(context, pluginId);
+                    if (plugin == null) {
+                        return;
+                    }
+                    boolean now = !plugin.dexConsent;
+                    PyPluginsController.setDexConsent(context, plugin, now);
+                    bulletin(now ? R.raw.contact_check : R.raw.error,
+                            now ? "DEX consent granted — plugin loading"
+                                    : "DEX consent revoked — plugin unloaded");
                     rebuild();
                     break;
                 }

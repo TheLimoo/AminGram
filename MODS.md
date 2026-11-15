@@ -2440,3 +2440,313 @@ use).
   the Demo menu item, background/foreground for app_resume log,
   attach menu shows the Demo item).
 
+## v2.5.3 — Python (.plugin) engine, M3 DEX bridge + ZwyLib (2026-11-15, NOT pushed)
+
+M3 scope, in order: (1) decompile the DEX inside
+MaterialSettingsList v1.1.1, (2) shim-vs-AliuHook decision from
+the spike, (3) DEX bridge + per-plugin DEX consent, (4) ZwyLib
+as a clean-room library + MaterialSettingsList unmodified,
+(5) SettingsActivity reorder/debloat via the hook points.
+Licence-neutral clean-room only — no exteraless/exteraGram code
+copied (the GPL-2.0-only vs GPL-3.0 blocker is still open; see
+Phase 0). No push by the subagent; the parent pushes after the
+report. JS engine, DNS, AI untouched.
+
+### DEX decompile findings (spike, local only — nothing uploaded)
+
+DEX_BASE64 is 23,680 base64 chars → 17,760 bytes LZMA/XZ →
+53,384 bytes DEX, magic `dex\n038`, SHA-256
+`bbeb7267b8cf5de2ff0b4f0beee305d2c0e2bf7f7ec62961fa51c669cfe01b1e`.
+Decompiled with jadx 1.5.2 into `/tmp/m3/jadx-out` (29 classes,
+10 files, 1,601 lines; scratch, not in the repo).
+`PluginCore.init(Context)`: `paletteManager.bakePalettes()`,
+`settingsCellHooks.setupHooks()`, `listItemsManager.setupHooks()`.
+`unload()`: unhooks all Unhooks, clears the reflection cache,
+refreshes SettingsActivities.
+
+Exact hook targets (all via `XposedUtilsKt.hook()` →
+`XposedBridge.hookMethod(Method, XC_MethodHook)`, method resolved
+by `findMethodMaxArgs` = max-arg overload of that name):
+1. `SettingsActivity$SettingCell$Factory.bindView` — before:
+   `onBindViewBefore` (args[0]=SettingCell view, args[1]=UItem;
+   `uItem.longValue==0` → drop from paletteKeys; else store
+   `uItem.id`, or BOT_KEY when `uItem.object` is
+   `TL_attachMenuBot`); after: `onBindViewAfter` (`uItem.id==-1`
+   + palette-tracked cell → `getIconView().setImageResource(
+   R.drawable.ic_foreground_solid)`).
+2. `SettingsActivity$SettingCell.updateColors` — after:
+   `applyColors(cell)` (palette by UItem id, or bot palette).
+3. `SettingsActivity.fillItems` — after: `onFillItemsAfter`
+   (args[0]=`ArrayList<UItem>`, mutates the list in place:
+   `applyDebloat` → `applyReorder` → `cleanShadows`).
+
+Reorder groups (exact): `[-1,-2,-3], [1,3,8], [2,7,10], [5,6,9],
+[11,12,13,25,15,16], [17,18,23,19], [24,26,20,21,22]`. Bots
+(`TL_attachMenuBot` objects) appended after group 5; prefix
+before the first SettingCell and the trailing version-shadow
+item preserved; leftover ids appended after the groups; an
+`asShadow(null)` inserted after each non-empty group.
+Debloat IDs (exact): Premium=11, Stars=12, MyTON=13, Business=15,
+Send Gift=16, Wallet=25 (plus any attach-menu bot when wallet
+debloat is on), Help=[17,18,23,19]. Quirk: `applyDebloat` also
+drops ALL header items whenever any debloat flag is on.
+`cleanShadows`: collapses consecutive pure shadows, strips
+trailing pure shadows, keeps a trailing version shadow.
+`SettingsSyncManager`: `syncInitialState(8×boolean)` sets all
+flags then bake + refresh; reorder setter bakes + refreshes
+immediately; each debloat setter debounces refresh 1000 ms.
+Palette: 10 base colours as signed ints (EXTERA -1416863, AYU
+-5152278, ZWY -7897647, BLUE -15231257, GREEN -12664771, ORANGE
+-1411294, GOLD -1071598, CYAN -14965523, DEFAULT_BASE -7956054,
+BOT_BASE -1071598); two 27-entry maps (base / regroup, chosen by
+the reorder flag at bake time); `generateM3Pair` HSL with
+saturation clamped 0.55–1.0, dark/light × monet/non-monet
+variants. The full maps live in the DEX itself (re-derivable any
+time: base64+LZMA-decode DEX_BASE64 from the .plugin file and
+decompile with jadx) — they were not copied into the repo.
+
+Upstream 13.2.2 gaps the DEX hits (each caught per-call by the
+DEX's own try/catch, so they degrade rather than crash):
+- `Theme.isCurrentThemeMonet()` — missing upstream (0 hits);
+  fixed by patch 0028 (+1 upstream file, see below).
+- `SettingCell.getIconView()` — no getter upstream (private
+  field only); fixed by patch 0028.
+- `Background.setColor(int, int, boolean)` — upstream has only
+  the 2-arg form; fixed by a delegating 3-arg overload.
+- `R.drawable.ic_foreground_solid` — no such resource upstream;
+  the branch using it fires only for `uItem.id == -1` rows,
+  which do not exist in upstream fillItems, so it is effectively
+  dead — recorded, not fixed.
+- Kotlin stdlib is already in the APK transitively (upstream
+  `PasskeysController` imports `kotlin.*`), so the
+  Kotlin-compiled DEX resolves `Intrinsics` — no dependency
+  change was needed.
+
+### Shim vs AliuHook — decision: SHIM, no native hooking
+
+All three hook targets map to call sites inside the
+already-counted `SettingsActivity.java`, plus the one
+`Theme.java` fix above. No target needs runtime bytecode
+rewriting, so AliuHook / LSPlant / Dobby were evaluated and
+NOT bundled — bundling native hooking speculatively would add
+an unaudited native attack surface for zero benefit. If a
+future plugin hooks a method with no source-level point, that
+plugin degrades (no-op Unhook + log) instead of silently
+failing, and native hooking would be a separate,
+explicitly-flagged decision then.
+
+### What M3 implemented, file by file
+
+New patch 0028-pyplugins-settings-hooks (CI: `git apply` after
+0027): `SettingsActivity.java` — import + 3 hook call sites
+(fillItems end, Factory.bindView before/after,
+SettingCell.updateColors after) + `getIconView()` getter +
+`Background.setColor(int,int,boolean)` overload;
+`ActionBar/Theme.java` — `isCurrentThemeMonet()` returning
+false (truthful: upstream has no monet themes);
+`proguard-rules.pro` — keeps for `de.robv.android.xposed.**`
+and the three new members (R8 must not rename/strip what the
+DEX resolves by name). New upstream files touched: Theme.java
+(+1). Honest touched-file count is now **34** (32 files via
+patches + the 2 CI inline edits to FileLoadOperation /
+FileUploadOperation). The 30-file rebase cap is exceeded — the
+raise to 40 proposed in M0 is still unapproved by Amin.
+
+New overlay Java (documented exceptions to the amin.** rule —
+the DEX resolves these literal names):
+- `de/robv/android/xposed/XC_MethodHook.java` — clean-room
+  Xposed callback type (before/after no-ops, MethodHookParam
+  with public `thisObject` / `args` fields + get/setResult,
+  nested Unhook). Deviation documented in code: the shim is
+  before/after notification, not true interception — a throwing
+  before-hook cannot skip the method and setResult is never
+  honoured (the DEX only observes args and mutates args[0] in
+  place, which the shim supports).
+- `de/robv/android/xposed/XposedBridge.java` — `hookMethod`
+  only, routing to the registry; unknown methods return a
+  no-op Unhook + log instead of throwing.
+- `org.telegram.messenger.amin.pyplugins.PySettingsHookRegistry`
+  — the dispatch: pointFor maps a reflected Method to
+  fillItems / bindView / updateColors (class name + method
+  name); onFillItemsAfter / onBindViewBefore+After /
+  onUpdateColorsAfter build the MethodHookParam with the exact
+  thisObject/args the DEX reads; per-hook try/catch (a throwing
+  hook never takes the settings screen down), list copied
+  before iteration, synchronised (register on the Python
+  thread, dispatch on the UI thread). Also `hookByName` for
+  the Python `hook_utils.hook_method` bridge (PyObject
+  before/after callables, tracked per plugin id,
+  `unregisterPlugin` on unload).
+
+Modified overlay Java:
+- `com.exteragram.messenger.utils.AppUtils` — M0's empty
+  placeholder now implements `log(String, Throwable)` (+ 1-arg
+  form), exactly the overload `PluginCore.log` calls; logcat
+  tag `AminGramDEX` (the DEX carries no plugin-id context, so
+  it cannot land in the hub per-plugin log). No other AppUtils
+  method added.
+- `PyPlugin` — new `needsDexConsent` field (+ JSON round-trip;
+  old installs without the key default false).
+- `PyPluginsController` — install sets `needsDexConsent` from
+  the analysis and installs DEX plugins **disabled**; a
+  reinstall that newly gains a DEX finding also drops to
+  disabled; `setEnabled` refuses enabling a DEX plugin without
+  consent (backstop — the page shows its own message);
+  `loadPlugin` gates on consent (defence in depth); new
+  `setDexConsent` (grant loads an enabled plugin right away,
+  revoke unloads it); `unloadPlugin` also removes the
+  plugin's Python-bridge settings hooks.
+- `AminPyPluginActivity` — "Allow DEX / native code" toggle
+  (default OFF) in the State section, shown only when
+  `needsDexConsent`, with a plain-language warning row; the
+  enable toggle refuses with a bulletin when consent is missing;
+  footer updated M1 → M3.
+- `AminPyPluginsActivity` — hub footer updated ("DEX loads only
+  with per-plugin consent").
+
+New Python SDK (`TMessagesProj/src/main/python/zwylib/`,
+clean-room re-implementation of the small ZwyLib surface
+MaterialSettingsList uses — written from that plugin's usage
+only; the real ZwyLib was never available, nothing of it is
+bundled/re-hosted/redistributed):
+- `__init__.py` — `__version__ = "2.0.6"`,
+  `is_zwylib_version_sufficient` (tuple compare, optional
+  notify bulletin), `build_log` (stdlib logger),
+  `build_bulletin_helper` (delegates to ui.bulletin),
+  `add_autoupdater_task` (NO-OP stub, logged — AminGram never
+  auto-updates plugins), `HookUtils.hook_method` (delegates to
+  hook_utils). Precedence documented: Chaquopy puts
+  `src/main/python/` on sys.path ahead of the plugins dir, so
+  `import zwylib` always resolves to this package; installing
+  a real `zwylib.plugin` is unnecessary and has no effect on
+  imports.
+- `setting_entry.py` — `SettingEntry(key, default)` backed by
+  the host per-plugin store (read at call time via
+  amin_context, so import-time construction is safe);
+  `as_switch(text, on_change, link_alias)` returns the M1
+  dict row; the on_change wrapper stores the value BEFORE the
+  plugin callback runs (the plugin's lambdas read
+  `entry.get()`). `link_alias` accepted, ignored (no settings
+  deep-links in AminGram).
+- `expandable_switch.py` — `ExpandableOption(label, entry,
+  on_change)` + `ExpandableSwitchManager.generate(title,
+  [options])` → header row + switch rows. Rendering deviation:
+  the M1 page has no collapsible groups, so groups render flat
+  (header + switches); values/keys/wiring identical.
+- `locales_controller.py` — `generate_locale_class({lang:
+  {key: text}})` picks the current Telegram locale
+  (`pluralLangCode`), falls back to "en", then first table.
+
+Modified Python:
+- `hook_utils.py` — `hook_method(class_name, method_name,
+  before, after)` implemented for the three SettingsActivity
+  points only (via `PySettingsHookRegistry.hookByName`,
+  returning the Java Unhook); any other target raises
+  NotImplementedError. Chaquopy `PyObject.call(param)` interop
+  is unproven on device until the phone test.
+- `extera_utils.py` — docstring only (hook_method is no longer
+  "not implemented").
+
+NOT in the repo: the MaterialSettingsList `.plugin` file itself
+(user-supplied, loaded unmodified from
+`~/workspace/user/files/` in the tests only), the DEX, and the
+jadx output (`/tmp/m3/`, scratch).
+
+### M3 verification (2026-11-15, all local, before any push)
+
+- **Patch-series replay (git apply only):** fresh pristine
+  21f7d10 tree from `m1-upstream/upstream.tar.gz`, overlay
+  copied in (`cp -r TMessagesProj`, CI step), all 28 patches
+  0001–0028 applied in CI order — **28/28 OK**, zero
+  failures. All **187** files under repo `TMessagesProj`
+  byte-identical in the replayed tree (0 mismatches). NOTE: the
+  first patch-0028 draft was generated with `git diff` over a
+  tree that also held the uncommitted 0001–0027 changes, so it
+  contained all 32 files — caught before use; the tree was
+  rebuilt (pristine → 0001–0027 committed → M3 edits → diff)
+  and the clean 3-file / +53-line patch regenerated.
+- **JDK 17 syntax parse:** ParseCheck PARSE OK on all 8
+  touched overlay Java files (shim ×2, registry, PyPlugin,
+  PyPluginsController, both plugin activities, AppUtils) + the
+  2 patched upstream files (SettingsActivity, Theme). NOTE:
+  the VM default charset is US-ASCII, so plain `javac` fails
+  on the em-dashes in comments — `-encoding UTF-8` is required
+  locally (CI/Gradle uses UTF-8).
+- **Python:** `py_compile` OK on the 4 new zwylib files +
+  hook_utils. CPython stub tests
+  `verify-scratch/m3/test_pyplugins_m3.py` **62/62** (new stub
+  `verify-scratch/m3/java.py`: fake DEX whose PluginCore /
+  SettingsSyncManager record every reflective call; the real
+  base64+LZMA payload is decoded by the plugin itself). The
+  suite loads the REAL unmodified MaterialSettingsList file:
+  resolves to MaterialSettingsIcons (not EmptyPlugin),
+  force_stop NOT triggered, DEX init + syncInitialState with
+  all-8-False, 9 settings rows with all 8 keys, all 8 toggles
+  reaching the fake DEX setters with the right values (incl.
+  wallet True→False), sync-after-toggles reading stored values
+  back, unload calling DEX unload, inject refusing on SDK 25.
+  Also: zwylib version gate (accept 2.0.6/2.0.5/1.0, refuse
+  2.0.7/garbage), locale en/ru/fallback, SettingEntry
+  persistence + wrapper-stores-first, ExpandableSwitchManager
+  flat rows, autoupdater logged no-op, hook_method routing +
+  refusals. M0/M1 regression inside the suite: hello_py loads,
+  settings_demo still serialises 9 rows. Two test bugs caught
+  during the run (settings_demo has 9 rows, not 8 as the M3
+  test first asserted — M2 asserted 9; a direct
+  `sync_initial_state()` call needs the plugin context the host
+  normally sets) — both were test bugs, not code bugs. NOTE:
+  the M2 suite's old `hook_method()` no-arg expectation is now
+  obsolete (the call raises TypeError for missing arguments;
+  the meaningful check — unknown target →
+  NotImplementedError — is covered in the M3 suite).
+- **Java logic tests:** `verify-scratch/m3/javatest/TestM3.java`
+  **30/30** (real registry + shim, stub Android/Chaquopy/
+  upstream types on plain JDK 17): pointFor routing + decoy
+  rejection, fillItems in-place list mutation visible to the
+  caller, bindView/updateColors param fidelity (thisObject /
+  args), unhook removal, throwing hook does not stop later
+  hooks, registration order, hookByName + unregisterPlugin,
+  unknown-point rejection, PyPlugin JSON round-trip (incl. old
+  JSON defaulting needsDexConsent false).
+- **Secret scan:** zero — pattern scan over the full M3 diff
+  (tracked modifications + all new files: shim, registry,
+  zwylib, patch 0028).
+- **NOT verified locally (needs CI + device):** no local
+  Gradle build (no Android SDK on this VM); Chaquopy varargs
+  interop on the DEX path (`Method.invoke(None, ctx)`,
+  `method.invoke(None, *args)` with 8 booleans) is code-traced
+  only; `PyObject.call(param)` for Python hook_method is
+  unproven; the DEX's `refreshSettingsActivities` fragment
+  walk (`LaunchActivity.instance` → `actionBarLayout` →
+  `getFragmentStack`, `listView` field walk,
+  `ViewPagerActivity.fragmentsArr`) is unproven on device; the
+  palette recolouring (`getPalette` → `isCurrentThemeMonet`
+  false → non-monet palettes) is unproven until the settings
+  screen is opened with the plugin on.
+
+### Gaps / stubs left (M4 needs)
+
+- On-device verdict (needs CI build + Amin's phone test):
+  install MaterialSettingsList (DEX consent ON), toggle all 8
+  settings, restart, confirm reorder/debloat persist, disable
+  the plugin and confirm stock Settings returns; also install
+  hello_py / settings_demo / hooks_demo as before.
+- `R.drawable.ic_foreground_solid` still missing upstream —
+  dead in practice (only `uItem.id == -1` rows), but a future
+  upstream/settings change could revive that branch; if it
+  ever fires, the DEX logs it via AppUtils.log and continues.
+- `add_autoupdater_task` stays a no-op stub by design (M4
+  decision, needs its own consent + hash verification).
+- ExpandableSwitchManager renders flat (no collapsible groups)
+  — a later milestone can add collapsing without changing the
+  plugin-side API.
+- Library-plugin loading: a real `zwylib.plugin` file (no
+  BasePlugin subclass) would fail to load as a plugin with the
+  standard "no BasePlugin subclass" error — the host zwylib
+  makes installing one unnecessary, but a general
+  library-plugin load path is still an M4 gap.
+- `add_hook("tl_*")` / ConnectionsManager interception: still
+  deferred (M2). `__requirements__` still refused (pip = M4).
+- Patch-cap raise 30→40 still unapproved; honest count is now
+  34 (32 patch files + 2 CI inline edits).
+
