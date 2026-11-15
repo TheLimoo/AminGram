@@ -64,6 +64,7 @@ import org.telegram.messenger.amin.plugins.PluginRegistry;
 import org.telegram.messenger.amin.plugins.js.BundledPlugins;
 import org.telegram.messenger.amin.plugins.js.JsPlugin;
 import org.telegram.messenger.amin.plugins.js.JsPluginManager;
+import org.telegram.messenger.amin.pyplugins.PyPluginsController;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.tgnet.tl.TL_stars;
 import org.telegram.ui.ActionBar.AlertDialog;
@@ -749,6 +750,13 @@ public final class HubCommon {
                         : catalogUpdates == 0 ? "Up to date" : "Browse + install");
         actionRow(block, "pack_export", "Export plugin pack…", "Share plugins");
         actionRow(block, "pack_import", "Import plugin pack…", ".json");
+
+        // M0: Python (.plugin) engine — its own list page, master
+        // switch and install flow; the JS engine above is untouched.
+        labelRow("03 // PYTHON (.plugin)");
+        int pyBlock = nextBlock();
+        actionRow(pyBlock, "py_plugins", "Python plugins (.plugin)",
+                PyPluginsController.isEngineEnabled(context) ? "Engine on" : "Engine off");
     }
 
     /** One merged module card: the module row itself (title +
@@ -1482,6 +1490,9 @@ public final class HubCommon {
             }
             case "plugin_catalog":
                 host.present(new AminCatalogActivity());
+                break;
+            case "py_plugins":
+                host.present(new AminPyPluginsActivity());
                 break;
             case "pack_export":
                 pickPackExport(context);

@@ -641,6 +641,10 @@ public final class AminHooks {
                 return;
             }
             syncSpeedBoostFlagOnController(context, account);
+            // M0: Python (.plugin) engine fan-out — cheap no-op when
+            // the engine is off; runs before the swo/jsAny gate so a
+            // Python-only install still sees updates.
+            org.telegram.messenger.amin.pyplugins.PyHookDispatcher.onRawUpdates(updates, account);
             if (moduleEnabled("edit_history")) {
                 DeletedStore.recordEdits(context, updates);
             }
@@ -728,6 +732,8 @@ public final class AminHooks {
             if (moduleEnabled("message_filters")) {
                 applyMessageFilters(context, messages);
             }
+            // M0: Python (.plugin) engine fan-out (on_message).
+            org.telegram.messenger.amin.pyplugins.PyHookDispatcher.onNewMessages(messages, account);
             final ArrayList<MessageObject> batch = new ArrayList<>(messages);
             Utilities.globalQueue.postRunnable(() -> {
                 try {
@@ -759,6 +765,11 @@ public final class AminHooks {
                         return true;
                     }
                 }
+                // M0: Python (.plugin) engine fan-out (on_command).
+                // Fire-and-forget; it never suppresses the literal
+                // message (see PyPluginsController.dispatchOutgoingCommand).
+                org.telegram.messenger.amin.pyplugins.PyHookDispatcher
+                        .onOutgoingMessage(params.message);
             }
         } catch (Throwable ignored) {
         }

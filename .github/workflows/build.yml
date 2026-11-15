@@ -49,6 +49,8 @@ jobs:
           git apply ../patches/0021-dns-tunnel.patch
           git apply ../patches/0023-font-selector.patch
           git apply ../patches/0024-stage2-native-features.patch
+          git apply ../patches/0025-pyplugins-gradle.patch
+          git apply ../patches/0026-pyplugins-init.patch
           python3 - <<'SPEEDEOF'
           flo_path = "TMessagesProj/src/main/java/org/telegram/messenger/FileLoadOperation.java"
           with open(flo_path, "r", encoding="utf-8") as f:
@@ -120,6 +122,14 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+
+      - name: Set up Python 3.11 (Chaquopy build requirement)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          # Chaquopy requires the build-machine Python to match the
+          # app's pinned Python version (3.11, patch 0025); the
+          # ubuntu runner's default Python is not 3.11.
 
       - name: Restore cached NDK
         id: ndk-cache

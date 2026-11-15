@@ -1,0 +1,86 @@
+diff --git a/build.gradle b/build.gradle
+index e04698a..684d3f5 100644
+--- a/build.gradle
++++ b/build.gradle
+@@ -11,6 +11,8 @@ buildscript {
+         classpath 'com.huawei.agconnect:agcp:1.9.1.301'
+         classpath 'com.google.firebase:firebase-crashlytics-gradle:3.0.8'
+         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.0"
++        // AminGram (M0): Chaquopy Gradle plugin for the Python engine.
++        classpath 'com.chaquo.python:gradle:17.2.0'
+     }
+ }
+ repositories {
+diff --git a/TMessagesProj/build.gradle b/TMessagesProj/build.gradle
+index 6c29cc7..1b45a22 100644
+--- a/TMessagesProj/build.gradle
++++ b/TMessagesProj/build.gradle
+@@ -3,6 +3,7 @@ import org.gradle.nativeplatform.platform.internal.DefaultNativePlatform
+ apply plugin: 'com.android.library'
+ apply plugin: 'org.telegram.build-plugin'
+ apply plugin: 'idea'
++apply plugin: 'com.chaquo.python'
+ 
+ idea {
+     module {
+@@ -147,7 +148,9 @@ android {
+     }
+ 
+     defaultConfig {
+-        minSdkVersion 23
++        // AminGram (M0): Chaquopy 17 requires minSdk >= 24. This drops
++        // Android 6.0 (API 23) only; Android 7.0+ is unaffected.
++        minSdkVersion 24
+         targetSdkVersion 36
+ 
+         vectorDrawables.generatedDensities = ['mdpi', 'hdpi', 'xhdpi', 'xxhdpi']
+@@ -247,6 +250,21 @@ android {
+ }
+ 
+ 
++// AminGram (M0): Chaquopy Python runtime for the .plugin engine.
++// Plugin on the library module (exactly one module per app):
++// Python source lives in TMessagesProj/src/main/python/ and is
++// delivered by the overlay copy. Python 3.11 is pinned: it is the
++// last version with 32-bit ABI support (3.12+ is 64-bit only), so
++// the afat flavor's armeabi-v7a slice still builds. buildPython
++// must match the runtime version on the build machine (CI installs
++// Python 3.11 via actions/setup-python).
++chaquopy {
++    defaultConfig {
++        version "3.11"
++        buildPython "python3.11"
++    }
++}
++
+ def getProps(String propName) {
+     def propsFile = rootProject.file('local.properties')
+     if (propsFile.exists()) {
+diff --git a/TMessagesProj/proguard-rules.pro b/TMessagesProj/proguard-rules.pro
+index 2e64f1a..7dfd535 100644
+--- a/TMessagesProj/proguard-rules.pro
++++ b/TMessagesProj/proguard-rules.pro
+@@ -110,3 +110,23 @@
+ -keep class org.telegram.messenger.amin.plugins.js.AminBridge$FileAccess { *; }
+ -keep class org.telegram.messenger.amin.plugins.js.AminBridge$UiAccess { *; }
+ -keep class org.telegram.messenger.amin.plugins.js.AminBridge$RelayAccess { *; }
++
++# AminGram (M0): Chaquopy Python engine. Python reaches these by
++# name (jclass / module imports), and R8 DOES run on the release
++# build (TMessagesProj_App release: minifyEnabled true), so without
++# these keeps the engine's entry points are renamed and Python
++# cannot start or load plugins.
++-keep class com.chaquo.python.** { *; }
++-dontwarn com.chaquo.python.**
++-keep class org.telegram.messenger.amin.pyplugins.** { *; }
++-keep class com.exteragram.messenger.plugins.PluginsController { *; }
++-keep class com.exteragram.messenger.plugins.PluginsController$Plugin { *; }
++-keep class com.exteragram.messenger.utils.AppUtils { *; }
++# AminGram (M0): class names plugins and DEX code resolve by string
++# (keepnames only - members are audited per target in M3).
++-keepnames class org.telegram.ui.SettingsActivity
++-keepnames class org.telegram.ui.Components.UItem
++-keepnames class org.telegram.ui.Components.UniversalAdapter
++-keepnames class org.telegram.ui.Components.UniversalRecyclerView
++-keepnames class org.telegram.messenger.LocaleController
++-keepnames class org.telegram.messenger.ApplicationLoader

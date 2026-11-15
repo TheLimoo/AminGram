@@ -1929,3 +1929,143 @@ Upstream pin moved in both CIs (GitHub build.yml + GitLab UPSTREAM_SHA), release
 - **Sticker Downloader (`sticker-dl.js`, v1.0.0, bundled #13 + catalog)**: Exports any sticker, custom emoji, or media message as a PNG image or raw `.webp`/`.tgs`/`.webm` file via `/sticker`, `/stpng`, `/straw`, or long-press `"Save Sticker / PNG"` using `amin.sendMessageMedia`.
 - **Downloader Pro (`media-dl.js`, v3.0.3)**: Fixed X/Twitter URL matching (`/i/web/status/`, `mobile.twitter.com`, `vxtwitter.com`, `fxtwitter.com`, `fixupx.com`), added TikTok short-link fallback (`vm.tiktok.com` / `vt.tiktok.com`), and aligned timeouts/caps.
 - **Quick Replies (`quick-replies.js`, v1.1.1)**: Updated description and notes now that outgoing `/tpl` commands are suppressed by the platform.
+
+## v2.5 — Python (.plugin) engine, M0 skeleton (2026-11-15, NOT pushed)
+
+Licence-neutral clean-room port of the exteraGram Python plugin
+engine (Phase 0: exteraGram repo is archived, no plugins/ dir;
+current engine closed/private — NOT transplantable. Only public
+source is exteraless, GPL-3.0, which AminGram (GPL-2.0) cannot
+copy without a relicensing decision. M0 therefore implements
+from the public SDK docs (plugins.exteragram.app) + AminGram's
+own code ONLY. No exteraless/exteraGram code was copied. Full
+Phase 0 report: ~/workspace/amingram/EXTERAGRAM-PORT-PHASE0-2026-11-15.md;
+design: ~/workspace/amingram/EXTERAGRAM-PORT-PHASE1-DESIGN-2026-11-15.md.)
+
+New patches (apply in CI order after 0024):
+- 0025-pyplugins-gradle — root build.gradle: Chaquopy Gradle
+  plugin classpath 17.2.0 (verified latest on the Gradle Plugin
+  Portal; AGP 8.13.2 is in Chaquopy 17's 7.3–9.5 range).
+  TMessagesProj/build.gradle: `apply plugin: 'com.chaquo.python'`
+  (library module — the ONE Chaquopy module; Python source in
+  TMessagesProj/src/main/python/ rides the overlay copy),
+  minSdkVersion 23 -> 24 (Chaquopy 17 requires minSdk >= 24;
+  drops Android 6.0 / API 23 only), chaquopy block pinning
+  Python 3.11 + buildPython "python3.11" (3.11 = last version
+  with 32-bit ABI support; 3.12+ is 64-bit only, so the afat
+  flavor's armeabi-v7a slice still builds). proguard-rules.pro:
+  keeps for com.chaquo.python.**, amin.pyplugins.**, the two
+  exteraGram facades, and -keepnames for the org.telegram classes
+  plugins resolve by string.
+  R8 VERIFIED to run on release: TMessagesProj_App release has
+  minifyEnabled true + shrinkResources true — the keeps are
+  mandatory, not optional (the old "release is unminified" note
+  in patch 0010 is wrong for the afatRelease CI build).
+  CI: build.yml adds actions/setup-python 3.11 (Chaquopy needs
+  the build-machine Python to match the pinned version).
+- 0026-pyplugins-init — ApplicationLoader.postInitApplication:
+  one FQ line registering PyPluginsBootstrap (next to the 0021
+  DNS line). It only records the context; Python starts lazily.
+
+New upstream files touched: root build.gradle (+1). Honest
+touched-file count is now 32 (was 31 incl. the two CI inline
+edits). The 30-file rebase cap is exceeded — M0 design proposes
+raising it to 40 (see Phase 1 design §5); M0/M1 add no further
+upstream files.
+
+Documented exception to the amin.** rule (facades only, no
+logic): com.exteragram.messenger.plugins.PluginsController
+(singleton + plugins map + Plugin.setError/setEnabled, all
+delegating to PyPluginsController) and
+com.exteragram.messenger.utils.AppUtils (empty placeholder so
+the name resolves; any method call fails loudly — M3 decides
+per method from the DEX decompile). No further code may live
+under com.exteragram.* except facades.
+
+New overlay code (org.telegram.messenger.amin.pyplugins):
+- PyPluginsPrefs (prefs amingram_pyplugins, master switch
+  pyplugins_enabled default OFF, 2 MB cap, presented versions
+  app 13.2.2 / SDK 1.4.4.3, Python 3.11).
+- PyPlugin (model + JSON) / PyPluginMetadata (literal-only
+  metadata parser + __id__ / semver / category / app+SDK
+  constraint checks) / PyPluginAnalysis (install-time static
+  analysis: reflection / DEX / native / network / messages /
+  Stars / files / blobs — advisory, never a sandbox).
+- PyPluginLog (capped per-plugin log, same key shape as JS) /
+  PyPluginSettings (per-plugin settings store, reached from
+  Python) / PyPluginHost (postDelayed for run_on_queue, toast
+  fallback for bulletins, logcat plugin.<id>).
+- PyPluginsBootstrap (lazy Python.start — ONE-TIME, on the MAIN
+  thread via a latch, because Chaquopy's docs start Python from
+  Application.onCreate; dispatch runs on the dedicated
+  "AminGramPyPlugins" thread; widget-engine process guard).
+- PyPluginsController (registry, install sideload-only with
+  SHA-256 + reinstall-in-place, enable/disable/setError/delete,
+  load via clean-room amin_loader, error-storm auto-disable
+  after 3 consecutive failures, on_message / on_command
+  provisional dispatch).
+- PyHookDispatcher (fan-out from AminHooks.onRawUpdates /
+  onNewMessages / onOutgoingMessage; cheap no-op when off).
+New Python SDK (TMessagesProj/src/main/python/, clean-room):
+base_plugin.py (BasePlugin lifecycle + get/set_setting +
+logger), amin_loader.py (module import + BasePlugin subclass
+discovery: exactly one -> it; several -> LAST defined —
+heuristic for MaterialSettingsList's EmptyPlugin vs
+MaterialSettingsIcons; M3 must verify), client_utils.py
+(run_on_queue; get_last_fragment is M2), ui/bulletin.py
+(BulletinHelper -> toast + log in M0; real bulletin is M1).
+Fixture: assets/amingram_pyplugins/hello_py.plugin (NOT
+auto-installed; install from the Python page to test).
+
+UI (overlay): AminPyPluginsActivity (list page: engine switch,
+per-plugin rows, add-from-file with analysis review dialog),
+AminPyPluginActivity (per-plugin page: About, enable switch,
+analysis report, error state, View log via AminStoreListActivity,
+Delete). HubCommon plugins page gains section "03 // PYTHON
+(.plugin)" with one row opening the list page. JS engine
+untouched.
+
+Design deviations from Phase 1 (each documented in code):
+1. Metadata parsed in Java, not Python AST — install must work
+   before Python starts; literal-only contract makes the two
+   equivalent for these fields.
+2. Python.start on the main thread (latch), not the background
+   thread — Chaquopy docs + field evidence favor main-thread start.
+3. on_command dispatch is fire-and-forget, NEVER suppresses the
+   literal message in M0 — suppression needs the M2 hook registry
+   with per-command declaration (JS avoids sync execution by
+   deciding from a declared list in prefs).
+
+M0 exit criteria NOT yet proven (need CI build + device):
+Chaquopy starts, hello_py loads/unloads, engine-off cold start
+unchanged, APK size delta, 32-bit slice still builds, ZwyLib-
+missing force_stop path (facade) end-to-end. Local verification
+so far: JDK17 syntax parse on touched Java files, patch series
+applies on pristine 21f7d10 + byte reproduction (see M0 report
+in the parent agent's final message), Python py_compile +
+CPython stub tests of amin_loader/base_plugin, full-diff secret
+scan zero. NO local Gradle build (no Android SDK on this VM) —
+CI is the only build proof, and green CI proves compilation only.
+
+### M0 verification fixes (2026-11-15, same day, before any push)
+- **CRITICAL — metadata parser rejected every plugin:** the
+  `STRING_ASSIGN` / `LIST_ASSIGN` key group `[a-z_]+` swallowed
+  the trailing underscores, so `__id__` captured `"id__"`, the
+  switch never matched, and `parse()` always failed with
+  "Missing metadata". Fixed by requiring the closing `__`
+  outside the key group (`[a-z]+(_[a-z]+)*`). Caught by a
+  plain-JDK stub test of `PyPluginMetadata` (25 checks, all
+  passing after the fix, incl. hello_py + MaterialSettingsList
+  metadata, constraint eval, Elyx + non-literal rejection,
+  JSON round-trip, analysis flags).
+- **Loader would not load any .plugin file:** `spec_from_file_location`
+  returns `loader=None` for the unknown `.plugin` suffix — fixed
+  with an explicit `SourceFileLoader` in `amin_loader.py`.
+- **Subclass discovery missed in-file classes:** every real plugin
+  defines `__name__` metadata, which overwrites the module
+  globals' `__name__` before the class statement runs, so
+  `__module__` is the metadata value, not the module name — the
+  `__module__ == module_name` filter dropped every class. Filter
+  removed (only `base_plugin` itself is excluded). CPython stub
+  tests: 16/16 passing (hello_py load/unload, last-defined-wins,
+  settings round-trip, run_on_queue, bulletin fallback).

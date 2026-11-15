@@ -1,0 +1,27 @@
+"""HelloPy — M0 fixture plugin for the AminGram Python engine.
+
+Test fixture only: NOT auto-installed, NOT bundled for users.
+Install it from the Python Plugins page (Add plugin from file)
+to prove Chaquopy starts and a .plugin file loads.
+
+Expected: hub log shows "HelloPy loaded"; disabling shows
+"HelloPy unloaded". It imports nothing beyond base_plugin, uses
+no jclass, no hooks and no settings.
+"""
+
+__id__ = "hello_py"
+__name__ = "HelloPy"
+__version__ = "1.0"
+__author__ = "AminGram"
+__app_version__ = ">=12.10.6"
+__category__ = ["tools"]
+
+from base_plugin import BasePlugin
+
+
+class HelloPy(BasePlugin):
+    def on_plugin_load(self):
+        self.logger.info("HelloPy loaded")
+
+    def on_plugin_unload(self):
+        self.logger.info("HelloPy unloaded")
