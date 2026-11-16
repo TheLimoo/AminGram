@@ -3438,6 +3438,33 @@ Open gaps (do NOT present as fixed):
   still unverified until device — green CI only proves the
   keeps compile in.
 
+## v3.0.2 — Fix 2: Aliucord repo must be project-level, settings repo ignored (2026-11-16, uncommitted)
+
+CI run 43816668348 (head 661e3ef, Fix 1) FAILED the same way:
+`Could not find com.aliucord:Aliuhook:1.1.4`, searched ONLY Maven
+Central + Google — even though patch 0049 WAS applied in CI (log
+line 402) and adds the repo to settings.gradle. Root cause, in
+Gradle's own words from the failure's "* Try:" hint: "The project
+declares repositories, effectively ignoring the repositories you
+have declared in the settings." `TMessagesProj/build.gradle:30`
+and `TMessagesProj_App/build.gradle:4` each declare their own
+`repositories { mavenCentral(); google() }`, and those are the
+blocks Gradle consults for this resolution — the settings-level
+repo never gets searched.
+
+Fix: new patch 0050-engine-aliucord-repo-project.patch adds
+`maven { url "https://maven.aliucord.com/releases" }` to BOTH
+project-level repositories blocks (the dependency is declared in
+:TMessagesProj, the failing configuration is
+:TMessagesProj_App:afatReleaseRuntimeClasspath). Patch 0049 stays
+— harmless belt-and-braces. No new upstream files (both were
+already counted; count stays 46, patch files 43 → 44). Verified:
+patch series 0001–0050 `git apply` clean on a fresh pristine
+21f7d10 tree (+ overlay); all three repo declarations present in
+the replayed tree; CPython engine-port suite 20/20; secret scan
+zero. This is fix attempt 2 of 2 — if this run fails too, no
+further pushes; report the log error instead.
+
 ## v3.0.1 — Fix 1: AliuHook Maven repo missing (2026-11-16, uncommitted)
 
 CI run 43814128194 (head d03198f, v3.0.0) FAILED at step 15 "Build
