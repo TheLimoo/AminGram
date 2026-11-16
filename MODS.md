@@ -3980,3 +3980,76 @@ LICENSE relicense + commit + push; this port is the technical work only.
   with `git diff` — never hand-edited hunk headers).
 - Verified: patch replay 50/50 clean, JDK parse 2495/2495 OK,
   CPython engine-port suite 20/20, secret scan zero.
+- Release v13.2.2-amingram.58 (run 43873471376, head b60a63d) GREEN first
+  attempt. On-device test 2026-11-16 ~21:02: engine loads, but EVERY
+  engine string renders `LOC_ERR:null` — see Fix 6.
+
+## Fix 6 — every engine string renders `LOC_ERR:null`: `strings_oe_plugins.xml` never wired into the default localization (2026-11-16, uncommitted)
+
+- On-device (v58, 2026-11-16 ~21:02): Plugins list title + empty state,
+  and the engine hub, all show `LOC_ERR:null`. Upstream strings
+  (Settings, Python SDK headers) render fine. The engine loads — only
+  its strings are missing.
+- Root cause (proven from the v58 APK itself): `LocaleController.getString`
+  returns `LOC_ERR:null` because `Localization.getByResId` finds the
+  name-hash via `string_resource_ids.bin` but `get(hash)` returns null
+  from the localization table. `string_resource_ids.bin` (11,934 entries)
+  CONTAINS all `Plugins*` resIds; `localization_en.bin` (11,544 entries)
+  contains NONE of them. `R$string` fields exist in the DEX — R8 did not
+  strip them.
+- Why: `TelegramStringsTask` builds `localization_en.bin` ONLY from its
+  `stringsXml` input files, and `TelegramBuildAppPlugin.kt` wires ONLY
+  `strings.xml` (TMessagesProj + app module) into `stringsXml`. The engine
+  strings live in `TMessagesProj/src/main/res/values/strings_oe_plugins.xml`
+  (added in v3.0.0), which was never wired in. Compile-time everything
+  resolves (AAPT sees the file as a normal res file); only the runtime
+  localization table is missing the entries.
+- Fix (patch 0057, one-line wiring + comment): add
+  `include("strings_oe_plugins.xml")` to the `telegramModule` fileTree in
+  `stringsXml.from(...)` in
+  `buildSrc/src/main/kotlin/org/telegram/plugin/TelegramBuildAppPlugin.kt`.
+  No `values-*/strings_oe_plugins.xml` wiring: there are no translations
+  for the engine strings, and `localizationFiles` only feeds non-English
+  tables. NOTE for the future: any further engine strings file must be
+  added to this same `stringsXml` block, or its strings will compile
+  but render `LOC_ERR:null` on device — the failure is silent at build
+  time (see the simulation below).
+- Verified:
+  - Patch replay 51/51 clean on a second fresh pristine tree + overlay
+    (CI method: overlay copy, then `git apply` in filename order).
+    Caution found during this replay: the scratch trees
+    `verify-scratch/pristine` (11,398 strings) and `m1-upstream/tree2`
+    (11,544) are NOT pristine 21f7d10 — both already have patch 0007's
+    AppIcon strings applied. The faithful pristine source is
+    `m1-upstream/upstream.tar.gz` (11,538 strings; +6 AppIcon = 11,544,
+    exactly the v58 bin count).
+  - Python simulation of `TelegramStringsTask.generate()` over the exact
+    wired inputs (`verify-scratch/fix6/simulate_strings_task.py`):
+    WITHOUT the new file it reproduces the v58 `localization_en.bin`
+    byte-for-byte in (hash, value) terms — all 11,544 entries, in order
+    (proves both the simulator and the replay tree faithful); WITH the
+    new file the en table is 11,738 entries, all 194
+    `strings_oe_plugins.xml` names present with correct normalized
+    values, zero hash collisions in the full 12,457-name namespace
+    (incl. `values-*/strings.xml` + plural roots).
+  - Engine `R.string.*` completeness: all 199 live references in
+    `app/exteraless/**` + `com/exteragram/**` resolve in the wired set.
+    (16 apparent upstream gaps are all inside `//` comments; the
+    `android.R.string.*` hits are framework strings, not app resources.)
+  - JDK 17 ParseCheck over the full overlaid tree: 2495/2495 OK.
+    (ParseCheck is Java-only; the Fix 6 change is one Kotlin
+    `include(...)` line mirroring the existing line — buildSrc
+    compilation is proven only by CI.)
+  - CPython engine-port suite 20/20, secret scan zero.
+- Empty Plugins list in the same screenshots — NOT a second bug. The
+  list (`PluginsActivity`) shows `getPluginsSnapshot()` with NO filtering
+  by load state or enabled flag, and `rescanPlugins()` scans
+  `filesDir/plugins/` for `*.py` / `*.plugin` / `*.elyx` / `*.eaf` files
+  with parseable metadata. The v50 clean-room engine stored plugins in
+  `filesDir/pyplugins/<id>/files` — a different directory the real
+  engine never reads — so the v58 list is empty even on an in-place
+  update, and an uninstall wipes everything anyway. Fix: reinstall the
+  two files under v58+ (zwylib `.elyx` as a library, then MSL `.plugin`).
+  No migration was added: the clean-room layout holds extracted plugin
+  contents, not the canonical installable files the real engine expects,
+  so a copy-over would not produce valid installs.
