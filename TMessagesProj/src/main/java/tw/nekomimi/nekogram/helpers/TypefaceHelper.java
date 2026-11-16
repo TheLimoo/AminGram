@@ -71,7 +71,7 @@ public class TypefaceHelper {
     private static boolean systemGoogleSansMediumLoaded;
 
     static {
-        var lang = LocaleController.getInstance().getCurrentLocale().getLanguage();
+        String lang = LocaleController.getInstance().getCurrentLocale().getLanguage();
         if (List.of("zh", "ja", "ko").contains(lang)) {
             TEST_TEXT = "你好";
         } else if (List.of("ar", "fa").contains(lang)) {
@@ -118,7 +118,7 @@ public class TypefaceHelper {
                 }
             }
         }
-        var builder = new SpannableStringBuilder(title);
+        SpannableStringBuilder builder = new SpannableStringBuilder(title);
         builder.setSpan(new LeadingMarginSpan.Standard(dp(2), 0), 0, builder.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         // Fix 3: NekoConfig.typeface / forceFontWeightFallback read as
         // false, so the title uses createTypeface(600, false) — the
@@ -141,11 +141,16 @@ public class TypefaceHelper {
         if (weight == 700) {
             return Typeface.create("sans-serif", italic ? Typeface.BOLD_ITALIC : Typeface.BOLD);
         }
-        var family = switch (weight) {
-            case 800 -> "sans-serif-black";
-            case 500 -> "sans-serif-medium";
-            default -> "sans-serif";
-        };
+        // Fix 3 watch (CI run 43827424276): switch expressions/rules are
+        // Java 14+; the project compiles with -source 8, so plain if/else.
+        String family;
+        if (weight == 800) {
+            family = "sans-serif-black";
+        } else if (weight == 500) {
+            family = "sans-serif-medium";
+        } else {
+            family = "sans-serif";
+        }
         return Typeface.create(family, italic ? Typeface.ITALIC : Typeface.NORMAL);
     }
 

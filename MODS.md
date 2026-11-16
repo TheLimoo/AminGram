@@ -3585,6 +3585,21 @@ the engine calls):
   port-tree, NOT from the repo — the repo holds only the overlay +
   patches, the upstream files live in the patches).
 
+### CI watch follow-up (Fix 3 run 43827424276, head 266b6d3)
+Run 43827424276 FAILED at `:TMessagesProj:compileReleaseJavaWithJavac`
+with exactly **2 errors**, both in the Fix 3 minimal port
+`tw.nekomimi.nekogram.helpers.TypefaceHelper` (lines 144–145):
+switch expression / switch rules are Java 14+ and the project
+compiles with `-source 8`. The 37 Fix 3 errors are gone; this was
+the only remaining one. Fixed in the overlay file (no new patch):
+the switch expression became a plain if/else chain, and the three
+`var` local declarations (lines 74, 121, 144 — warnings only in CI)
+became explicit types (`String`, `SpannableStringBuilder`). Local
+check: JDK 17 parse OK, `javac -source 8` shows zero
+"not supported in -source 8" errors (remaining errors are only
+missing Android symbols, unresolvable without the SDK); CPython
+suite still 20/20. Commit on top of 266b6d3; CI watch re-armed.
+
 ### Still unverifiable until CI / device
 - Whether all 37 errors are really gone — only
   `:TMessagesProj:compileReleaseJavaWithJavac` in CI can confirm;
