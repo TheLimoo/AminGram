@@ -1,0 +1,148 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/UItem.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/UItem.java
+index dd7089f..1055465 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/UItem.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/UItem.java
+@@ -25,7 +25,7 @@ import java.util.ArrayList;
+ import java.util.HashMap;
+ import java.util.Objects;
+ 
+-public class UItem extends AdapterWithDiffUtils.Item {
++public class UItem extends AdapterWithDiffUtils.Item implements Cloneable {
+ 
+     public static final int MAX_SPAN_COUNT = -1;
+ 
+@@ -43,9 +43,16 @@ public class UItem extends AdapterWithDiffUtils.Item {
+     public CharSequence animatedText;
+     public String[] texts;
+     public boolean accent, red, transparent, locked;
++
++    /** Подпись строки переносится на несколько строк, а не обрезается. */
++    public boolean multiline;
+     public int spanCount = MAX_SPAN_COUNT;
+     public int parentSpanCount;
+ 
++    public int checkBoxIconResId;
++    public Integer iconColor;
++    public boolean prioritizeTitleOverValue;
++
+     /** Модель строки настроек плагина, если строку собрал плагин через SDK exteraGram. */
+     public app.exteraless.plugins.models.SettingItem settingItem;
+ 
+@@ -83,6 +90,14 @@ public class UItem extends AdapterWithDiffUtils.Item {
+         this.object = object;
+     }
+ 
++    public UItem copy() {
++        try {
++            return (UItem) super.clone();
++        } catch (CloneNotSupportedException e) {
++            throw new AssertionError(e);
++        }
++    }
++
+     public static UItem asCustom(int id, View view) {
+         UItem i = new UItem(UniversalAdapter.VIEW_TYPE_CUSTOM, false);
+         i.id = id;
+@@ -287,6 +302,17 @@ public class UItem extends AdapterWithDiffUtils.Item {
+         return i;
+     }
+ 
++    public static UItem asButtonWithSubtext(int id, int iconResId, CharSequence text, CharSequence subtext, int pad, int height) {
++        UItem i = new UItem(UniversalAdapter.VIEW_TYPE_TEXT, false);
++        i.id = id;
++        i.iconResId = iconResId;
++        i.text = text;
++        i.subtext = subtext;
++        i.pad = pad;
++        i.intValue = height;
++        return i;
++    }
++
+     public static UItem asStickerButton(int id, CharSequence text, TLRPC.Document sticker) {
+         UItem i = new UItem(UniversalAdapter.VIEW_TYPE_TEXT, false);
+         i.id = id;
+@@ -322,6 +348,25 @@ public class UItem extends AdapterWithDiffUtils.Item {
+         return i;
+     }
+ 
++    /** Переключатель с иконкой слева. */
++    public static UItem asCheck(int id, CharSequence text, int iconResId) {
++        UItem i = new UItem(UniversalAdapter.VIEW_TYPE_CHECK, false);
++        i.id = id;
++        i.text = text;
++        i.iconResId = iconResId;
++        return i;
++    }
++
++    /** Переключатель с подписью под заголовком. */
++    public static UItem asCheck(int id, CharSequence text, CharSequence value, boolean multiline) {
++        UItem i = new UItem(UniversalAdapter.VIEW_TYPE_CHECK, false);
++        i.id = id;
++        i.text = text;
++        i.textValue = value;
++        i.multiline = multiline;
++        return i;
++    }
++
+     public static UItem asRadio(int id, CharSequence text) {
+         UItem i = new UItem(UniversalAdapter.VIEW_TYPE_RADIO, false);
+         i.id = id;
+@@ -385,6 +430,10 @@ public class UItem extends AdapterWithDiffUtils.Item {
+         return i;
+     }
+ 
++    public static UItem asShadow() {
++        return asShadow(-1, null);
++    }
++
+     public static UItem asFilterChat(boolean include, long dialogId) {
+         UItem item = new UItem(UniversalAdapter.VIEW_TYPE_FILTER_CHAT, false);
+         item.include = include;
+@@ -730,6 +779,47 @@ public class UItem extends AdapterWithDiffUtils.Item {
+         return this;
+     }
+ 
++    public UItem setIcon(int iconResId) {
++        this.iconResId = iconResId;
++        return this;
++    }
++
++    public UItem setValue(CharSequence value) {
++        this.textValue = value;
++        return this;
++    }
++
++    public UItem setMultiline(boolean multiline) {
++        this.multiline = multiline;
++        return this;
++    }
++
++    public UItem setTransparent(boolean transparent) {
++        this.transparent = transparent;
++        return this;
++    }
++
++    public UItem setCheckBoxIcon(int resId) {
++        this.checkBoxIconResId = resId;
++        return this;
++    }
++
++    public UItem showDivider(boolean show) {
++        this.hideDivider = !show;
++        return this;
++    }
++
++    public UItem setColorfulIcon(int iconResId, int color) {
++        setIcon(iconResId);
++        this.iconColor = color;
++        return this;
++    }
++
++    public UItem prioritizeTitleOverValue(boolean value) {
++        this.prioritizeTitleOverValue = value;
++        return this;
++    }
++
+     public UItem setReordering(boolean reordering) {
+         this.reordering = reordering;
+         return this;

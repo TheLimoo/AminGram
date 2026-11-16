@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- exteraless: Python-плагины -->
+    <string name="OpenExtera" translatable="false">exteraless</string>
     <string name="OpenExteraPlugins">Plugins</string>
     <string name="PluginsSafeMode">Safe mode</string>
     <string name="PluginsSafeModeEnabled">Safe mode turned on. It takes effect on the next start.</string>

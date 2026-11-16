@@ -1,0 +1,185 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/AndroidUtilities.java b/TMessagesProj/src/main/java/org/telegram/messenger/AndroidUtilities.java
+index 572999c..35b207b 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/AndroidUtilities.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/AndroidUtilities.java
+@@ -254,6 +254,7 @@ public class AndroidUtilities {
+     public final static String TYPEFACE_ROBOTO_EXTRA_BOLD = "fonts/rextrabold.ttf";
+     public final static String TYPEFACE_ROBOTO_MEDIUM_ITALIC = "fonts/rmediumitalic.ttf";
+     public final static String TYPEFACE_ROBOTO_MONO = "fonts/rmono.ttf";
++    public static final String TYPEFACE_ROBOTO_REGULAR = "fonts/rregular.ttf";
+     public final static String TYPEFACE_MERRIWEATHER_BOLD = "fonts/mw_bold.ttf";
+ 
+     public static Typeface mediumTypeface;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBar.java b/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBar.java
+index b8c8379..7490eba 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBar.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBar.java
+@@ -34,6 +34,7 @@ import android.graphics.drawable.BitmapDrawable;
+ import android.graphics.drawable.Drawable;
+ import android.graphics.drawable.VectorDrawable;
+ import android.text.SpannableString;
++import android.text.StaticLayout;
+ import android.text.TextPaint;
+ import android.text.TextUtils;
+ import android.transition.ChangeBounds;
+@@ -51,6 +52,7 @@ import android.widget.FrameLayout;
+ import android.widget.ImageView;
+ 
+ import androidx.annotation.NonNull;
++import androidx.appcompat.widget.AppCompatImageView;
+ import androidx.core.graphics.ColorUtils;
+ import androidx.recyclerview.widget.RecyclerView;
+ 
+@@ -99,7 +101,7 @@ public class ActionBar extends FrameLayout implements FactorAnimator.Target, The
+     private BlurredBackgroundDrawable glassDrawableBack;
+     private BlurredBackgroundDrawable glassDrawableMenu;
+     private INavigationLayout.BackButtonState backButtonState = INavigationLayout.BackButtonState.BACK;
+-    public ImageView backButtonImageView;
++    public UnreadImageView backButtonImageView;
+     private BackupImageView avatarSearchImageView;
+     private Drawable backButtonDrawable;
+     private final SimpleTextView[] titleTextView = new SimpleTextView[2];
+@@ -392,7 +394,7 @@ public class ActionBar extends FrameLayout implements FactorAnimator.Target, The
+         if (backButtonImageView != null) {
+             return;
+         }
+-        backButtonImageView = new ImageView(getContext());
++        backButtonImageView = new UnreadImageView(getContext());
+         backButtonImageView.setScaleType(ImageView.ScaleType.CENTER);
+         backButtonImageView.setBackgroundDrawable(Theme.createSelectorDrawable(itemsBackgroundColor));
+         backButtonImageView.setPadding(dp(1), 0, 0, 0);
+@@ -2569,6 +2571,73 @@ public class ActionBar extends FrameLayout implements FactorAnimator.Target, The
+         }
+     }
+ 
++    // NekoX Changes
++
++    private StaticLayout countLayout;
++
++    public class UnreadImageView extends AppCompatImageView {
++        public UnreadImageView(Context context) {
++            super(context);
++        }
++
++        @Override
++        public void setImageResource(int resId) {
++            if (resId == 0) {
++                setImageDrawable(null);
++                return;
++            }
++            try {
++                setImageDrawable(getContext().getResources().getDrawable(resId, getContext().getTheme()));
++            } catch (Throwable t) {
++                super.setImageResource(resId);
++            }
++        }
++
++        private int unreadCount = 0;
++        private int pluginUnreadBadgeDepth;
++
++        public void beginPluginUnreadBadge() {
++            pluginUnreadBadgeDepth++;
++        }
++
++        public void endPluginUnreadBadge() {
++            pluginUnreadBadgeDepth = Math.max(0, pluginUnreadBadgeDepth - 1);
++        }
++
++        private RectF rect = new RectF();
++
++        @Override
++        public void onDraw(Canvas canvas) {
++            super.onDraw(canvas);
++            if (countLayout == null || unreadCount == 0 || pluginUnreadBadgeDepth > 0)
++                return;
++
++            Paint paint = Theme.dialogs_countPaint;
++            String unreadCountString = unreadCount > 99 ? "99+" : Integer.toString(unreadCount);
++            int countWidth = Math.max(AndroidUtilities.dp(12), (int) Math.ceil(Theme.dialogs_countTextPaint.measureText(unreadCountString)));
++            int countLeft = getMeasuredWidth() - countWidth - AndroidUtilities.dp(20);
++            int countTop = 0;
++
++            int x = countLeft - AndroidUtilities.dp(5.5f);
++            rect.set(x, countTop, x + countWidth + AndroidUtilities.dp(11), countTop + AndroidUtilities.dp(23));
++            canvas.drawRoundRect(rect, 11.5f * AndroidUtilities.density, 11.5f * AndroidUtilities.density, paint);
++            canvas.save();
++            canvas.translate(countLeft, countTop + AndroidUtilities.dp(4));
++            countLayout.draw(canvas);
++            canvas.restore();
++        }
++
++        public void setUnread(int count) {
++            if (count != unreadCount) {
++                unreadCount = count;
++                String countString = count > 99 ? "99+" : Integer.toString(count);
++                int countWidth = count == 0 ? 0 : Math.max(AndroidUtilities.dp(12), (int) Math.ceil(Theme.dialogs_countTextPaint.measureText(countString)));
++                countLayout = new StaticLayout(countString, Theme.dialogs_countTextPaint, countWidth, Layout.Alignment.ALIGN_CENTER, 1.0f, 0.0f, false);
++                invalidate();
++            }
++        }
++    }
++
+     public void setUseContainerForTitles() {
+         this.useContainerForTitles = true;
+         if (titlesContainer == null) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBarMenuItem.java b/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBarMenuItem.java
+index 4380aac..b005818 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBarMenuItem.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBarMenuItem.java
+@@ -2828,6 +2828,20 @@ public class ActionBarMenuItem extends FrameLayout {
+     public Item lazilyAddSwipeBackItem(int icon, Drawable iconDrawable, String text, View viewToSwipeBack) {
+         return putLazyItem(Item.asSwipeBackItem(icon, iconDrawable, text, viewToSwipeBack));
+     }
++
++    public Item lazilyReuseItem(Item item) {
++        if (item == null) {
++            return null;
++        }
++        if (lazyList != null && lazyList.contains(item)) {
++            return item;
++        }
++        AndroidUtilities.removeFromParent(item.view);
++        if (item.view == null) {
++            AndroidUtilities.removeFromParent(item.viewToSwipeBack);
++        }
++        return putLazyItem(item);
++    }
+     public Item lazilyAddSwipeBackItem(int icon, Drawable iconDrawable, String text, Utilities.Callback0Return<View> viewFactory) {
+         Item item = Item.asSwipeBackItem(icon, iconDrawable, text, null);
+         item.swipeBackViewFactory = viewFactory;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBarPopupWindow.java b/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBarPopupWindow.java
+index 06555b0..8fa6f82 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBarPopupWindow.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBarPopupWindow.java
+@@ -1113,6 +1113,9 @@ public class ActionBarPopupWindow extends PopupWindow {
+ 
+         Drawable shadowDrawable;
+ 
++        // По умолчанию true, т.е. как было
++        boolean dividerVisible = true;
++
+         public GapView(Context context, Theme.ResourcesProvider resourcesProvider) {
+             this(context, resourcesProvider, Theme.key_actionBarDefaultSubmenuSeparator);
+         }
+@@ -1127,6 +1130,12 @@ public class ActionBarPopupWindow extends PopupWindow {
+             this(context, Theme.getColor(colorKey, resourcesProvider), Theme.getColor(Theme.key_windowBackgroundGrayShadow, resourcesProvider));
+         }
+ 
++        /** На стекле разделитель гасится. */
++        public void setDividerVisible(boolean dividerVisible) {
++            this.dividerVisible = dividerVisible;
++            invalidate();
++        }
++
+         public void setColor(int color) {
+             setBackgroundColor(color);
+         }
+@@ -1134,7 +1143,7 @@ public class ActionBarPopupWindow extends PopupWindow {
+         @Override
+         protected void onDraw(Canvas canvas) {
+             super.onDraw(canvas);
+-            if (shadowDrawable != null) {
++            if (dividerVisible && shadowDrawable != null) {
+                 shadowDrawable.setBounds(0, 0, getWidth(), getHeight());
+                 shadowDrawable.draw(canvas);
+             }

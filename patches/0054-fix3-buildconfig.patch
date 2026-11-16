@@ -1,0 +1,22 @@
+diff --git a/TMessagesProj/build.gradle b/TMessagesProj/build.gradle
+index 48aebde..7a259e9 100644
+--- a/TMessagesProj/build.gradle
++++ b/TMessagesProj/build.gradle
+@@ -185,6 +185,17 @@ android {
+ 
+         multiDexEnabled true
+ 
++        // AminGram (Fix 3 / v3.0.3): BuildConfig fields the
++        // exteraless engine reads. exteraless builds TMessagesProj
++        // as an application module, where AGP generates
++        // APPLICATION_ID; ours is a library, so it is declared
++        // here. The app id is APP_PACKAGE (gradle.properties).
++        // BUILD_COMMIT_ID comes from CI's GITHUB_SHA (empty on
++        // local builds); PluginLog tolerates an empty value.
++        buildConfigField "String", "APPLICATION_ID", "\"org.telegram.messenger\""
++        buildConfigField "String", "BUILD_COMMIT_ID", "\"" + (System.getenv('GITHUB_SHA') ?: '').take(7) + "\""
++        buildConfigField "boolean", "DEBUG_TOOLS", "false"
++
+         externalNativeBuild {
+             cmake {
+                 version '3.22.1'

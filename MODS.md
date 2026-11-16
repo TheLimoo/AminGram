@@ -3438,6 +3438,163 @@ Open gaps (do NOT present as fixed):
   still unverified until device — green CI only proves the
   keeps compile in.
 
+## v3.0.3 — Fix 3: 37 Java compile errors — missing upstream APIs + unported helpers (2026-11-16, uncommitted)
+
+CI run 43819280503 (head 2b7c95f, Fix 2) resolved all deps, then
+FAILED at `:TMessagesProj:compileReleaseJavaWithJavac` with **37
+Java compile errors in 15 files** (full log
+`verify-scratch/v3watch-job3.log`; 111 `error:` lines = 37 errors,
+three sites doubled on one line each). Two categories, both traced
+to the same root cause: **the v3.0.0 "zero version skew" claim was
+wrong** — exteraless's 13.2.2 commit differs from pristine 21f7d10
+in the spots below, and the engine also calls helpers from packages
+the port never carried over. Corrected in the v3.0.0 section above.
+
+### Error inventory (all 37)
+
+(a) Missing packages/helpers the engine calls (11 errors):
+- `tw.nekomimi.nekogram.helpers` does not exist —
+  LocaleUtils:29 (TypefaceHelper), ChatUtils:11 (MessageHelper).
+- `tw.nekomimi.nekogram.utils` does not exist —
+  PluginsActivity:215, :287; PluginActivityLogActivity:280 (ShareUtil).
+- `app.exteraless.chats` does not exist — LocaleUtils:274
+  (LinkedCustomEmoji).
+- `app.exteraless.appearance` does not exist — PluginCell:308
+  (AppearanceConfig.sectionRadius).
+- `R.string.OpenExtera` — LocaleUtils:199.
+
+(b) Upstream APIs absent in pristine 21f7d10 (26 errors):
+- `ActionBar.UnreadImageView` — PyMethodHook:24, :76, :80 (x2),
+  :81, :103, :105 (7).
+- `UItem` — PluginSettingsActivity:604 (`asCheck(int,String,
+  String,boolean)` overload missing), :666 (`copy()`); PluginUiItem
+  :55 (x2, `.multiline`); PluginsInfoActivity:113, :124, :131
+  (`.setValue(String)`), :134, :139, :142 (`.setIcon(int)`) (11).
+- `TextCheckCell.setIcon(int)` — PluginUiItem:89 (1).
+- `BuildConfig.APPLICATION_ID` — AppUtils:237 (1);
+  `BUILD_COMMIT_ID` — PluginLog:109 (x2) (2); `DEBUG_TOOLS` —
+  PluginToggleTrace:62, :162 (2).
+- `GapView.setDividerVisible(boolean)` — PluginsMenuWrapper:172 (1).
+- `ActionBarMenuItem.lazilyReuseItem(Item)` — MenuInjector:362 (1).
+- `Process.myPid()` — ApplicationLoader:770 (1; pristine has NO
+  `android.os.Process` import, so `Process` resolved to
+  `java.lang.Process`).
+
+### Resolutions
+
+New patches 0051–0055 (patch files 44 → 49; no new upstream
+files beyond the 8 already counted — all eight were already in the
+46-file count):
+- **0051-fix3-uitem.patch** — UItem additions, ported from the
+  exteraless↔pristine UItem diff (GPL-3.0): `implements Cloneable`
+  + `copy()`; fields `checkBoxIconResId`, `iconColor`,
+  `prioritizeTitleOverValue`, `multiline`; `asButtonWithSubtext`,
+  `asCheck(id,text,int)`, `asCheck(id,text,CharSequence,boolean)`,
+  `asShadow()`; builders `setIcon`, `setValue`, `setMultiline`,
+  `setTransparent`, `setCheckBoxIcon`, `showDivider`,
+  `setColorfulIcon`, `prioritizeTitleOverValue`. NOT ported:
+  `setSearchable`/`setLinkAlias` (no callers in the tree; they need
+  the unported `SettingsRegistry`) and patch 0034's additions
+  (`settingItem`, `switchClickCallback`, `exteraExpandableSwitch`,
+  `asExteraExpandableSwitch`) which already exist.
+- **0052-fix3-upstream-apis.patch** — ActionBar: the
+  `UnreadImageView` inner class ported verbatim from exteraless
+  ActionBar:2839–2900 + `private StaticLayout countLayout;` +
+  `backButtonImageView` retyped `ImageView` → `UnreadImageView`
+  (pristine line 395) + the two imports pristine lacks
+  (`android.text.StaticLayout`,
+  `androidx.appcompat.widget.AppCompatImageView`).
+  `unreadBadgeSetCount` NOT ported (it gates on NekoConfig) — so
+  `setUnread` is never called by the app and the badge never draws
+  in normal use; the class exists so PyMethodHook's plugin-badge
+  suppression has a type to hook. GapView: `dividerVisible` field
+  (default true) + `setDividerVisible` + onDraw condition.
+  ActionBarMenuItem: `lazilyReuseItem` verbatim from exteraless
+  :3058–3070 (`putLazyItem`/`lazyList` already exist in pristine).
+  AndroidUtilities: `TYPEFACE_ROBOTO_REGULAR = "fonts/rregular.ttf"`.
+- **0053-fix3-textcheckcell.patch** — `setIcon` ported verbatim
+  from exteraless TextCheckCell:608–650 (null-guards `imageView`,
+  `resId == 0` hides it and restores padding) + `private int
+  defaultPaddingDp;` + ctor init. The resId==0 path is exactly how
+  PluginUiItem calls it (`cell.setIcon(0)`).
+- **0054-fix3-buildconfig.patch** — `TMessagesProj/build.gradle`
+  `defaultConfig`: `APPLICATION_ID = "org.telegram.messenger"`
+  (APP_PACKAGE), `BUILD_COMMIT_ID` from CI's `GITHUB_SHA` (first 7
+  chars; empty on local builds — PluginLog tolerates empty),
+  `DEBUG_TOOLS = false`. exteraless builds TMessagesProj as an
+  APPLICATION module, where AGP generates APPLICATION_ID; ours is a
+  library, so it is declared here. `BUILD_VERSION_STRING` already
+  existed in buildTypes.
+- **0055-fix3-process-import.patch** — ApplicationLoader: add
+  `import android.os.Process;`.
+
+New overlay files (all GPL-3.0 sources, minimal ports — only what
+the engine calls):
+- `tw/nekomimi/nekogram/helpers/MessageHelper.java` — minimal:
+  `getPathToMessage` x2 + `getMessagePlainText`, verbatim from the
+  NekoGram-vendored helpers in exteraless, EXCEPT the
+  NaConfig/AyuMessageUtils deleted-message-vault branch in
+  `getPathToMessage` is omitted (no vault in AminGram; returns null
+  when the file is not found). `FileLoader.getPathToMessage` /
+  `getPathToAttach` exist in pristine.
+- `tw/nekomimi/nekogram/helpers/TypefaceHelper.java` — minimal:
+  `getTitleText(int)` + `createTypeface(int,boolean)` chain
+  (asset lookup, Pixel Google Sans detection). NekoConfig flags
+  stubbed to false; NaConfig custom title dropped; title defaults
+  to the app name. Needs `AndroidUtilities.TYPEFACE_ROBOTO_REGULAR`
+  (patch 0052).
+- `tw/nekomimi/nekogram/utils/ShareUtil.java` — Java translation
+  of the vendored `ShareUtil.kt`: `shareFile(ctx, file)` +
+  `(ctx, file, caption)` via `FileProvider` with
+  `BuildConfig.APPLICATION_ID + ".provider"`, ACTION_SEND targeted
+  at `LaunchActivity`.
+- `app/exteraless/chats/LinkedCustomEmoji.java` — full 298-line
+  port; only `canSend` adapted: the original reads
+  `NekoConfig.localPremium` (not ported); this reads AminGram's own
+  `LocalPremiumModule.premiumFlag(ApplicationLoader.applicationContext)`
+  instead — same meaning (treat the user as premium locally).
+- `app/exteraless/appearance/AppearanceConfig.java` — minimal Java
+  STUB (the real one is a Kotlin object backed by NekoConfig /
+  NaConfig, not portable): `sectionRadius()` returns 20,
+  `titleText()` returns 0, `TITLE_TEXT_CUSTOM` = 4 (defaults from
+  the .kt file). PluginCell only calls `sectionRadius()`.
+- `res/values/strings_oe_plugins.xml` — added `<string
+  name="OpenExtera" translatable="false">exteraless</string>`.
+
+### Verification (local; no Android SDK — CI is the real typecheck)
+- Patch series 0001–0055 `git apply` clean on a fresh pristine
+  21f7d10 tree (+ overlay, CI model, incl. the workflow's
+  FileLoadOperation/FileUploadOperation hook): **49/49 patch files
+  OK**. (Process note: the scratch port-tree first generated 0051
+  against pristine instead of the 0001–0050 base — 0051 failed on
+  the fresh replay. Corrected by committing the 0001–0050 base in
+  the port-tree, re-running the port script, and regenerating all
+  five patches; the fresh replay then went 49/49. The first
+  `replay/` tree was also found already half-applied from an older
+  run and was deleted and re-extracted.)
+- JDK 17 ParseCheck over the FULL overlaid tree: **2495/2495 files
+  parse OK** (vs 2490 for v3.0.0 — the +5 are the new overlay
+  files). The 8 fix3-touched upstream files and the 6 new overlay
+  files are byte-identical between the patch-source tree and the
+  fresh replay tree.
+- CPython engine-port suite 20/20 still passing.
+- `git diff --check` clean; secret scan zero.
+- Script that generates patches 0051–0055 from the applied tree:
+  `verify-scratch/fix3/fix3_port.py` (anchor-based `rep()`, each
+  anchor asserted to occur exactly once; run from the scratch
+  port-tree, NOT from the repo — the repo holds only the overlay +
+  patches, the upstream files live in the patches).
+
+### Still unverifiable until CI / device
+- Whether all 37 errors are really gone — only
+  `:TMessagesProj:compileReleaseJavaWithJavac` in CI can confirm;
+  ParseCheck is syntax-only and cannot resolve symbols.
+- The `DEBUG_TOOLS = false` value: PluginToggleTrace only reads it;
+  if exteraless ever expected it true in debug, the toggle-trace UI
+  stays off — acceptable, it is a debug aid.
+- On-device test list from v3.0.0 still stands (zwylib + MSL, 8
+  toggles, restart persistence, disable restores stock Settings).
+
 ## v3.0.2 — Fix 2: Aliucord repo must be project-level, settings repo ignored (2026-11-16, uncommitted)
 
 CI run 43816668348 (head 661e3ef, Fix 1) FAILED the same way:
@@ -3500,7 +3657,16 @@ LICENSE relicense + commit + push; this port is the technical work only.
 ### Engine chosen: exteraless/exteraless (GPL-3.0), NOT AyuGram
 - `exteraless/exteraless`, default branch main, pushed 2026-11-13.
   **APP_VERSION_CODE=7303, APP_VERSION_NAME=13.2.2 — exactly our base,
-  zero version skew.** Its own docstring: a simplified reimplementation
+  zero version skew.** *(CORRECTED 2026-11-16, Fix 3: that claim was
+  WRONG. exteraless's 13.2.2 commit differs from pristine 21f7d10 in
+  at least 11 spots the engine calls — ActionBar.UnreadImageView,
+  GapView.setDividerVisible, ActionBarMenuItem.lazilyReuseItem,
+  UItem.copy/asCheck-overloads/asShadow()/setIcon/setValue/multiline,
+  TextCheckCell.setIcon, AndroidUtilities.TYPEFACE_ROBOTO_REGULAR,
+  BuildConfig.APPLICATION_ID/BUILD_COMMIT_ID/DEBUG_TOOLS, plus the
+  NekoGram helpers it vendors. Same version number, different commit.
+  See ## v3.0.3 for the full inventory and fixes.)* Its own
+  docstring: a simplified reimplementation
   of exteraGram's PluginsController (2379 lines), WITHOUT chat install
   dialogs, WITHOUT pip, WITHOUT SDK auto-updates — all three already
   match AminGram policy.
