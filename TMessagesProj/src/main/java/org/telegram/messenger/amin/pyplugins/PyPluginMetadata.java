@@ -56,6 +56,97 @@ public final class PyPluginMetadata {
             "^__([a-z]+(?:_[a-z]+)*)__\\s*=\\s*\\[([^\\]]*)\\]\\s*(#.*)?$");
     private static final Pattern QUOTED_ITEM = Pattern.compile("\"([^\"]*)\"|'([^']*)'");
 
+    /** Prefix of the refusal {@link #parse(String)} returns when a
+     *  file defines no {@code __id__} / {@code __name__}. */
+    public static final String MISSING_METADATA_PREFIX = "Missing metadata: ";
+
+    public static boolean isMissingMetadataError(String error) {
+        return error != null && error.startsWith(MISSING_METADATA_PREFIX);
+    }
+
+    /** Filename stem: last path segment, minus a trailing
+     *  {@code .plugin} / {@code .py} extension. Null in, null out. */
+    public static String fileNameStem(String fileName) {
+        if (fileName == null) {
+            return null;
+        }
+        String name = fileName;
+        int slash = Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\'));
+        if (slash >= 0) {
+            name = name.substring(slash + 1);
+        }
+        String lower = name.toLowerCase(java.util.Locale.ROOT);
+        if (lower.endsWith(".plugin")) {
+            name = name.substring(0, name.length() - ".plugin".length());
+        } else if (lower.endsWith(".py")) {
+            name = name.substring(0, name.length() - ".py".length());
+        }
+        return name;
+    }
+
+    /** Sanitizes a filename stem to a valid plugin id, or null
+     *  when none can be derived. Invalid characters become '_';
+     *  a stem that does not start with a letter gets a 'lib_'
+     *  prefix. No truncation: a stem longer than 32 chars is
+     *  refused rather than silently colliding with another id. */
+    public static String deriveLibraryId(String fileName) {
+        String stem = fileNameStem(fileName);
+        if (stem == null || stem.isEmpty()) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder(stem.length());
+        for (int i = 0; i < stem.length(); i++) {
+            char c = stem.charAt(i);
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+                    || (c >= '0' && c <= '9') || c == '_' || c == '-') {
+                sb.append(c);
+            } else {
+                sb.append('_');
+            }
+        }
+        String id = sb.toString();
+        if (id.isEmpty() || !Character.isLetter(id.charAt(0))) {
+            id = "lib_" + id;
+        }
+        if (!ID_PATTERN.matcher(id).matches()) {
+            return null;
+        }
+        return id;
+    }
+
+    /** Refusal text shared by the controller and the install
+     *  dialog when a metadata-less file's name cannot be a
+     *  library id. */
+    public static String libraryIdRefusal(String fileName) {
+        return "This file has no plugin metadata (__id__/__name__) "
+                + "and its filename '" + fileName + "' cannot be "
+                + "used as a library id. Rename the file to a simple "
+                + "name (letters, digits, '_' or '-', at least 2 "
+                + "characters, starting with a letter) and try again.";
+    }
+
+    /** Builds a library plugin from a picked file's display name
+     *  (Fix 3 / v2.5.5): a library .plugin (e.g. the real ZwyLib)
+     *  defines no BasePlugin subclass and no __id__/__name__
+     *  metadata, so it can never pass {@link #parse(String)} — but
+     *  its filename is a usable id. The derived plugin is a
+     *  library: version "1.0.0", category "libraries", no
+     *  requirements, {@code library=true}. Returns null when no
+     *  valid id can be derived. */
+    public static PyPlugin libraryFromFileName(String fileName) {
+        String id = deriveLibraryId(fileName);
+        if (id == null) {
+            return null;
+        }
+        PyPlugin plugin = new PyPlugin();
+        plugin.id = id;
+        plugin.name = fileNameStem(fileName);
+        plugin.version = "1.0.0";
+        plugin.categories.add("libraries");
+        plugin.library = true;
+        return plugin;
+    }
+
     /** Result of {@link #parse(String)}: metadata or a refusal reason. */
     public static final class Parsed {
         public PyPlugin plugin;

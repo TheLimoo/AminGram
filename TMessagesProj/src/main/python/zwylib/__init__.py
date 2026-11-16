@@ -20,10 +20,10 @@ plugins directory (which the host appends at load time), so
 ``import zwylib`` in a plugin always resolves to THIS package,
 never to a user-installed ``zwylib.plugin`` file. Installing the
 real ZwyLib is therefore unnecessary and has no effect on
-imports. A real ``zwylib.plugin`` file installed as a plugin
-would additionally fail to load as a plugin itself (it defines
-no BasePlugin subclass — library-plugin loading is an M4 gap);
-do not install one.
+imports. Since v2.5.5 a real ``zwylib.plugin`` file CAN be
+installed — it is accepted as a harmless library (no settings
+UI, no lifecycle; importable by other plugins) — but it changes
+nothing, because this bundled 2.0.6 still wins on ``sys.path``.
 
 Surface (all clean-room):
 - :func:`is_zwylib_version_sufficient` — version gate.

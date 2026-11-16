@@ -4,8 +4,10 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.database.Cursor;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.provider.OpenableColumns;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.EditText;
@@ -604,7 +606,9 @@ public class AminPyPluginsActivity extends BaseFragment {
                         tmp.delete();
                     }
                 }
-                confirmInstall(dlBytes);
+                // A catalog entry's name doubles as the file name
+                // for the library fallback (Fix 3 / v2.5.5).
+                confirmInstall(dlBytes, entry.name);
             });
         }).start();
     }
@@ -644,6 +648,18 @@ public class AminPyPluginsActivity extends BaseFragment {
         } catch (Throwable ignored) {
         }
         new Thread(() -> {
+            // Fix 3 (v2.5.5): the picked file's display name is
+            // the library id when the file has no metadata
+            // (__id__/__name__) — e.g. the real ZwyLib.
+            String displayName = null;
+            try (Cursor c = context.getContentResolver().query(uri,
+                    new String[]{OpenableColumns.DISPLAY_NAME},
+                    null, null, null)) {
+                if (c != null && c.moveToFirst()) {
+                    displayName = c.getString(0);
+                }
+            } catch (Throwable ignored) {
+            }
             byte[] bytes = null;
             try (InputStream in = context.getContentResolver().openInputStream(uri);
                  ByteArrayOutputStream out = new ByteArrayOutputStream()) {
@@ -665,12 +681,22 @@ public class AminPyPluginsActivity extends BaseFragment {
                 return;
             }
             final byte[] fileBytes = bytes;
-            AndroidUtilities.runOnUIThread(() -> confirmInstall(fileBytes));
+            final String fileName = displayName;
+            AndroidUtilities.runOnUIThread(() -> confirmInstall(fileBytes, fileName));
         }).start();
     }
 
     /** Shows the install-time analysis report and installs on approval. */
     private void confirmInstall(final byte[] bytes) {
+        confirmInstall(bytes, null);
+    }
+
+    /** As {@link #confirmInstall(byte[])}, plus the picked file's
+     *  display name (Fix 3 / v2.5.5): a metadata-less file is
+     *  offered as a LIBRARY under an id derived from that name —
+     *  the dialog says so, and the Install path uses the same
+     *  fallback as the controller, so it cannot refuse again. */
+    private void confirmInstall(final byte[] bytes, final String fileName) {
         final Context context = getContext();
         if (context == null || getParentActivity() == null) {
             return;
@@ -689,16 +715,40 @@ public class AminPyPluginsActivity extends BaseFragment {
         }
         org.telegram.messenger.amin.pyplugins.PyPluginMetadata.Parsed parsed =
                 org.telegram.messenger.amin.pyplugins.PyPluginMetadata.parse(source);
+        final PyPlugin plugin;
+        final boolean isLibrary;
         if (parsed.error != null) {
-            bulletin(R.raw.error, parsed.error);
-            return;
+            // Fix 3 (v2.5.5): same fallback as the controller —
+            // a metadata-less file with a known name is a library.
+            // Without a name there is nothing to derive an id
+            // from, so the refusal stands.
+            if (!org.telegram.messenger.amin.pyplugins.PyPluginMetadata
+                    .isMissingMetadataError(parsed.error)
+                    || fileName == null) {
+                bulletin(R.raw.error, parsed.error);
+                return;
+            }
+            PyPlugin lib = org.telegram.messenger.amin.pyplugins.PyPluginMetadata
+                    .libraryFromFileName(fileName);
+            if (lib == null) {
+                bulletin(R.raw.error, org.telegram.messenger.amin.pyplugins.PyPluginMetadata
+                        .libraryIdRefusal(fileName));
+                return;
+            }
+            plugin = lib;
+            isLibrary = true;
+        } else {
+            plugin = parsed.plugin;
+            isLibrary = false;
         }
-        final PyPlugin plugin = parsed.plugin;
         List<PyPluginAnalysis.Finding> findings =
                 org.telegram.messenger.amin.pyplugins.PyPluginAnalysis.analyze(source, plugin);
         StringBuilder report = new StringBuilder();
         report.append(plugin.name).append(" v").append(plugin.version);
-        if (!plugin.author.isEmpty()) {
+        if (isLibrary) {
+            report.append(" (library — no settings UI, no lifecycle; "
+                    + "other plugins can import it)");
+        } else if (!plugin.author.isEmpty()) {
             report.append(" by ").append(plugin.author);
         }
         report.append("\n\nThis plugin runs with full app access. The source text shows:\n");
@@ -707,12 +757,12 @@ public class AminPyPluginsActivity extends BaseFragment {
         }
         report.append("\nHidden or downloaded code would not show up here. Install only files from sources you trust.");
         AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
-        builder.setTitle("Install Python plugin?");
+        builder.setTitle(isLibrary ? "Install Python library?" : "Install Python plugin?");
         builder.setMessage(report.toString());
         builder.setPositiveButton("Install", (dialog, which) -> {
-            String error = PyPluginsController.installFromBytes(context, bytes, "file");
+            String error = PyPluginsController.installFromBytes(context, bytes, "file", fileName);
             if (error == null) {
-                bulletin(R.raw.contact_check, "Plugin installed");
+                bulletin(R.raw.contact_check, isLibrary ? "Library installed" : "Plugin installed");
                 rebuild();
             } else {
                 bulletin(R.raw.error, error);

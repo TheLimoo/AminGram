@@ -1,0 +1,83 @@
+diff --git a/TMessagesProj/proguard-rules.pro b/TMessagesProj/proguard-rules.pro
+index 42176e1..a4728b0 100644
+--- a/TMessagesProj/proguard-rules.pro
++++ b/TMessagesProj/proguard-rules.pro
+@@ -143,3 +143,78 @@
+ -keepclassmembers class org.telegram.ui.ActionBar.Theme {
+     public static boolean isCurrentThemeMonet();
+ }
++
++# AminGram (Fix 3 / v2.5.5): the whole string-resolution surface.
++# Python plugins and the MaterialSettingsList DEX resolve these
++# classes/members BY NAME at runtime (Chaquopy jclass / Xposed
++# reflection); R8 runs on the release build and renamed
++# org.telegram.messenger.R, so `from org.telegram.messenger
++# import R` failed on device with "cannot import name 'R'".
++# Every entry below was verified against pristine 21f7d10 and
++# against a full enumeration of the DEX's references (methods,
++# fields, and class-name strings). Targeted keeps only — no
++# blanket org.telegram.** keep. Class names already kept by M0
++# (SettingsActivity, UItem, UniversalAdapter,
++# UniversalRecyclerView, LocaleController, ApplicationLoader)
++# are not repeated here; TLRPC is already covered by upstream's
++# `-keep class org.telegram.tgnet.**`.
++-keep class org.telegram.messenger.R { *; }
++-keep class org.telegram.messenger.R$* { *; }
++-keepnames class org.telegram.ui.ChatActivity
++-keepclassmembers class org.telegram.ui.ChatActivity {
++    public static org.telegram.ui.ChatActivity of(...);
++}
++-keepclassmembers class org.telegram.messenger.LocaleController {
++    public static org.telegram.messenger.LocaleController getInstance();
++    public org.telegram.messenger.LocaleController$LocaleInfo getCurrentLocaleInfo();
++    public static *** getString(...);
++}
++-keepclassmembers class org.telegram.messenger.LocaleController$LocaleInfo {
++    java.lang.String pluralLangCode;
++}
++-keepclassmembers class org.telegram.messenger.ApplicationLoader {
++    public static android.content.Context applicationContext;
++}
++-keepclassmembers class org.telegram.ui.SettingsActivity {
++    private void fillItems(java.util.ArrayList, org.telegram.ui.Components.UniversalAdapter);
++}
++-keepnames class org.telegram.ui.SettingsActivity$SettingCell
++-keepnames class org.telegram.ui.SettingsActivity$SettingCell$Factory
++-keepnames class org.telegram.ui.SettingsActivity$SettingCell$Background
++-keepclassmembers class org.telegram.ui.SettingsActivity$SettingCell {
++    public void updateColors();
++}
++-keepclassmembers class org.telegram.ui.SettingsActivity$SettingCell$Factory {
++    public void bindView(android.view.View, org.telegram.ui.Components.UItem, boolean, org.telegram.ui.Components.UniversalAdapter, org.telegram.ui.Components.UniversalRecyclerView);
++}
++-keepnames class org.telegram.ui.ActionBar.Theme
++-keepclassmembers class org.telegram.ui.ActionBar.Theme {
++    public static boolean isCurrentThemeDark();
++}
++-keepclassmembers class org.telegram.ui.Components.UItem {
++    public static org.telegram.ui.Components.UItem asShadow(java.lang.CharSequence);
++    public boolean instanceOf(java.lang.Class);
++    public int id;
++    public long longValue;
++    public java.lang.Object object;
++}
++-keepclassmembers class org.telegram.ui.Components.ListView.AdapterWithDiffUtils$Item {
++    public int viewType;
++}
++-keepclassmembers class org.telegram.ui.Components.UniversalAdapter {
++    public void update(boolean);
++}
++-keepclassmembers class org.telegram.ui.Components.UniversalRecyclerView {
++    public org.telegram.ui.Components.UniversalAdapter adapter;
++}
++-keepnames class org.telegram.ui.ActionBar.INavigationLayout
++-keepclassmembers class org.telegram.ui.ActionBar.INavigationLayout {
++    java.util.List getFragmentStack();
++}
++-keepnames class org.telegram.ui.ActionBar.BaseFragment
++-keepnames class org.telegram.messenger.AndroidUtilities
++-keepclassmembers class org.telegram.messenger.AndroidUtilities {
++    public static void runOnUIThread(java.lang.Runnable);
++}
++-keepnames class org.telegram.ui.LaunchActivity
++-keepnames class org.telegram.ui.ViewPagerActivity

@@ -246,6 +246,16 @@ public final class PyPluginsController {
     /** Installs from raw bytes. Returns null on success, or a
      *  readable refusal. Never starts Python. */
     public static String installFromBytes(Context context, byte[] bytes, String sourceTag) {
+        return installFromBytes(context, bytes, sourceTag, null);
+    }
+
+    /** As {@link #installFromBytes(Context, byte[], String)}, plus
+     *  the picked file's display name (Fix 3 / v2.5.5): a
+     *  metadata-less file can install as a library under an id
+     *  derived from that name. Null when the caller has no name
+     *  (DevServer upload) — such files are refused, not guessed. */
+    public static String installFromBytes(Context context, byte[] bytes, String sourceTag,
+                                          String fileName) {
         if (context == null) {
             return "No context.";
         }
@@ -269,20 +279,49 @@ public final class PyPluginsController {
         } catch (Throwable t) {
             return "Plugin file is not valid UTF-8 text.";
         }
-        return installFromSource(context, source, sourceTag);
+        return installFromSource(context, source, sourceTag, fileName);
     }
 
     /** Installs from source text. Returns null on success. */
     public static synchronized String installFromSource(Context context, String source,
                                                         String sourceTag) {
+        return installFromSource(context, source, sourceTag, null);
+    }
+
+    /** As {@link #installFromSource(Context, String, String)},
+     *  plus the picked file's display name (Fix 3 / v2.5.5). */
+    public static synchronized String installFromSource(Context context, String source,
+                                                        String sourceTag, String fileName) {
         if (context == null) {
             return "No context.";
         }
         PyPluginMetadata.Parsed parsed = PyPluginMetadata.parse(source);
+        PyPlugin plugin;
         if (parsed.error != null) {
-            return parsed.error;
+            if (!PyPluginMetadata.isMissingMetadataError(parsed.error)) {
+                return parsed.error;
+            }
+            // Fix 3 (v2.5.5): a metadata-less file is a LIBRARY,
+            // not a broken plugin — the real ZwyLib has no
+            // __id__/__name__ and no BasePlugin subclass, so it
+            // could never pass parse() and the M4 load-time library
+            // fallback could never run. Its filename becomes the
+            // id — but only when the caller knows the filename
+            // (file / catalog installs). A DevServer upload has
+            // none, so it is refused with a clear message instead
+            // of installing under a guessed id.
+            if (fileName == null) {
+                return parsed.error + " Install it from a file "
+                        + "instead, or add __id__ and __name__ to "
+                        + "the source.";
+            }
+            plugin = PyPluginMetadata.libraryFromFileName(fileName);
+            if (plugin == null) {
+                return PyPluginMetadata.libraryIdRefusal(fileName);
+            }
+        } else {
+            plugin = parsed.plugin;
         }
-        PyPlugin plugin = parsed.plugin;
         if (!plugin.requirements.isEmpty()) {
             // M4 FINAL (see MODS.md): __requirements__ stays
             // refused. A pip installer would download and execute

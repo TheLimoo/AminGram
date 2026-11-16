@@ -56,7 +56,8 @@ public final class PyPlugin {
      *  and was loaded as a library (M4 load fallback): its
      *  modules are importable by other plugins, but it has no
      *  lifecycle, no settings UI and no hooks. Set at load time,
-     *  not at install. */
+     *  or at install time (Fix 3 / v2.5.5) when a metadata-less
+     *  file installs as a library under a filename-derived id. */
     public boolean library;
 
     public JSONObject toJson() {
