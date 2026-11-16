@@ -2,7 +2,7 @@ diff --git a/TMessagesProj/src/main/java/org/telegram/tgnet/ConnectionsManager.j
 index ab54ee3..022862f 100644
 --- a/TMessagesProj/src/main/java/org/telegram/tgnet/ConnectionsManager.java
 +++ b/TMessagesProj/src/main/java/org/telegram/tgnet/ConnectionsManager.java
-@@ -423,10 +423,26 @@ public class ConnectionsManager extends BaseController {
+@@ -423,10 +423,33 @@ public class ConnectionsManager extends BaseController {
          if (BuildVars.LOGS_ENABLED) {
              FileLog.d("send request " + object + " with token = " + requestToken);
          }
@@ -21,6 +21,13 @@ index ab54ee3..022862f 100644
 +            }
 +        }
 +        // --- exteraless plugins ---
++        // Fix 4 (v3.0.4): pluginRequest is reassigned above, so it is
++        // not effectively final and cannot be captured by the lambdas
++        // below (CI: "local variables referenced from a lambda
++        // expression must be final or effectively final"). Capture
++        // this final copy instead; it is assigned once, after the
++        // last reassignment of pluginRequest.
++        final TLObject finalPluginRequest = pluginRequest;
 +
          try {
 -            NativeByteBuffer buffer = new NativeByteBuffer(object.getObjectSize());
@@ -32,12 +39,12 @@ index ab54ee3..022862f 100644
  
              long startRequestTime = 0;
              if (BuildVars.DEBUG_PRIVATE_VERSION && BuildVars.LOGS_ENABLED || (connectionType & ConnectionTypeDownload) != 0) {
-@@ -480,18 +496,41 @@ public class ConnectionsManager extends BaseController {
+@@ -480,18 +503,41 @@ public class ConnectionsManager extends BaseController {
                      }
                      if (BuildVars.LOGS_ENABLED) {
                          FileLog.d("java received " + resp + (error != null ? " error = " + error : "") + " messageId = 0x" + Long.toHexString(requestMsgId));
 -                        FileLog.dumpResponseAndRequest(currentAccount, object, resp, error, requestMsgId, finalStartRequestTime, requestToken);
-+                        FileLog.dumpResponseAndRequest(currentAccount, pluginRequest, resp, error, requestMsgId, finalStartRequestTime, requestToken);
++                        FileLog.dumpResponseAndRequest(currentAccount, finalPluginRequest, resp, error, requestMsgId, finalStartRequestTime, requestToken);
                      }
                      final TLObject finalResponse = resp;
                      final TLRPC.TL_error finalError = error;
@@ -46,7 +53,7 @@ index ab54ee3..022862f 100644
 +                        // exteraless plugins: post_request_hook
 +                        if (app.exteraless.plugins.PluginsController.getInstance().hasAnyRequestHooks()) {
 +                            app.exteraless.plugins.HookResult postHook = app.exteraless.plugins.PluginsController.getInstance()
-+                                    .executePostRequestHook(currentAccount, app.exteraless.plugins.PluginsController.hookName(pluginRequest), finalResponse, finalError);
++                                    .executePostRequestHook(currentAccount, app.exteraless.plugins.PluginsController.hookName(finalPluginRequest), finalResponse, finalError);
 +                            if (postHook.isCancel()) {
 +                                if (onComplete == null && onCompleteTimestamp == null
 +                                        && finalResponse instanceof TLRPC.Updates) {
