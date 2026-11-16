@@ -1,1 +1,1 @@
-"""ui package — AminGram Python plugin SDK, M0."""
+"""exteraless plugin SDK: settings UI declarations package."""

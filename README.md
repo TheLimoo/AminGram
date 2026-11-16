@@ -16,7 +16,7 @@ calls, three new bundled plugins (10 in total), and the removal of
 the custom design themes — AminGram now uses upstream Telegram
 themes as-is. Details: `MODS.md` (v2.0 section) and `DEVLOG.md`.
 
-GPLv2 — same license as upstream. Built and signed by GitHub
+GPLv3 — the Telegram base is licensed GPL v2-or-later and the plugin engine (exteraless) is GPL-3.0, so the combined work is distributed under GPL-3.0 (see LICENSE). Built and signed by GitHub
 Actions; releases are sideload APKs signed with AminGram's own
 keystore. Uses the owner's own Telegram API credentials (repo
 secrets `API_ID` / `API_HASH`), never committed.
@@ -154,5 +154,5 @@ CI (`.github/workflows/build.yml`) does exactly this; locally:
 
 - Upstream: **DrKLO/Telegram** (Telegram for Android) — AminGram is
   a patch + overlay fork; all upstream code remains the work of its
-  authors, GPLv2.
-- Plugin engine: Mozilla Rhino. Google sign-in: Play Services Auth.
+  authors (GPL v2-or-later, distributed here under GPL-3.0).
+- Plugin engine: **exteraless** (GPL-3.0) + Chaquopy Python. Google sign-in: Play Services Auth.

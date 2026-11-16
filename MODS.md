@@ -21,7 +21,10 @@ Target: keep this list under 40 files, each with 1–3 line hooks.
 rule: patch files + CI inline edits together, each distinct
 upstream file counted once. Current count at M3: 34 files
 (32 via patches + 2 CI inline edits), headroom 6. M4 adds
-zero new upstream files.)
+zero new upstream files. **Cap LIFTED by Amin 2026-11-16 for the
+real-engine port (v3.0.0): 45 distinct upstream files now — the
+engine's hooks cannot fit in 40, and he approved doing whatever
+is needed. No headroom math anymore.**)
 
 ## Overlay file overrides (whole-file copies over upstream, v1.1)
 - `TMessagesProj/src/main/res/mipmap-anydpi-v26/ic_launcher.xml` +
@@ -3434,3 +3437,273 @@ Open gaps (do NOT present as fixed):
 - DEX-hook behaviour (reorder groups, debloat, palette) is
   still unverified until device — green CI only proves the
   keeps compile in.
+
+## v3.0.0 — Real plugin engine port (exteraless), clean-room engine removed (2026-11-16, uncommitted)
+
+Amin tested v50 (Fix 4, HEAD dceb8ed) on his phone and it did NOT work
+("کاد نکرد"). His order (2026-11-16 ~09:13 Tehran): use the ORIGINAL
+plugin engine from exteraGram or AyuGram instead of the clean-room
+reimplementation — "اشکال نداره هرکاری لازمه انحام بده" (no problem, do
+whatever is needed). That order confirmed BOTH consequences: the
+GPL-3.0 relicense AND the lifted patch-file cap. The parent handles the
+LICENSE relicense + commit + push; this port is the technical work only.
+
+### Engine chosen: exteraless/exteraless (GPL-3.0), NOT AyuGram
+- `exteraless/exteraless`, default branch main, pushed 2026-11-13.
+  **APP_VERSION_CODE=7303, APP_VERSION_NAME=13.2.2 — exactly our base,
+  zero version skew.** Its own docstring: a simplified reimplementation
+  of exteraGram's PluginsController (2379 lines), WITHOUT chat install
+  dialogs, WITHOUT pip, WITHOUT SDK auto-updates — all three already
+  match AminGram policy.
+- Rejected: `AyuGram/AyuGram4A` ("Just an exteraGram based client",
+  GPL-2.0, default branch `rewrite`, APP_VERSION_NAME=9.6.6,
+  APP_VERSION_CODE=3362, last pushed 2023-09-11) — ~3.5 years stale,
+  its hooks would not apply to 13.2.2.
+- Note: the first-guess paths `exteraSquad/exteraless` and
+  `AyuGram/AyuGram` are both 404; the real owner is `exteraless`.
+- exteraless is a FULL client fork (its 13.2.2 commit differs slightly
+  from our pristine 21f7d10: 745 files differ, mostly trivial typo /
+  newline fixes; ChatActivity +6508 lines of other features). Only the
+  plugin engine was ported — every patch hunk below is plugin-only;
+  the fork's other features (backup UI, LinkCleaner, appearance,
+  feed, ghost mode, AI review, drawer menu, proxy ping, etc.) were
+  deliberately NOT ported.
+
+### Licence (parent confirms the relicense; do NOT edit LICENSE here)
+- Distributed AminGram must go out under **GPL-3.0** (exteraless engine
+  is GPL-3.0; the Telegram base is GPL-2.0). Sources used, with
+  licences: exteraless/exteraless (GPL-3.0, used); AyuGram/AyuGram4A
+  (GPL-2.0, consulted only, not used). No code was copied from any
+  source whose licence could not be identified.
+
+### What was ported (verbatim exteraless code, adapted only where noted)
+- Engine Java, 86 files under `TMessagesProj/src/main/java/`:
+  `app/exteraless/plugins/**` (~55 files: PluginsController,
+  PluginSinkGate, ClassProxyFactory, PluginSettingsActivity,
+  PluginsWatchdog, PluginsActivity, PythonPluginsEngine,
+  PluginInstallBottomSheet, MenuInjector, IntentsDispatcher,
+  XposedHooks, PythonBridge, PluginRuntime, PluginInstallHelper,
+  PluginLog, PluginPermissions, PluginGrantStore, PluginTrustLevel,
+  PluginsBackup, PluginsConstants, SignedGrantPreferences,
+  PluginViewProxies, PluginMediaServices, PluginServices,
+  PluginDenialNotice, HookResult, HookTargetCache, JsonUtils,
+  MenuItemRecord, ClassAliases, files/FilesControllerJava, intents/,
+  menus/, models/, ui/, utils/, xposed/) +
+  `com/exteragram/messenger/plugins/**` (abstract facades: Plugin,
+  PluginsConstants, PluginsController, PythonPluginsEngine, ui/,
+  xposed/ — plugins resolve these FQ names, so they stay) +
+  support: `com/exteragram/messenger/preferences/BasePreferencesActivity`,
+  `com/exteragram/messenger/utils/AppUtils`,
+  `app/exteraless/utils/AppUtils`, `app/exteraless/utils/text/MarkdownUtils`,
+  `com/exteragram/messenger/utils/PluginToggleTrace`,
+  `org/telegram/ui/Wallet/WalletPluginFreeze.java` (freeze flag while
+  Wallet screens open; XposedHooks checks it).
+  Two files OVERWROTE M0 facade stubs of the same FQ name
+  (PluginsController, AppUtils) — the stubs are gone, the real ones
+  are in.
+- Python SDK, 39 files under `TMessagesProj/src/main/python/`:
+  the whole `extera_utils/` (metadata_parser, plugin_loader,
+  audit_gate, capability_scan), `elyx_runtime/`, `elyxcore/`,
+  `base_plugin.py` (38 KB), `client_utils.py`, `hook_utils.py`,
+  `file_utils.py`, `intents.py`, `log_utils.py`, `markdown_utils.py`,
+  `pip_controller.py` (kept; the engine never calls pip),
+  `plugin_settings.py`, `dev_server.py`, `android_utils.py`, `ui/`.
+  The Chaquopy fork `exteraless/chaquopy` was NOT used: it is an
+  upstream Chaquopy mirror with no exteraGram-specific patches, so
+  stock Chaquopy 17.2.0 (patch 0025, CI-proven) stays. The fork is
+  the fallback if a Chaquopy-level failure appears on device.
+- Resources: `res/values/strings_oe_plugins.xml` (213 lines, ~190
+  strings, incl. 4 unused AI strings), `msg_plugins.png` in
+  drawable-hdpi/mdpi/xhdpi/xxhdpi, `drawable/baseline_code_24.xml`,
+  `drawable/ic_ab_search_solar.xml`. Our `ic_foreground_solid.xml`
+  (Fix 4) is kept.
+- New Maven deps (patch 0047, the engine's own versions):
+  `com.aliucord:Aliuhook:1.1.4` (LSPlant Xposed bridge — hooking is
+  AliuHook; `de.robv.android.xposed.XposedBridge` comes from it, no
+  native code of ours needed), `org.mvel:mvel2:2.5.2.Final`,
+  `com.linkedin.dexmaker:dexmaker:2.28.6`,
+  `org.lsposed.hiddenapibypass:hiddenapibypass:6.1`. Gson stays at
+  pristine 2.11.0 (the engine's Gson use is API-compatible).
+- Hooking model: AliuHook (LSPlant) + XposedHooks (lazy init,
+  hidden-API restriction removal, crash-strike gate — 2 strikes
+  disable hooks, denied targets Wallet/TON/keystore, per-plugin
+  unhook registry). MSL's DEX hooks SettingsActivity bindView /
+  updateColors / fillItems through this, not through our old
+  PySettingsHookRegistry call sites.
+
+### What was removed (one plugin system only)
+- The whole clean-room engine: `org/telegram/messenger/amin/pyplugins/`
+  (18 files), the `de/robv/android/xposed/` shim (2 files — it
+  conflicted with AliuHook's real XposedBridge), `AminPyPluginsActivity`,
+  `AminPyPluginActivity`, `AminCatalogActivity` (M4 catalog dropped —
+  the real engine has no catalog/repo loader), all our Python files
+  incl. the clean-room `zwylib/` package (the real ZwyLib installs as
+  a library; the bundle is gone), `__pycache__` dirs.
+- Patches deleted: 0026 (clean-room bootstrap init), 0027 (clean-room
+  LaunchActivity hooks), 0028 old (PySettingsHookRegistry call sites).
+  0028 was rewritten as `0028-plugin-settings-members.patch`: it keeps
+  ONLY the three member additions the MSL DEX resolves by name
+  (`Theme.isCurrentThemeMonet()` → false, `SettingCell.getIconView()`,
+  `Background.setColor(int,int,boolean)`) + the proguard keeps for
+  them. Stock 13.2.2 has none of the three; exteraless's Theme HAS
+  isCurrentThemeMonet and its SettingCell HAS getIconView.
+- `AminHooks.java`: all pyplugins branches stripped (onRawUpdates +
+  onNewMessages fan-out lines, onOutgoingMessage M2 block, M0
+  on_command fan-out, whole AppEvent section + 4 onPyLaunch* methods,
+  attachMenuPlugins Python block, `py:attach:` / `py:ctx:` branches,
+  `buildPyMenuContext`, dead `pyChatType`). JS engine paths untouched.
+- `HubCommon.java`: catalog row + `case "plugin_catalog"` removed;
+  Python section rewired to the real engine
+  (`PluginsController.getInstance().isEngineEnabled()`, null-safe
+  before init) and `case "py_plugins"` now presents the real
+  `app.exteraless.plugins.ui.PluginsActivity`.
+- Fixture `.plugin` files under `assets/amingram_pyplugins` were left
+  in place (inert). `hooks_demo.plugin` still references the old
+  `amin.pyplugins.PyPluginHost` class name in a string — dead text,
+  it will not run under the real engine. The on-device list below
+  says which fixtures to try.
+
+### Adaptations (engine code changed for our tree)
+- `PluginInstallBottomSheet.java`: AI review stripped (AiController /
+  AiSettingsActivity / PlayerColors / PluginAiReview imports, the
+  review chip block, `openAiSettings()`); `PlayerColors` replaced
+  with Theme colors throughout (no material dep in stock Telegram's
+  build, so PlayerColors could not be ported). Verified: zero
+  `colors.` references remain.
+- `PluginsWatchdog.java`: `AppRestartHelper.triggerRebirth` (neko)
+  replaced with a local restart (Intent to LaunchActivity with
+  NEW_TASK|CLEAR_TASK + `Process.killProcess(myPid())`).
+- `MenuInjector.java`: drawer paths dropped (no DrawerMenuItemView /
+  MainMenuHelper in stock Telegram); MAIN_MENU rewritten to stock
+  ItemOptions — a "Plugins" row opening a swipe-back submenu,
+  long-press opens the hub, empty case opens the hub directly.
+- `VibratorUtils.java` (com.exteragram.messenger.utils.system) was
+  DELETED, with its identity row removed from ClassAliases: it calls
+  `ExteraConfig.inAppVibration()`, and ExteraConfig is a 2257-line
+  fork config class whose whole settings tree (OpenExteraConfig,
+  AppearanceConfig, ChatsConfig, backup.PreferencesUtils, …) was not
+  ported. Nothing in the engine calls VibratorUtils — only
+  ClassAliases referenced it, as a string in the alias table. A
+  full-repo import-closure check after the fix finds only the three
+  expected non-issues: `org.telegram.messenger.BuildConfig` and
+  `org.telegram.messenger.R` (both generated at build time, absent
+  from pristine source too) and the pre-existing, untouched
+  `org.telegram.amingram.soarbridge.Soarbridge` (DNS code).
+- `ApplicationLoader` (patch 0031): engine init + a SIMPLIFIED
+  `installCrashReportFilter()` (watchdog + saved handler only; no
+  CrashLog / Crashlytics reporting). Pristine has no saved
+  `systemUncaughtExceptionHandler`, so the field + the
+  attachBaseContext assignment were added too.
+- `ConnectionsManager` (patch 0038): the pre/post request hooks use
+  the (possibly replaced) `pluginRequest`/`pluginResponse`; the
+  feed-normalizer step was skipped (other feature). `object` is kept
+  for the `instanceof TL_upload_getFile` download-size checks, exactly
+  as exteraless does; `dumpResponseAndRequest` logs the request that
+  was actually sent.
+- `MessagesController.processUpdates` (patch 0037): the internal
+  stageQueue re-post calls `processUpdatesInternal` directly, as
+  exteraless does — no double-hook.
+- `LaunchActivity` (patch 0032): EVENT_APP_STOP fires unconditionally
+  in onDestroy (as exteraless does — NOT guarded by isFinishing, unlike
+  our old M2 code); `PluginDenialNotice.flush()` added onResume.
+  EVENT_APP_START is NOT fired from LaunchActivity — the engine fires
+  it from `PluginsController.init()`.
+- `ChatActivity` (patch 0044): the MESSAGE_PLUGINS_OPTION cell block
+  was placed in pristine's cell loop (after the default click
+  listener, before OPTION_TRANSLATE) — pristine has no Reply/Copy/
+  Forward swipeback wrappers, so there is no `nkbtn_detail` anchor
+  to hang it on. The flags condition gains ONLY the
+  MESSAGE_PLUGINS_OPTION term (exteraless also adds OPTION_REPLY /
+  COPY / FORWARD terms for its own wrappers — not ported).
+- Per-plugin DEX consent default OFF and no auto-update are the
+  engine's own behaviour (its docstring: no pip, no SDK auto-updates);
+  nothing was changed there. The M4 catalog is gone with the
+  clean-room engine (no replacement — the real engine has none).
+
+### Patches (new series 0001–0048; cap LIFTED by Amin 2026-11-16)
+- 0028-plugin-settings-members (rewrite, members only, see above)
+- 0031-engine-init (ApplicationLoader: init + watchdog filter)
+- 0032-engine-launch-hooks (LaunchActivity: app events, intent
+  dispatch wrapper, handleViewIntent, settings links)
+- 0033-engine-notification-events (NotificationCenter: 5 new ids —
+  pluginIsNotResponding, pluginMenuItemsUpdated, pluginsUpdated,
+  pluginSettingsRegistered, pluginSettingsUnregistered)
+- 0034-engine-uitem (UItem: settingItem field + exteraExpandableSwitch
+  + asExteraExpandableSwitch; setSearchable/setLinkAlias NOT ported —
+  they call the exteraless SettingsRegistry, another feature)
+- 0036-engine-send-hook (SendMessagesHelper: on_send_message_hook)
+- 0037-engine-updates-hooks (MessagesController: on_updates_hook
+  wrapper + on_update_hook filter in processUpdateArray)
+- 0038-engine-request-hooks (ConnectionsManager: pre/post request hooks)
+- 0039-engine-db-gate (MessagesStorage.getDatabase: PluginSinkGate)
+- 0040-engine-browser-intents (Browser.openUrl wrapper + openUrlInternal)
+- 0041-engine-file-open (AndroidUtilities: 2× dispatchOpenFile)
+- 0042-engine-rich-file-tap (RichMessageLayout: handleFileTap)
+- 0043-engine-message-tap (SearchDownloadsContainer +
+  SharedMediaLayout + FilteredSearchView: handleMessageTap)
+- 0044-engine-chat-activity (ChatActivity: pluginsMenu field,
+  observers, swipe-back submenu, message-menu option, 2×
+  expandMessagePluginsOption, 2× handleMessageTap)
+- 0045-engine-dialogs-menu (DialogsActivity: appendMainMenuItems)
+- 0046-engine-profile-menu (ProfileActivity: PROFILE_ACTION_MENU
+  submenu + observer)
+- 0047-engine-gradle-deps (AliuHook / MVEL / DexMaker /
+  HiddenApiBypass)
+- 0048-engine-proguard-keeps (app.exteraless.plugins.** +
+  com.exteragram.messenger.**; the stale amin.pyplugins keep and the
+  three narrow M0 keeps it subsumes were removed; de.robv keep stays
+  from 0028)
+- Upstream count: **45 distinct files** (was 38; cap lifted by Amin's
+  order, so no headroom math anymore). 19 upstream Java files carry
+  the new engine hooks + build.gradle + proguard-rules.pro; the rest
+  is the pre-existing series. Rebase contract: the 21 files above are
+  the new surface; every hunk in them is plugin-only.
+
+### Verification (local, no Android SDK; 2026-11-16)
+- Patch series replay: fresh pristine 21f7d10 tree +
+  `git apply` of the whole series 0001–0048 in order — **all 39
+  patches apply clean, zero failures**, then the repo overlay copied
+  over (CI model) with all hook lines present.
+- JDK 17 ParseCheck (Temurin 17.0.21+9, syntax-only, UTF-8): **PARSE
+  OK — 2453 Java files**, incl. all 86 engine files and all 19
+  patched upstream files.
+- CPython tests (`verify-scratch/engine-port/test_engine_port.py`):
+  **20/20 pass** — all 39 ported .py files compile; the real MSL
+  .plugin's metadata parses with the ported metadata_parser
+  (id material_settings_list, name MaterialSettingsList, version
+  1.1.1, permissions [], requirements []); MSL's imports resolve
+  against the ported SDK names (base_plugin, client_utils, ui) +
+  Chaquopy Java bridges, with `zwylib` as the only non-SDK import
+  (installed library, guarded in MSL by try/except + RecursiveMock);
+  the real ZwyLib .elyx metainfo parses with the engine's own
+  elyx_runtime.metadata reader (id zwylib, version 3.1.0, category
+  libraries — category lives in the raw YAML, the normalized shape
+  drops it); ported BasePlugin has create_settings /
+  on_plugin_load / on_plugin_unload.
+- `git diff --check` clean. Secret scan zero (no keys/tokens/
+  passwords in the ported code or the new patches).
+- Repo diff vs HEAD dceb8ed: 34 deleted (23 Java + 8 Python + 3 old
+  patches), 12 modified (incl. PluginsController + AppUtils, which
+  OVERWROTE M0 facade stubs of the same FQ name), 86 engine Java
+  files + 39 Python files + resources untracked. No commits, no
+  pushes (parent handles that).
+
+### On-device test list (Amin — nothing below is verifiable until device)
+- Install the real `zwylib-3.1.0_3_jazb.elyx` from file → installs as
+  a LIBRARY; list shows it (id zwylib v3.1.0). Then install
+  `material_settings_list_1_87g4.plugin` → enable MaterialSettingsList.
+- Enable MSL → loads with NO ImportError; its 8 toggles appear;
+  toggle each, restart the app, confirm reorder/debloat persist;
+  disable the plugin and confirm stock Settings returns.
+- DEX-hook behaviour (reorder groups, debloat, palette) is still
+  unverified until device — green local checks only prove the code
+  parses and the metadata/import surface resolves.
+- Fixtures, if they still exist after the port:
+  `assets/amingram_pyplugins/hello_py.plugin`,
+  `settings_demo.plugin`, `hooks_demo.plugin` — try installing
+  them; `hooks_demo` references the old host class name and is
+  expected NOT to work (dead fixture, delete if it annoys).
+- Still open until device: whether stock Chaquopy 17.2.0 suffices
+  (the exteraless/chaquopy fork is the fallback); cold-start time
+  with the engine on/off; APK size delta (v50 was ~113.9 MB);
+  fragment-walk refresh behaviour of the plugin menus.

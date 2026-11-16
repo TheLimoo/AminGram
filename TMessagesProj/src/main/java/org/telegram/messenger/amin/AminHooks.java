@@ -641,10 +641,6 @@ public final class AminHooks {
                 return;
             }
             syncSpeedBoostFlagOnController(context, account);
-            // M0: Python (.plugin) engine fan-out — cheap no-op when
-            // the engine is off; runs before the swo/jsAny gate so a
-            // Python-only install still sees updates.
-            org.telegram.messenger.amin.pyplugins.PyHookDispatcher.onRawUpdates(updates, account);
             if (moduleEnabled("edit_history")) {
                 DeletedStore.recordEdits(context, updates);
             }
@@ -732,8 +728,6 @@ public final class AminHooks {
             if (moduleEnabled("message_filters")) {
                 applyMessageFilters(context, messages);
             }
-            // M0: Python (.plugin) engine fan-out (on_message).
-            org.telegram.messenger.amin.pyplugins.PyHookDispatcher.onNewMessages(messages, account);
             final ArrayList<MessageObject> batch = new ArrayList<>(messages);
             Utilities.globalQueue.postRunnable(() -> {
                 try {
@@ -753,22 +747,14 @@ public final class AminHooks {
      *  sendMessage(ArrayList, ...) with a direct forward RPC, so AyuForward
      *  and Forward as Copy intercept in {@link #onForwardMessages} instead.
      *
-     *  M2: Python send-message hooks run FIRST, for EVERY outgoing
-     *  message (not just "/" commands). A hook may cancel the
-     *  message (return true) or rewrite params.message in place.
-     *  The "/" fan-out below then sees the (possibly rewritten)
-     *  text; a rewrite that drops the leading "/" also drops the
-     *  on_command fan-out, which is the hook owning the message. */
+     *  Python (.plugin) send-message hooks now live in the
+     *  exteraless engine (SendMessagesHelper patch 0036), not here.
+     */
     public static boolean onOutgoingMessage(SendMessagesHelper.SendMessageParams params) {
         try {
             Context context = ApplicationLoader.applicationContext;
             if (context == null || params == null) {
                 return false;
-            }
-            // M2: Python send-message hooks (any outgoing message).
-            if (org.telegram.messenger.amin.pyplugins.PyHookDispatcher
-                    .onOutgoingMessageSync(params)) {
-                return true;
             }
             // 1. Outgoing '/' command suppression for JS plugins (Phase A.4)
             if (params.message != null && params.message.startsWith("/")) {
@@ -777,66 +763,12 @@ public final class AminHooks {
                         return true;
                     }
                 }
-                // M0: Python (.plugin) engine fan-out (on_command).
-                // Fire-and-forget; it never suppresses the literal
-                // message (see PyPluginsController.dispatchOutgoingCommand).
-                org.telegram.messenger.amin.pyplugins.PyHookDispatcher
-                        .onOutgoingMessage(params.message);
             }
         } catch (Throwable ignored) {
         }
         return false;
     }
 
-    // ------------------------------------------------------------------
-    // Python (.plugin) AppEvent dispatch (patch 0027, LaunchActivity).
-    // ------------------------------------------------------------------
-
-    private static final java.util.concurrent.atomic.AtomicBoolean PY_APP_START_FIRED =
-            new java.util.concurrent.atomic.AtomicBoolean(false);
-
-    /** LaunchActivity.onCreate — AppEvent START, once per process
-     *  (the activity can be recreated without the app restarting). */
-    public static void onPyLaunchCreate() {
-        try {
-            if (PY_APP_START_FIRED.compareAndSet(false, true)) {
-                org.telegram.messenger.amin.pyplugins.PyHookDispatcher
-                        .onAppEvent("start");
-            }
-        } catch (Throwable ignored) {
-        }
-    }
-
-    /** LaunchActivity.onResume — AppEvent RESUME. */
-    public static void onPyLaunchResume() {
-        try {
-            org.telegram.messenger.amin.pyplugins.PyHookDispatcher
-                    .onAppEvent("resume");
-        } catch (Throwable ignored) {
-        }
-    }
-
-    /** LaunchActivity.onPause — AppEvent PAUSE. */
-    public static void onPyLaunchPause() {
-        try {
-            org.telegram.messenger.amin.pyplugins.PyHookDispatcher
-                    .onAppEvent("pause");
-        } catch (Throwable ignored) {
-        }
-    }
-
-    /** LaunchActivity.onDestroy — AppEvent STOP, only when the
-     *  activity is genuinely finishing (onDestroy also fires on
-     *  plain recreation, which is not an app stop). */
-    public static void onPyLaunchDestroy(boolean finishing) {
-        try {
-            if (finishing) {
-                org.telegram.messenger.amin.pyplugins.PyHookDispatcher
-                        .onAppEvent("stop");
-            }
-        } catch (Throwable ignored) {
-        }
-    }
 
     // ------------------------------------------------------------------
     // Phase B.1 & B.2: AyuForward + Forward as Copy implementation
@@ -1759,24 +1691,6 @@ public final class AminHooks {
             }
             // Copy: JsPluginManager's list must not be mutated.
             List<String[]> out = new ArrayList<>(JsPluginManager.menuPlugins(context));
-            // M2: Python CHAT_ACTION_MENU items. Conditions here see
-            // only the account (no chat/message is available at this
-            // call site), so a condition mentioning message/chat
-            // fields hides the item — see PyHookRegistry docs.
-            if (org.telegram.messenger.amin.pyplugins.PyPluginsController
-                    .isEngineEnabled(context)) {
-                java.util.Map<String, Object> ctx = new java.util.HashMap<>();
-                ctx.put("account", UserConfig.selectedAccount);
-                for (org.telegram.messenger.amin.pyplugins.PyHookRegistry.MenuEntry e
-                        : org.telegram.messenger.amin.pyplugins.PyHookRegistry
-                                .visibleMenuItems(
-                                        org.telegram.messenger.amin.pyplugins
-                                                .PyHookRegistry.LOC_CHAT_ACTION_MENU,
-                                        ctx)) {
-                    out.add(new String[]{"py:attach:" + e.pluginId + ":" + e.ordinal,
-                            e.text, e.icon == null ? "" : e.icon});
-                }
-            }
             return out;
         } catch (Throwable ignored) {
             return new ArrayList<>();
@@ -1785,21 +1699,6 @@ public final class AminHooks {
 
     public static void onPluginMenuAction(String pluginId, long chatId) {
         try {
-            if (pluginId != null && pluginId.startsWith("py:attach:")) {
-                // py:attach:<pluginId>:<ordinal> — plugin ids contain
-                // only [A-Za-z0-9_-], never ':'.
-                String[] parts = pluginId.split(":");
-                if (parts.length == 4) {
-                    java.util.Map<String, Object> data = new java.util.HashMap<>();
-                    data.put("chat_id", chatId);
-                    org.telegram.messenger.amin.pyplugins.PyHookRegistry
-                            .dispatchMenuAction(parts[2],
-                                    org.telegram.messenger.amin.pyplugins
-                                            .PyHookRegistry.LOC_CHAT_ACTION_MENU,
-                                    Integer.parseInt(parts[3]), data);
-                }
-                return;
-            }
             JsPluginManager.dispatchMenuAction(pluginId, chatId);
         } catch (Throwable ignored) {
         }
@@ -1845,100 +1744,15 @@ public final class AminHooks {
                 }
                 out.add(new ContextItem(plugin.id, label));
             }
-            // M2: Python MESSAGE_CONTEXT_MENU items share the same
-            // 4-slot cap (patch 0020 handles BASE..BASE+3); JS items
-            // come first, Python fills the remaining slots.
-            if (out.size() < MAX_PLUGIN_CONTEXT_ITEMS
-                    && org.telegram.messenger.amin.pyplugins.PyPluginsController
-                            .isEngineEnabled(context)) {
-                java.util.Map<String, Object> ctx = buildPyMenuContext(chatId, message);
-                for (org.telegram.messenger.amin.pyplugins.PyHookRegistry.MenuEntry e
-                        : org.telegram.messenger.amin.pyplugins.PyHookRegistry
-                                .visibleMenuItems(
-                                        org.telegram.messenger.amin.pyplugins
-                                                .PyHookRegistry.LOC_MESSAGE_CONTEXT_MENU,
-                                        ctx)) {
-                    if (out.size() >= MAX_PLUGIN_CONTEXT_ITEMS) {
-                        break;
-                    }
-                    out.add(new ContextItem(
-                            "py:ctx:" + e.pluginId + ":" + e.ordinal, e.text));
-                }
-            }
             return out;
         } catch (Throwable ignored) {
             return new ArrayList<>();
         }
     }
 
-    /** Context map for Python menu-condition evaluation: chat
-     *  (id, best-effort type) and message (id, text, out,
-     *  dialog_id, date), plus the account. Chat type is
-     *  best-effort: a negative dialog id is a group unless the
-     *  chat is a channel; a positive id is a user, "bot" when the
-     *  user is a bot. */
-    private static java.util.Map<String, Object> buildPyMenuContext(
-            long chatId, TLRPC.Message message) {
-        java.util.Map<String, Object> ctx = new java.util.HashMap<>();
-        java.util.Map<String, Object> chat = new java.util.HashMap<>();
-        chat.put("id", chatId);
-        chat.put("type", pyChatType(chatId));
-        ctx.put("chat", chat);
-        if (message != null) {
-            java.util.Map<String, Object> msg = new java.util.HashMap<>();
-            msg.put("id", message.id);
-            msg.put("text", message.message == null ? "" : message.message);
-            msg.put("out", message.out);
-            msg.put("dialog_id", message.dialog_id);
-            msg.put("date", message.date);
-            ctx.put("message", msg);
-        }
-        ctx.put("account", UserConfig.selectedAccount);
-        return ctx;
-    }
-
-    private static String pyChatType(long chatId) {
-        try {
-            int account = UserConfig.selectedAccount;
-            if (chatId < 0) {
-                TLRPC.Chat chat = MessagesController.getInstance(account)
-                        .getChat(-chatId);
-                if (chat != null) {
-                    return org.telegram.messenger.ChatObject.isChannel(chat)
-                            ? "channel" : "group";
-                }
-                return "group";
-            }
-            TLRPC.User user = MessagesController.getInstance(account).getUser(chatId);
-            if (user != null && user.bot) {
-                return "bot";
-            }
-            return "private";
-        } catch (Throwable ignored) {
-            return chatId < 0 ? "group" : "private";
-        }
-    }
-
     public static void onPluginContextAction(String pluginId, long chatId, TLRPC.Message message) {
         try {
             if (pluginId == null || message == null) {
-                return;
-            }
-            if (pluginId.startsWith("py:ctx:")) {
-                // py:ctx:<pluginId>:<ordinal>
-                String[] parts = pluginId.split(":");
-                if (parts.length == 4) {
-                    java.util.Map<String, Object> data = new java.util.HashMap<>();
-                    data.put("chat_id", chatId);
-                    data.put("message_id", message.id);
-                    data.put("text", message.message == null ? "" : message.message);
-                    data.put("out", message.out);
-                    org.telegram.messenger.amin.pyplugins.PyHookRegistry
-                            .dispatchMenuAction(parts[2],
-                                    org.telegram.messenger.amin.pyplugins
-                                            .PyHookRegistry.LOC_MESSAGE_CONTEXT_MENU,
-                                    Integer.parseInt(parts[3]), data);
-                }
                 return;
             }
             int account = UserConfig.selectedAccount;

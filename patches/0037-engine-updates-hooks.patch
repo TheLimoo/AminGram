@@ -1,0 +1,72 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+index d2d0c67..df525d3 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -17923,7 +17923,21 @@ public class MessagesController extends BaseController implements NotificationCe
+     }
+ 
+     // must be run from Utilities.stageQueue
+-    public void processUpdates(final TLRPC.Updates updates, boolean fromQueue) {
++    public void processUpdates(final TLRPC.Updates originalUpdates, boolean fromQueue) {
++        // exteraless plugins: on_updates_hook (CANCEL = контейнер не обрабатывается)
++        app.exteraless.plugins.HookResult hookResult = app.exteraless.plugins.PluginsController.getInstance().hasAnyUpdatesContainerHooks()
++                ? app.exteraless.plugins.PluginsController.getInstance()
++                        .executeOnUpdatesHook(currentAccount, app.exteraless.plugins.PluginsController.hookName(originalUpdates), originalUpdates)
++                : app.exteraless.plugins.HookResult.DEFAULT;
++        if (hookResult.isCancel()) {
++            return;
++        }
++        TLRPC.Updates replacement = hookResult.replacement(TLRPC.Updates.class);
++        final TLRPC.Updates updates = replacement != null ? replacement : originalUpdates;
++        processUpdatesInternal(updates, fromQueue);
++    }
++
++    private void processUpdatesInternal(final TLRPC.Updates updates, boolean fromQueue) {
+         if (updates instanceof TLRPC.TL_updates || updates instanceof TLRPC.TL_updatesCombined) {
+             boolean hasMessageIdUpdates = false;
+             for (int i = 0; i < updates.updates.size(); i++) {
+@@ -17939,7 +17953,7 @@ public class MessagesController extends BaseController implements NotificationCe
+                 // Otherwise pts sorting delivers updateNewMessage first, and the later ID
+                 // notification removes the local row instead of updating it in place.
+                 getMessagesStorage().getStorageQueue().postRunnable(() ->
+-                        Utilities.stageQueue.postRunnable(() -> processUpdates(updates, fromQueue)));
++                        Utilities.stageQueue.postRunnable(() -> processUpdatesInternal(updates, fromQueue)));
+                 return;
+             }
+         }
+@@ -18482,6 +18496,35 @@ public class MessagesController extends BaseController implements NotificationCe
+ 
+     public boolean processUpdateArray(ArrayList<TLRPC.Update> updates, ArrayList<TLRPC.User> usersArr, ArrayList<TLRPC.Chat> chatsArr, boolean fromGetDifference, int date) {
+         org.telegram.messenger.amin.AminHooks.onRawUpdates(updates, currentAccount);
++        // exteraless plugins: on_update_hook (CANCEL = апдейт выкидывается из обработки).
++        // Список принадлежит вызывающему (res.other_updates, updates.updates) и в
++        // некоторых ветках обрабатывается повторно, поэтому фильтруем в копию,
++        // а не мутируем чужое.
++        if (app.exteraless.plugins.PluginsController.getInstance().hasAnyUpdateHooks()) {
++            ArrayList<TLRPC.Update> allowed = null;
++            int updateIndex = 0;
++            for (TLRPC.Update u : updates) {
++                app.exteraless.plugins.HookResult updateResult = app.exteraless.plugins.PluginsController.getInstance()
++                        .executeOnUpdateHook(currentAccount, app.exteraless.plugins.PluginsController.hookName(u), u);
++                TLRPC.Update replacement = updateResult.replacement(TLRPC.Update.class);
++                if (allowed == null && (updateResult.isCancel() || (replacement != null && replacement != u))) {
++                    allowed = new ArrayList<>(updates.size());
++                    allowed.addAll(updates.subList(0, updateIndex));
++                }
++                if (!updateResult.isCancel()) {
++                    if (allowed != null) {
++                        allowed.add(replacement != null ? replacement : u);
++                    }
++                }
++                updateIndex++;
++            }
++            if (allowed != null) {
++                if (allowed.isEmpty()) {
++                    return true;
++                }
++                updates = allowed;
++            }
++        }
+         if (updates.isEmpty()) {
+             if (usersArr != null || chatsArr != null) {
+                 AndroidUtilities.runOnUIThread(() -> {

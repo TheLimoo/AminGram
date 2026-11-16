@@ -1,0 +1,24 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+index c1ff11b..b847361 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+@@ -4440,7 +4440,18 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+         });
+     }
+ 
+-    public void sendMessage(SendMessageParams sendMessageParams) {
++    public void sendMessage(SendMessageParams originalParams) {
++        app.exteraless.plugins.HookResult hookResult = app.exteraless.plugins.HookResult.DEFAULT;
++        // exteraless plugins: исходящее сообщение через on_send_message_hook (CANCEL = не отправлять)
++        if (app.exteraless.plugins.PluginsController.getInstance().hasSendMessageHooks()) {
++            hookResult = app.exteraless.plugins.PluginsController.getInstance()
++                    .executeOnSendMessageHook(currentAccount, originalParams);
++            if (hookResult.isCancel()) {
++                return;
++            }
++        }
++        SendMessageParams replacement = hookResult.replacement(SendMessageParams.class);
++        final SendMessageParams sendMessageParams = replacement != null ? replacement : originalParams;
+         if (org.telegram.messenger.amin.AminHooks.onOutgoingMessage(sendMessageParams)) return;
+         final SendMessageChatArguments sendMessageChatArguments = sendMessageParams.sendMessageChatArguments != null ?
+                 sendMessageParams.sendMessageChatArguments : SendMessageChatArguments.EMPTY;

@@ -1,123 +1,188 @@
-"""Hook + reflection helpers — AminGram clean-room SDK, M2.
+"""Java reflection helpers (find_class, private fields) — exteraless plugin SDK.
 
-Written from the public exteraGram SDK docs (module list only —
-no exteraGram code was used).
-
-- :func:`add_hook` / :func:`add_on_send_message_hook`,
-  :class:`HookResult` / :class:`HookStrategy`: re-exported from
-  :mod:`base_plugin` so plugins can import them from here too.
-- Reflection helpers (:func:`find_class`, :func:`get_field`,
-  :func:`set_field`, :func:`call_method`): thin wrappers over
-  Chaquopy's Java interop. Every use is logged to the plugin
-  (``hook_utils: ...``) — reflection is the dangerous surface,
-  and the install-time analysis already flags it. These helpers
-  reach plain Java objects only; they do NOT hook methods.
-- :func:`hook_method`: M3 — before/after interception, but ONLY
-  for the three SettingsActivity methods the DEX bridge hooks
-  (see below). Any other target raises a clear
-  NotImplementedError instead of pretending to work: the shim
-  is source-level notification, not native hooking, and there is
-  no source-level point for arbitrary methods.
+NOTE: Android's hidden-API restrictions may block setAccessible(True) on
+SDK-internal classes on newer Android versions; all helpers fail softly
+(return None/False) in that case.
 """
 
-import amin_context
-
-from base_plugin import (
-    HookResult,
-    HookStrategy,
-    add_hook,
-    add_on_send_message_hook,
-)
-from java import jclass
-
-__all__ = [
-    "HookResult",
-    "HookStrategy",
-    "add_hook",
-    "add_on_send_message_hook",
-    "find_class",
-    "get_field",
-    "set_field",
-    "call_method",
-    "hook_method",
-]
+from typing import Any, Optional
 
 
-def _log(what):
+_internal_modules = {}
+
+
+def _internal(name):
+    module = _internal_modules.get(name)
+    if module is None:
+        import importlib
+        module = importlib.import_module("extera_utils." + name)
+        _internal_modules[name] = module
+    return module
+
+
+_java = None
+
+
+def _java_module():
+    global _java
+    if _java is None:
+        import java
+        _java = java
+    return _java
+
+
+def find_class(name: str):
+    """Java-класс по имени или None, если его нет или он плагину не положен.
+
+    None здесь — штатный ответ, а не поломка: плагины его проверяют (188 мест
+    в каталоге). Поэтому отказ в разрешении выглядит для плагина так же, как
+    отсутствующий класс, и обрабатывается его же кодом.
+    """
     try:
-        host = jclass(
-            "org.telegram.messenger.amin.pyplugins.PyPluginHost")
-        host.log(amin_context.get_current(), "hook_utils: " + what)
+        plain = _internal("plugin_loader").plain_java_class(name)
+    except Exception:
+        plain = False
+    if plain:
+        try:
+            return _java_module().jclass(name)
+        except Exception:
+            return None
+    requested = name
+    try:
+        resolve = _internal("class_aliases").resolve
+        name = resolve(name)
     except Exception:
         pass
+    try:
+        guard_java_class = _internal("plugin_loader").guard_java_class
+        if not guard_java_class(name):
+            return None
+    except Exception:
+        pass  # сломанная проверка не должна закрывать доступ к Java
+    try:
+        from java import jclass
+        found = jclass(name)
+    except Exception:
+        return None
+    try:
+        adapt = _internal("class_aliases").adapt
+        return adapt(requested, found)
+    except Exception:
+        return found
 
 
-def find_class(name):
-    """Look up a Java class by name (``jclass``). Logged."""
-    _log("find_class(%s)" % (name,))
-    return jclass(name)
+_class_type = None
 
 
-def get_field(obj, name):
-    """Read a field (or attribute) of a Java object. Logged."""
-    _log("get_field(%s)" % (name,))
-    return getattr(obj, name)
+def _as_class(obj):
+    """Normalize obj to a java.lang.Class instance.
 
-
-def set_field(obj, name, value):
-    """Write a field of a Java object. Logged."""
-    _log("set_field(%s)" % (name,))
-    setattr(obj, name, value)
-
-
-def call_method(obj, name, *args):
-    """Call a method of a Java object by name. Logged."""
-    _log("call_method(%s)" % (name,))
-    return getattr(obj, name)(*args)
-
-
-def hook_method(class_name, method_name, before=None, after=None):
-    """Hook a method with before/after callables — M3, LIMITED
-    to the three SettingsActivity methods the DEX bridge hooks:
-
-    - ``("org.telegram.ui.SettingsActivity", "fillItems")``
-    - ``("org.telegram.ui.SettingsActivity$SettingCell$Factory",
-        "bindView")``
-    - ``("org.telegram.ui.SettingsActivity$SettingCell",
-        "updateColors")``
-
-    ``before`` / ``after`` (either may be None) receive the
-    ``MethodHookParam`` for the call (``.thisObject`` / ``.args``;
-    for ``fillItems`` ``args[0]`` is the ``ArrayList<UItem>`` being
-    filled, for ``bindView`` ``args[0]`` is the SettingCell view
-    and ``args[1]`` the UItem, for ``updateColors`` ``thisObject``
-    is the cell). Returns the Java Unhook (call ``.unhook()`` to
-    remove the hook); the host also removes it when the plugin
-    unloads. Any other class/method raises NotImplementedError:
-    there is no source-level hook point for it, and AminGram does
-    not bundle native hooking. A throwing callback is logged by
-    the host and the settings call continues.
-
-    Chaquopy interop (``PyObject.call(param)`` on the Java side)
-    is unproven on device until M3's phone test; the CPython
-    stub tests cover the routing and the error paths only.
+    Accepts a live object, a jclass wrapper (find_class result) or an
+    already-reflected java.lang.Class.
     """
-    points = {
-        ("org.telegram.ui.SettingsActivity", "fillItems"): "fillItems",
-        ("org.telegram.ui.SettingsActivity$SettingCell$Factory",
-         "bindView"): "bindView",
-        ("org.telegram.ui.SettingsActivity$SettingCell",
-         "updateColors"): "updateColors",
-    }
-    point = points.get((class_name, method_name))
-    if point is None:
-        raise NotImplementedError(
-            "hook_method: no hook point for %s#%s — AminGram only "
-            "hooks fillItems, bindView and updateColors in "
-            "SettingsActivity (M3 DEX bridge). Arbitrary method "
-            "hooking would need native code, which is not bundled."
-            % (class_name, method_name))
-    registry = jclass(
-        "org.telegram.messenger.amin.pyplugins.PySettingsHookRegistry")
-    return registry.hookByName(amin_context.get_current(), point,
-                               before, after)
+    global _class_type
+    try:
+        unwrap = _internal("class_aliases").unwrap
+        obj = unwrap(obj)
+    except Exception:
+        pass
+    class_type = _class_type
+    if class_type is None:
+        from java import jclass
+        class_type = _class_type = jclass("java.lang.Class")
+    if isinstance(obj, class_type):
+        return obj
+    # Chaquopy: SomeClass.getClass() on a jclass is equivalent to SomeClass.class.
+    return obj.getClass()
+
+
+def _find_field(class_obj, name: str):
+    """Find a declared field walking up the superclass chain."""
+    current = class_obj
+    while current is not None:
+        try:
+            fields = current.getDeclaredFields()
+            for index in range(len(fields)):
+                field = fields[index]
+                if str(field.getName()) == name:
+                    return field
+        except Exception:
+            pass
+        try:
+            current = current.getSuperclass()
+        except Exception:
+            break
+    return None
+
+
+_field_cache = {}
+_NO_FIELD = object()
+
+
+def _accessible_field(class_obj, name: str):
+    try:
+        key = (class_obj, name)
+        cached = _field_cache.get(key)
+    except Exception:
+        key = None
+        cached = None
+    if cached is not None:
+        return None if cached is _NO_FIELD else cached
+    field = _find_field(class_obj, name)
+    if field is not None:
+        field.setAccessible(True)
+    if key is not None and len(_field_cache) < 2048:
+        _field_cache[key] = _NO_FIELD if field is None else field
+    return field
+
+
+def get_private_field(obj, name: str) -> Any:
+    """Read a (possibly private) instance field; None when not found/inaccessible."""
+    try:
+        field = _accessible_field(_as_class(obj), name)
+        if field is None:
+            return None
+        return field.get(obj)
+    except Exception:
+        return None
+
+
+def set_private_field(obj, name: str, value) -> bool:
+    """Write a (possibly private) instance field; True on success."""
+    try:
+        field = _accessible_field(_as_class(obj), name)
+        if field is None:
+            return False
+        field.set(obj, value)
+        return True
+    except Exception:
+        return False
+
+
+def get_static_private_field(clazz, name: str) -> Any:
+    """Read a (possibly private) static field of a class; None on failure."""
+    try:
+        field = _accessible_field(_as_class(clazz), name)
+        if field is None:
+            return None
+        return field.get(None)
+    except Exception:
+        return None
+
+
+def set_static_private_field(clazz, name: str, value) -> bool:
+    """Write a (possibly private) static field of a class; True on success."""
+    try:
+        field = _accessible_field(_as_class(clazz), name)
+        if field is None:
+            return False
+        field.set(None, value)
+        return True
+    except Exception:
+        return False
+
+
+# Plugins use both spellings interchangeably; the reference SDK exposes the
+# short names as aliases of the private-field helpers.
+get_field = get_private_field
+set_field = set_private_field

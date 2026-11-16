@@ -1,0 +1,60 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
+index 63b3a59..e670590 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
+@@ -77,9 +77,11 @@ public class ApplicationLoader extends Application {
+     private static PushListenerController.IPushListenerServiceProvider pushProvider;
+     private static IMapsProvider mapsProvider;
+     private static ILocationServiceProvider locationServiceProvider;
++    private Thread.UncaughtExceptionHandler systemUncaughtExceptionHandler;
+ 
+     @Override
+     protected void attachBaseContext(Context base) {
++        systemUncaughtExceptionHandler = Thread.getDefaultUncaughtExceptionHandler();
+         super.attachBaseContext(base);
+         // AminGram: scrub the removed Ryoku UI system's persisted theme /
+         // wallpaper state before Theme's static init can consume any of
+@@ -254,6 +256,10 @@ public class ApplicationLoader extends Application {
+         }
+ 
+         SharedConfig.loadConfig();
++        // AminGram (v3.0.0, real engine port): start the exteraless
++        // plugin engine. init() rescans and loads enabled plugins;
++        // Python itself starts lazily on first need.
++        app.exteraless.plugins.PluginsController.getInstance().init(applicationContext);
+         SharedPrefsHelper.init(applicationContext);
+         for (int a = 0; a < UserConfig.MAX_ACCOUNT_COUNT; a++) { //TODO improve account
+             UserConfig.getInstance(a).loadConfig();
+@@ -307,6 +313,7 @@ public class ApplicationLoader extends Application {
+         if (org.telegram.utils.twidget.WidgetEngineService.isEngineProcess()) {
+             return;
+         }
++        installCrashReportFilter();
+ 
+         // AminGram: load the font selector's latch once, here where the
+         // application context is guaranteed; the AndroidUtilities
+@@ -744,4 +751,24 @@ public class ApplicationLoader extends Application {
+     public File getDownloadedUpdateFile() {
+         return null;
+     }
++
++    // AminGram (v3.0.0, real engine port): the plugin watchdog must
++    // see every uncaught exception (a crashing plugin is disabled
++    // after 2 strikes). Simplified from exteraless: no CrashLog /
++    // Crashlytics reporting, just the watchdog + the saved handler.
++    private void installCrashReportFilter() {
++        Thread.UncaughtExceptionHandler crashlyticsHandler = Thread.getDefaultUncaughtExceptionHandler();
++        Thread.setDefaultUncaughtExceptionHandler((thread, error) -> {
++            app.exteraless.plugins.PluginsWatchdog.onUncaughtException(error);
++            if (crashlyticsHandler != null) {
++                crashlyticsHandler.uncaughtException(thread, error);
++                return;
++            } else if (systemUncaughtExceptionHandler != null) {
++                systemUncaughtExceptionHandler.uncaughtException(thread, error);
++                return;
++            }
++            Process.killProcess(Process.myPid());
++            System.exit(10);
++        });
++    }
+ }

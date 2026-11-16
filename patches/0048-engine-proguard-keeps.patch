@@ -1,0 +1,17 @@
+diff --git a/TMessagesProj/proguard-rules.pro b/TMessagesProj/proguard-rules.pro
+index 284b735..ada20a1 100644
+--- a/TMessagesProj/proguard-rules.pro
++++ b/TMessagesProj/proguard-rules.pro
+@@ -118,10 +118,8 @@
+ # cannot start or load plugins.
+ -keep class com.chaquo.python.** { *; }
+ -dontwarn com.chaquo.python.**
+--keep class org.telegram.messenger.amin.pyplugins.** { *; }
+--keep class com.exteragram.messenger.plugins.PluginsController { *; }
+--keep class com.exteragram.messenger.plugins.PluginsController$Plugin { *; }
+--keep class com.exteragram.messenger.utils.AppUtils { *; }
++-keep class app.exteraless.plugins.** { *; }
++-keep class com.exteragram.messenger.** { *; }
+ # AminGram (M0): class names plugins and DEX code resolve by string
+ # (keepnames only - members are audited per target in M3).
+ -keepnames class org.telegram.ui.SettingsActivity

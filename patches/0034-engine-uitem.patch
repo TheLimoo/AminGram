@@ -1,0 +1,38 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/UItem.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/UItem.java
+index 5bea1ba..dd7089f 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/UItem.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/UItem.java
+@@ -46,6 +46,9 @@ public class UItem extends AdapterWithDiffUtils.Item {
+     public int spanCount = MAX_SPAN_COUNT;
+     public int parentSpanCount;
+ 
++    /** Модель строки настроек плагина, если строку собрал плагин через SDK exteraGram. */
++    public app.exteraless.plugins.models.SettingItem settingItem;
++
+     public boolean include;
+     public long dialogId;
+     public String chatType;
+@@ -58,6 +61,8 @@ public class UItem extends AdapterWithDiffUtils.Item {
+ 
+     public View.OnClickListener clickCallback;
+     public View.OnClickListener clickCallback2;
++    public View.OnClickListener switchClickCallback;
++    public boolean exteraExpandableSwitch;
+     public Utilities.Callback<View> bind;
+ 
+     public Object object;
+@@ -561,6 +566,14 @@ public class UItem extends AdapterWithDiffUtils.Item {
+         return item;
+     }
+ 
++    public static UItem asExteraExpandableSwitch(int id, CharSequence text, CharSequence subText,
++                                                 View.OnClickListener switchClickCallback) {
++        UItem item = asExpandableSwitch(id, text, subText);
++        item.exteraExpandableSwitch = true;
++        item.switchClickCallback = switchClickCallback;
++        return item;
++    }
++
+     public static UItem asGraySection(CharSequence text) {
+         UItem item = new UItem(UniversalAdapter.VIEW_TYPE_GRAY_SECTION, false);
+         item.text = text;

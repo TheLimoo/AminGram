@@ -1,128 +1,221 @@
-"""Clean-room ui.settings — AminGram Python plugin SDK, M1.
+"""Settings screen item declarations for plugins — part of the exteraless plugin SDK.
 
-Row classes a plugin returns from ``BasePlugin.create_settings()``
-so the host can render them on the plugin's page. This is
-AminGram's own clean-room API, written from the public SDK docs'
-row-type list (Header, Switch, Selector, Input, EditText, Text,
-Divider, Custom) — no exteraGram code was used.
-
-A row may also be a plain dict with the same keys
-(``{"type": "switch", "key": ..., "text": ..., "default": ...}``);
-the host accepts both. Constructor argument order is AminGram's:
-``(key, text, ...)`` for interactive rows, ``(text)`` for
-display rows. A plugin written against exteraGram's exact
-``ui.settings`` signatures may need its calls adjusted — the
-row *types* match, the constructors are ours.
-
-``on_change`` (Switch / Selector / Input / EditText) is called
-with the new value whenever the user changes the row on the
-plugin page. It runs on the Python thread, never the UI thread.
-
-``options`` for Selector may be a list of strings
-(``["fast", "slow"]``) or a list of ``{"value": ..., "label": ...}``
-dicts, or a list of ``(value, label)`` pairs.
+Pure Python dataclasses; serialization into the JSON schema consumed by the
+Java renderer lives in extera_utils.plugin_loader.
 """
 
-__all__ = [
-    "Header", "Switch", "Selector", "Input", "EditText", "Text",
-    "Divider", "Custom", "SimpleSettingFactory",
-]
+from typing import Any, Callable, List, Optional
+
+from dataclasses import dataclass
+import math
 
 
+@dataclass
 class Header:
-    def __init__(self, text):
-        self.type = "header"
-        self.text = str(text)
+    text: str
 
 
-class Switch:
-    def __init__(self, key, text, default=False, on_change=None,
-                 description=None):
-        self.type = "switch"
-        self.key = str(key)
-        self.text = str(text)
-        self.default = bool(default)
-        self.on_change = on_change
-        self.description = description
-
-
-class Selector:
-    def __init__(self, key, text, options, default=None,
-                 on_change=None, description=None):
-        self.type = "selector"
-        self.key = str(key)
-        self.text = str(text)
-        self.options = list(options)
-        self.default = default
-        self.on_change = on_change
-        self.description = description
-
-
-class Input:
-    def __init__(self, key, text, default="", hint="", on_change=None,
-                 input_type="text", description=None):
-        self.type = "input"
-        self.key = str(key)
-        self.text = str(text)
-        self.default = default
-        self.hint = hint
-        self.on_change = on_change
-        self.input_type = input_type
-        self.description = description
-
-
-class EditText(Input):
-    def __init__(self, key, text, default="", hint="", on_change=None,
-                 input_type="text", description=None):
-        super().__init__(key, text, default, hint, on_change,
-                         input_type, description)
-        self.type = "edittext"
-
-
-class Text:
-    def __init__(self, text, value=None):
-        self.type = "text"
-        self.text = str(text)
-        self.value = value
-
-
+@dataclass
 class Divider:
-    def __init__(self):
-        self.type = "divider"
+    text: Optional[str] = None
 
 
+@dataclass
+class Switch:
+    key: str
+    text: str
+    default: bool
+    subtext: Optional[str] = None
+    icon: Optional[str] = None
+    on_change: Optional[Callable] = None
+    on_long_click: Optional[Callable] = None
+    link_alias: Optional[str] = None
+
+
+@dataclass
+class Selector:
+    key: str
+    text: str
+    default: int
+    items: List[str]
+    subtext: Optional[str] = None
+    icon: Optional[str] = None
+    on_change: Optional[Callable] = None
+    on_long_click: Optional[Callable] = None
+    link_alias: Optional[str] = None
+
+
+@dataclass
+class Input:
+    key: str
+    text: str
+    default: Optional[str] = None
+    subtext: Optional[str] = None
+    icon: Optional[str] = None
+    on_change: Optional[Callable] = None
+    on_long_click: Optional[Callable] = None
+    link_alias: Optional[str] = None
+
+
+@dataclass
+class Text:
+    text: str
+    subtext: Optional[str] = None
+    icon: Optional[str] = None
+    accent: bool = False
+    red: bool = False
+    on_click: Optional[Callable] = None
+    on_long_click: Optional[Callable] = None
+    create_sub_fragment: Optional[Callable[[], list]] = None
+    link_alias: Optional[str] = None
+
+
+@dataclass
+class EditText:
+    key: str
+    hint: str
+    default: str = ""
+    multiline: bool = False
+    max_length: Optional[int] = None
+    mask: Optional[str] = None
+    on_change: Optional[Callable] = None
+
+
+@dataclass
 class Custom:
-    """A display-only row. M1 renders its text; a view factory
-    (exteraGram's Custom) is not supported — the host owns the UI."""
+    item: Optional[Any] = None
+    view: Optional[Any] = None
+    factory: Optional[Any] = None
+    factory_args: Optional[tuple] = None
+    on_click: Optional[Callable] = None
+    on_long_click: Optional[Callable] = None
+    create_sub_fragment: Optional[Callable[[], list]] = None
+    link_alias: Optional[str] = None
 
-    def __init__(self, text):
-        self.type = "custom"
-        self.text = str(text)
+
+class _FactoryPeer:
+    __slots__ = ("java",)
+
+    def __init__(self, factory):
+        self.java = factory
+
+
+def _selected_account():
+    try:
+        from java import jclass
+        return int(jclass("org.telegram.messenger.UserConfig").selectedAccount)
+    except Exception:
+        return 0
+
+
+def _call_with_prefix(fn, args):
+    import inspect
+    try:
+        signature = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return fn(*args)
+    for count in range(len(args), -1, -1):
+        try:
+            signature.bind(*args[:count])
+        except TypeError:
+            continue
+        return fn(*args[:count])
+    return fn(*args)
 
 
 class SimpleSettingFactory:
-    """Convenience constructors returning the row classes above."""
+    """Declarative factory for Custom settings items.
 
-    @staticmethod
-    def header(text):
-        return Header(text)
+    ``create_view(context)`` and ``bind_view(view, item, divider)`` are called
+    by the settings renderer when the row is drawn. ``java``/``instance`` give
+    the shared Java peer (app.exteraless.plugins.models.PluginItemFactory),
+    which delegates back to this object instead of generating a subclass.
+    """
 
-    @staticmethod
-    def switch(key, text, default=False, on_change=None):
-        return Switch(key, text, default, on_change)
+    def __init__(self, create_view=None, bind_view=None, is_clickable: bool = False,
+                 is_shadow: bool = False, create_item=None, on_click=None,
+                 on_long_click=None, attached_view=None, equals=None,
+                 content_equals=None):
+        self.create_view = create_view
+        self.bind_view = bind_view
+        self.is_clickable = is_clickable
+        self.is_shadow = is_shadow
+        self.create_item = create_item
+        self.on_click = on_click
+        self.on_long_click = on_long_click
+        self.attached_view = attached_view
+        self.equals = equals
+        self.content_equals = content_equals
 
-    @staticmethod
-    def selector(key, text, options, default=None, on_change=None):
-        return Selector(key, text, options, default, on_change)
+    def build_view(self, context, divider=False):
+        if not callable(self.create_view):
+            return None
+        view = _call_with_prefix(self.create_view,
+                                 (context, None, _selected_account(), 0, None))
+        if view is None:
+            return None
+        if callable(self.bind_view):
+            item = self.create_item() if callable(self.create_item) else None
+            _call_with_prefix(self.bind_view, (view, item, divider, None, None))
+        return view
 
-    @staticmethod
-    def input(key, text, default="", hint="", on_change=None):
-        return Input(key, text, default, hint, on_change)
+    @classmethod
+    def getInstance(cls):
+        from java import jclass
+        return jclass("app.exteraless.plugins.models.PluginItemFactory").getInstance()
 
-    @staticmethod
-    def text(text, value=None):
-        return Text(text, value)
+    @property
+    def instance(self):
+        """The bridged Java peer of this factory."""
+        return _FactoryPeer(self)
 
-    @staticmethod
-    def divider():
-        return Divider()
+    @property
+    def java(self):
+        from java import jclass
+        return jclass("app.exteraless.plugins.models.PluginItemFactory").getInstance()
+
+    def to_item(self, *factory_args):
+        from java import jclass
+        return jclass("app.exteraless.plugins.models.PluginItemFactory").create(
+            self, factory_args or None)
+
+    def __call__(self, *factory_args, link_alias: Optional[str] = None) -> Custom:
+        """Factory(link_alias="x") or Factory(*factory_args) -> Custom(...)."""
+        return Custom(factory=self,
+                      factory_args=factory_args or None,
+                      link_alias=link_alias)
+
+
+PluginItemFactory = SimpleSettingFactory
+
+
+@dataclass
+class Slider:
+    key: str
+    text: str
+    default: float = 0
+    min: float = 0
+    max: float = 100
+    step: float = 1
+    subtext: Optional[str] = None
+    icon: Optional[str] = None
+    on_change: Optional[Callable] = None
+    on_long_click: Optional[Callable] = None
+    link_alias: Optional[str] = None
+
+    def __post_init__(self):
+        if not all(math.isfinite(float(value)) for value in (self.default, self.min, self.max, self.step)):
+            raise ValueError("Slider values must be finite")
+        if self.max <= self.min or self.step <= 0 or math.ceil((self.max - self.min) / self.step) > 2147483647:
+            raise ValueError("Invalid slider range or step")
+
+    def normalize(self, value):
+        try:
+            value = float(value)
+            if not math.isfinite(value):
+                value = self.default
+        except (TypeError, ValueError):
+            value = self.default
+        value = min(self.max, max(self.min, value))
+        value = min(self.max, self.min + math.floor((value - self.min) / self.step + 0.5) * self.step)
+        return int(value) if all(float(v).is_integer() for v in (self.min, self.max, self.step)) else value

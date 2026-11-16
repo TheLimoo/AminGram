@@ -1,0 +1,14 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
+index 07716f3..cae32e3 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
+@@ -237,6 +237,9 @@ public class MessagesStorage extends BaseController {
+     }
+ 
+     public SQLiteDatabase getDatabase() {
++        if (!app.exteraless.plugins.PluginSinkGate.allowDatabaseAccess()) {
++            return null;
++        }
+         return database;
+     }
+ 

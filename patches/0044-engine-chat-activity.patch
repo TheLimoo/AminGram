@@ -1,0 +1,166 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 249c4c6..58094ce 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -535,6 +535,8 @@ public class ChatActivity extends BaseFragment implements
+     private ActionBarMenuItem.Item feeItemGap;
+     private ActionBarMenuItem.Item feeItemText;
+     private ChatNotificationsPopupWrapper chatNotificationsPopupWrapper;
++    // exteraless plugins: подменю CHAT_ACTION_MENU в меню «⋮».
++    private app.exteraless.plugins.menus.MenuInjector.SwipeBackMenu pluginsMenu;
+     // private ChatActivitySideControlsButtonsLayout topButtonsLayout;
+     private ChatActivitySideControlsButtonsLayout sideControlsButtonsLayout;
+     private boolean pagedownButtonShowedByScroll;
+@@ -2850,6 +2852,9 @@ public class ChatActivity extends BaseFragment implements
+         getNotificationCenter().addWeakObserver(this, NotificationCenter.closeChats);
+         linksHidden = getMessagesController().isUntrustedDialog(dialog_id);
+ 
++        // exteraless plugins: реестр пунктов меняется, когда плагин включают/выключают.
++        NotificationCenter.getGlobalInstance().addObserver(this, NotificationCenter.pluginMenuItemsUpdated);
++
+         if (chatMode != MODE_SCHEDULED) {
+             if (threadMessageId == 0) {
+                 observersGroup
+@@ -3340,6 +3345,8 @@ public class ChatActivity extends BaseFragment implements
+ 
+     @Override
+     public void onFragmentDestroy() {
++        app.exteraless.plugins.menus.MenuInjector.releaseMessageMenu(this);
++        app.exteraless.plugins.PluginViewProxies.release(fragmentView);
+         super.onFragmentDestroy();
+         if (aminVideoBg != null) {
+             aminVideoBg.release();
+@@ -3383,6 +3390,7 @@ public class ChatActivity extends BaseFragment implements
+         }
+ 
+         getNotificationCenter().removeObserver(this, NotificationCenter.closeChats);
++        NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.pluginMenuItemsUpdated);
+ 
+         if (chatMode == 0 && AndroidUtilities.isTablet()) {
+             getNotificationCenter().postNotificationName(NotificationCenter.openedChatChanged, dialog_id, getTopicId(), true);
+@@ -4530,6 +4538,31 @@ public class ChatActivity extends BaseFragment implements
+             headerItem.lazilyAddSubItem(888, R.drawable.menu_download_round, "Dump Canvas");
+         }
+ 
++        // exteraless plugins: подменю CHAT_ACTION_MENU в конце меню «⋮».
++        // Место общее для всех веток выше — headerItem здесь уже собран целиком.
++        if (headerItem != null) {
++            java.util.Map<String, Object> pluginMenuContext = new java.util.HashMap<>();
++            pluginMenuContext.put("account", currentAccount);
++            pluginMenuContext.put("dialog_id", dialog_id);
++            pluginMenuContext.put("fragment", this);
++            pluginMenuContext.put("context", context);
++            if (currentChat != null) {
++                pluginMenuContext.put("chat", currentChat);
++                pluginMenuContext.put("chatId", currentChat.id);
++            }
++            if (currentUser != null) {
++                pluginMenuContext.put("user", currentUser);
++                pluginMenuContext.put("userId", currentUser.id);
++            }
++            if (currentEncryptedChat != null) {
++                pluginMenuContext.put("encryptedChat", currentEncryptedChat);
++            }
++            pluginsMenu = app.exteraless.plugins.menus.MenuInjector.attachSwipeBackMenu(
++                    headerItem,
++                    app.exteraless.plugins.MenuItemRecord.MenuType.CHAT_ACTION_MENU,
++                    pluginMenuContext, themeDelegate, pluginsMenu);
++        }
++
+         actionModeViews.clear();
+         selectedMessagesCountTextView = null;
+         checkActionBarMenu(false);
+@@ -21333,6 +21366,13 @@ public class ChatActivity extends BaseFragment implements
+ 
+     @Override
+     public void didReceivedNotification(int id, int account, final Object... args) {
++        if (id == NotificationCenter.pluginMenuItemsUpdated) {
++            // exteraless plugins: пересобрать подменю CHAT_ACTION_MENU.
++            if (pluginsMenu != null) {
++                pluginsMenu.refresh();
++            }
++            return;
++        }
+         if (id == NotificationCenter.messagesDidLoad) {
+             didReceivedNotification_messagesDidLoad(id, account, args);
+         } else {
+@@ -32037,7 +32077,7 @@ public class ChatActivity extends BaseFragment implements
+             final boolean isReactionsAvailableFinal = !suggestEdit && isReactionsAvailable;
+ 
+             int flags = 0;
+-            if (isReactionsViewAvailable || showMessageSeen || showSponsorInfo) {
++            if (isReactionsViewAvailable || showMessageSeen || showSponsorInfo || options.contains(app.exteraless.plugins.menus.MenuInjector.MESSAGE_PLUGINS_OPTION)) {
+                 flags |= ActionBarPopupWindow.ActionBarPopupWindowLayout.FLAG_USE_SWIPEBACK;
+             }
+ 
+@@ -32860,6 +32900,17 @@ public class ChatActivity extends BaseFragment implements
+                         }
+                         processSelectedOption(options.get(i));
+                     });
++                    if (option == app.exteraless.plugins.menus.MenuInjector.MESSAGE_PLUGINS_OPTION) {
++                        int swipeBackIndex = popupLayout.addViewToSwipeBack(app.exteraless.plugins.menus.MenuInjector
++                                .createMessagePluginsMenu(popupLayout.getSwipeBack(), this::closeMenu, getResourceProvider()));
++                        cell.setRightIcon(R.drawable.msg_arrowright);
++                        cell.setOnClickListener(v1 -> popupLayout.getSwipeBack().openForeground(swipeBackIndex));
++                        cell.setOnLongClickListener(v1 -> {
++                            closeMenu();
++                            presentFragment(new app.exteraless.plugins.ui.PluginsActivity());
++                            return true;
++                        });
++                    }
+                     if (option == OPTION_TRANSLATE) {
+                         final boolean translateEnabled = getMessagesController().getTranslateController().isContextTranslateEnabled();
+                         String toLangDefault = LocaleController.getInstance().getCurrentLocale().getLanguage();
+@@ -34309,6 +34360,10 @@ public class ChatActivity extends BaseFragment implements
+         if (selectedObject == null || getParentActivity() == null) {
+             return;
+         }
++        // exteraless plugins: id пунктов плагинов живут в своём диапазоне (MenuInjector).
++        if (app.exteraless.plugins.menus.MenuInjector.handleMessageMenuOption(option)) {
++            return;
++        }
+         boolean preserveDim = false;
+         switch (option) {
+             case org.telegram.messenger.amin.AminHooks.OPTION_MESSAGE_DETAILS: {
+@@ -41325,6 +41380,7 @@ public class ChatActivity extends BaseFragment implements
+                 ArrayList<CharSequence> items = new ArrayList<>();
+                 final ArrayList<Integer> options = new ArrayList<>();
+                 fillMessageMenu(messageObject, icons, items, options);
++                app.exteraless.plugins.menus.MenuInjector.expandMessagePluginsOption(icons, items, options);
+                 menu.setupMessageOptions(ChatActivity.this, icons, items, options, ChatActivity.this::processSelectedOption);
+                 menu.setOnDismissListener(() -> {
+                     selectedObject = null;
+@@ -41629,6 +41685,7 @@ public class ChatActivity extends BaseFragment implements
+             ArrayList<CharSequence> items = new ArrayList<>();
+             final ArrayList<Integer> options = new ArrayList<>();
+             fillMessageMenu(messageObject, icons, items, options);
++            app.exteraless.plugins.menus.MenuInjector.expandMessagePluginsOption(icons, items, options);
+             menu.setupMessageOptions(ChatActivity.this, icons, items, options, ChatActivity.this::processSelectedOption);
+             menu.setOnDismissListener(() -> {
+                 selectedObject = null;
+@@ -42394,6 +42451,12 @@ public class ChatActivity extends BaseFragment implements
+                         }
+                     };
+ 
++                    // exteraless plugins: файл плагина ставится, а не открывается
++                    // в подсветке кода (.plugin зарегистрирован как Python
++                    // в MarkdownUtils). Проверка идёт до просмотрщиков, как у exteraGram.
++                    if (app.exteraless.plugins.PluginInstallHelper.handleMessageTap(getParentActivity(), message)) {
++                        return;
++                    }
+                     boolean handled = false;
+                     if (MessageObject.canPreviewDocument(media.document)) {
+                         PhotoViewer.getInstance().setParentActivity(ChatActivity.this, themeDelegate);
+@@ -42695,6 +42758,12 @@ public class ChatActivity extends BaseFragment implements
+                         scrollToPositionOnRecreate = -1;
+                     }
+                 }
++                // exteraless plugins: файл плагина ставится, а не открывается
++                // в подсветке кода (.plugin зарегистрирован как Python
++                // в MarkdownUtils). Проверка идёт до просмотрщиков, как у exteraGram.
++                if (app.exteraless.plugins.PluginInstallHelper.handleMessageTap(getParentActivity(), message)) {
++                    return;
++                }
+                 boolean handled = false;
+                 if (message.canPreviewDocument()) {
+                     PhotoViewer.getInstance().setParentActivity(ChatActivity.this, themeDelegate);
