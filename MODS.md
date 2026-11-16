@@ -3438,6 +3438,28 @@ Open gaps (do NOT present as fixed):
   still unverified until device — green CI only proves the
   keeps compile in.
 
+## v3.0.1 — Fix 1: AliuHook Maven repo missing (2026-11-16, uncommitted)
+
+CI run 43814128194 (head d03198f, v3.0.0) FAILED at step 15 "Build
+release APK", task `:TMessagesProj_App:checkAfatReleaseDuplicateClasses`:
+`ModuleVersionNotFoundException: Could not find com.aliucord:Aliuhook:1.1.4`
+(searched Maven Central + Google only). Root cause: patch 0047 added
+the `com.aliucord:Aliuhook:1.1.4` dependency, but the port never carried
+over exteraless's `settings.gradle` repository line — AliuHook lives
+ONLY on `https://maven.aliucord.com/releases`, not on Maven Central.
+
+Fix: new patch 0049-engine-aliucord-repo.patch adds that repo to the
+pristine `settings.gradle` `dependencyResolutionManagement` block (same
+line exteraless declares). `settings.gradle` is a new upstream file
+(upstream count 45 → 46; patch files 42 → 43). Verified: the artifact
+`Aliuhook-1.1.4.pom` returns HTTP 200 at the Aliucord repo, and the
+other three new deps (MVEL 2.5.2.Final, DexMaker 2.28.6,
+HiddenApiBypass 6.1) all return 200 on Maven Central — no other repo
+is missing. Patch series 0001–0049 `git apply` clean on a fresh
+pristine 21f7d10 tree (+ overlay), CPython engine-port suite 20/20,
+secret scan zero. The workflow already loops over `patches/*.patch`,
+so 0049 is picked up with no workflow change.
+
 ## v3.0.0 — Real plugin engine port (exteraless), clean-room engine removed (2026-11-16, uncommitted)
 
 Amin tested v50 (Fix 4, HEAD dceb8ed) on his phone and it did NOT work
