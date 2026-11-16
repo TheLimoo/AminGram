@@ -20,6 +20,7 @@ so module-level SDK helpers know which plugin is calling them.
 
 import importlib.util
 import json
+import logging
 import sys
 from importlib.machinery import SourceFileLoader
 
@@ -29,6 +30,84 @@ import amin_context
 # a create_settings() row carrying one is serialised. The Java
 # side invokes them after a user changes a row on the plugin page.
 _setting_callbacks = {}
+
+
+# ------------------------------------------------------------------
+# Log bridge (Fix 4 / v2.5.6)
+# ------------------------------------------------------------------
+# Plugin loggers (logging.getLogger(name)) had nowhere to go: with
+# no handler attached, records went to stderr via lastResort and
+# were invisible in the hub. MaterialSettingsList logs its DEX
+# load failure with logger.warning(..., exc_info=True) — the very
+# traceback that names the cause — and nobody could see it. This
+# handler forwards every record to the hub's per-plugin log
+# (PyPluginHost.log -> PyPluginLog, capped at LOG_CAP lines)
+# under the current plugin id from amin_context. Installed lazily
+# on the root logger the first time a plugin loads; idempotent.
+# The originating logger's own level gates record creation, so a
+# logger at INFO (zwylib's build_log default) still reaches the
+# handler; records outside a plugin call ("engine") are skipped
+# rather than attributed to a plugin that did not make them.
+# The bridge never raises: logging must not break the plugin it
+# is reporting on. PyPluginHost.log writes to logcat + prefs, not
+# to Python logging, so the bridge cannot loop on itself.
+
+_log_host = None  # cached PyPluginHost class; False when unavailable
+_bridge_installed = False
+
+
+def _bridge_host():
+    global _log_host
+    if _log_host is None:
+        try:
+            from java import jclass
+            _log_host = jclass(
+                "org.telegram.messenger.amin.pyplugins.PyPluginHost")
+        except Exception:
+            _log_host = False
+    return _log_host or None
+
+
+class _LogBridgeHandler(logging.Handler):
+    """Forward logging records to the hub's per-plugin log."""
+
+    def emit(self, record):
+        try:
+            plugin_id = amin_context.get_current()
+            if plugin_id in (None, "", "engine"):
+                return
+            host = _bridge_host()
+            if host is None:
+                return
+            text = self.format(record)
+            # One append per line: the hub log stores one string
+            # per entry. Cap a single record so a long traceback
+            # cannot flood the log (LOG_CAP is 500 lines).
+            for line in text.split("\n")[:30]:
+                host.log(plugin_id, line)
+        except Exception:
+            pass
+
+
+def install_log_bridge():
+    """Attach the log bridge to the root logger (once)."""
+    global _bridge_installed
+    if _bridge_installed:
+        return
+    try:
+        root = logging.getLogger()
+        for handler in root.handlers:
+            if isinstance(handler, _LogBridgeHandler):
+                _bridge_installed = True
+                return
+        handler = _LogBridgeHandler()
+        handler.setLevel(logging.DEBUG)
+        handler.setFormatter(logging.Formatter(
+            "%(levelname)s %(name)s: %(message)s"))
+        root.addHandler(handler)
+        _bridge_installed = True
+    except Exception:
+        pass
 
 
 def _import_module(file_path, module_name):
@@ -59,6 +138,7 @@ def load_library(file_path, module_name):
     library fallback, e.g. ZwyLib): the module stays in
     sys.modules so other plugins can import it, and the module
     itself is returned. No lifecycle, no hooks, no settings."""
+    install_log_bridge()
     return _import_module(file_path, module_name)
 
 
@@ -66,6 +146,7 @@ def load_plugin(file_path, module_name):
     """Import the .plugin file and return a BasePlugin instance."""
     from base_plugin import BasePlugin
 
+    install_log_bridge()
     module = _import_module(file_path, module_name)
 
     candidates = []

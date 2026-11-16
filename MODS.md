@@ -3070,6 +3070,170 @@ commit on top of b08991d; this is fix attempt 2 of 2 — if this
 run also fails, no further pushes; the diagnosis goes to the
 parent instead.
 
+## v2.5.6 — Fix 4: nameless-library install + ic_foreground_solid + Python log bridge (2026-11-16, uncommitted)
+
+Two remaining errors from Amin's on-device test of v13.2.2-amingram.49
+(2026-11-16 ~06:55 Tehran, HEAD 56f4785), both fixed in this round.
+Zero new upstream files: one new overlay resource only, no new patch
+needed. Honest count stays 38 (cap 40, headroom 2) — reconciled
+this round: 36 distinct files across patches/*.patch + 2 CI inline
+functional edits (`FileLoadOperation.java`, `FileUploadOperation.java`
+in build.yml). `BuildVars.java` is also sed-edited at build time for
+the API keys, but that is a secret substitution, not a functional
+touch, and is not counted.
+
+### Bug A — adding real ZwyLib still "Missing metadata"
+Fix 3 threaded OpenableColumns.DISPLAY_NAME from the picker into the
+library fallback, but the toast persisted on Amin's phone — so the
+filename is evidently NOT reaching the fallback (DISPLAY_NAME null
+from his picker/provider, or the file being a ZIP routed to the
+strict Elyx path). The flow is now bulletproof regardless of why
+the name is missing:
+- **Fallback 1 (new):** if DISPLAY_NAME is null, try
+  `uri.getLastPathSegment()` — for file:// Uris and many content
+  Uris this IS the filename. Accepted only if it looks like one:
+  `PyPluginMetadata.usableFileName()` requires a `.plugin`/`.py`
+  suffix (case-insensitive); a bare last segment such as a numeric
+  document id (`1234`) or `msf:1234` is rejected, so a document id
+  can never become a library id.
+- **Fallback 2 (new):** if there is still no usable name, the hub
+  no longer refuses with the generic toast — it shows an input
+  dialog asking the user for the library id (rules explained in
+  the dialog: letters/digits/`_`/`-`, min 2 chars, starts with a
+  letter; hint "zwylib"), validates with `deriveLibraryId`, and
+  re-enters `confirmInstall(bytes, typed)` with the typed id, so
+  it goes through the same derivation + install review.
+- **Elyx path (new):** `confirmInstallElyx` and the controller's
+  `installElyx` apply the library fallback too: a metadata-less
+  entry installs as a library under the metainfo.yml id
+  (`PyPluginMetadata.libraryFromMetainfo`, moved there from the
+  controller so it is testable without Android; name/version from
+  metainfo when usable, else id / "1.0.0"). The metainfo
+  id/version match checks now apply only in the non-library
+  branch, so a library's default version cannot trip the
+  version-mismatch refusal. If neither metadata nor a metainfo id
+  exists, the refusal says so.
+- **Diagnostic refusals:** when the fallback cannot run, the
+  bulletin says WHY (e.g. "the file picker did not provide a
+  filename" / "metainfo.yml has no usable id") instead of
+  repeating the generic "Missing metadata" toast — the next
+  screenshot tells us the cause.
+- **DevServer rule kept:** a client-supplied upload name still
+  does NOT choose an install id (no filename forwarding there;
+  verified unchanged).
+
+### Bug B — enabling MaterialSettingsList: "Failed to load dex module."
+That string is raised by MSL itself (`on_plugin_load`, plugin
+line ~343) when its `DexLoader.inject()` returns False. Diagnosis
+this round, from a REAL jadx 1.5.2 decompile of the embedded DEX
+(`~/workspace/amingram/verify-scratch/fix4/msl-decompiled/` —
+downloaded into the scratch dir because /tmp is a 512 MB tmpfs
+that was 100% full; nothing uploaded):
+- `PluginCore.init(Context)`: sets `appContext`, calls
+  `paletteManager.bakePalettes()`, `settingsCellHooks.setupHooks()`,
+  `listItemsManager.setupHooks()`, logs "DEX v1.1.1 loaded." Both
+  `setupHooks()` methods are try/catch-wrapped (log only), so they
+  cannot throw out of `init`; `bakePalettes()` is likewise wrapped.
+  `AppUtils.log(String, Throwable)` EXISTS in the repo facade, so
+  the log path is fine. `<clinit>` constructs PaletteManager,
+  SettingsCellHookManager, ListItemsManager, SettingsActivityManager
+  — all trivial constructors/field initializers. `SettingsState`
+  is trivial booleans; `PaletteSet` a trivial HashMap holder.
+  DEX's kotlin-stdlib (`Intrinsics`, `MapsKt`, `TuplesKt`,
+  `CollectionsKt`, `RangesKt`, `Result`) and
+  `androidx.core.graphics.ColorUtils` references resolve from the
+  app's own dependencies.
+- **The one unresolvable reference in the entire DEX:**
+  `R$drawable.ic_foreground_solid`, read in exactly one place —
+  `SettingsCellHookManager.onBindViewAfter` (line 205):
+  `settingCell.getIconView().setImageResource(R.drawable.ic_foreground_solid)`
+  for id == -1 rows with a palette key. It does not exist anywhere
+  in upstream res/ (grep of the pristine tree is empty). All other
+  17 types / 8 fields / 12 methods from the Fix 3 enumeration exist
+  upstream and are kept — so this was the prime suspect for the
+  init-time failure, and it is needed at bind time regardless.
+- The direct-buffer theory is WEAK and was NOT acted on: Android's
+  docs describe `dexBuffer` only as "buffer containing DEX file
+  contents between buffer.position() and buffer.limit()", with no
+  direct-buffer requirement, and real-world examples use
+  `ByteBuffer.wrap(...)` — the same code works in exteraGram, so a
+  heap buffer cannot be the difference. Chaquopy `except Exception`
+  vs Java `Error` semantics (whether
+  `ExceptionInInitializerError`/`VerifyError` would be caught by
+  MSL's `except Exception` and return False vs propagating a
+  different message) could not be settled from first principles or
+  web search; that uncertainty is why the log bridge below matters.
+- **Fix:** new overlay resource
+  `TMessagesProj/src/main/res/drawable/ic_foreground_solid.xml` —
+  a plain solid white oval `<shape>` written by us (the DEX tints
+  it with the palette icon colour via `setColorFilter` SRC_IN in
+  `applyColors`, so the base colour only matters before tinting).
+  Clean-room shape, no exteraGram asset copied. The overlay res
+  dir already holds `amingram_*.xml` files and the CI workflow
+  copies `TMessagesProj` over the pristine tree, so the file is
+  picked up with no patch. Fix 3's
+  `-keep class org.telegram.messenger.R$* { *;}` already preserves
+  the new field through R8.
+
+### Diagnostics — Python logging now reaches the hub log (new)
+MSL swallows the cause: its `logger.warning(..., exc_info=True)`
+goes to Python logging, invisible in the hub. `amin_loader.py`
+now installs a `logging.Handler` (`_LogBridgeHandler`) on the root
+logger, lazily and idempotently, when a plugin or library loads.
+It forwards every record (level + logger + message + traceback,
+split into lines, capped at 30 lines per record) via
+`PyPluginHost.log` under the current plugin id from
+`amin_context` — so the hub's per-plugin log view shows the
+plugin's traceback next time a load fails. Records outside a
+plugin call ("engine") are skipped, not misattributed. The bridge
+never raises, and `PyPluginHost.log` writes to logcat + prefs,
+not to Python logging, so it cannot loop on itself. No Java
+change was needed for this.
+
+### Verification (all local; no Android SDK)
+- JDK 17 parse: 4 changed Java files OK.
+- Patch series replay 0001–0030 via `git apply` on a fresh
+  pristine 21f7d10 tree: clean, no FAILED lines; no new patch.
+- Java TestFix4
+  (`~/workspace/amingram/verify-scratch/fix4/javatest/TestFix4.java`):
+  **52/52 passed** — `usableFileName` (incl. numeric/`msf:`
+  document ids rejected), `deriveLibraryId` (incl. 40-char stem
+  refused, 32-char stem accepted), `isValidId`,
+  `libraryFromFileName`, `libraryFromMetainfo` (incl. bad id/version
+  fallbacks), `isMissingMetadataError`, real-MSL metadata regression,
+  drawable shape/self-contained checks, Fix 3 keeps still present
+  in the replayed proguard-rules.pro, no blanket `org.telegram.**`
+  keep.
+- CPython: new Fix 4 log-bridge suite **5/5 passed** (idempotent
+  install, warning forwarded, exc_info traceback forwarded, engine
+  records skipped, INFO forwarded); M3 suite **62/62**; M4 suite
+  **8/8** — all still pass.
+- `py_compile` of `amin_loader.py` + `zwylib/__init__.py` OK;
+  drawable XML well-formed (minidom parse OK).
+- `git diff --check` clean; secret scan zero.
+- Files changed: `PyPluginMetadata.java` (usableFileName,
+  isValidId, libraryFromMetainfo, libraryIdRefusal), `PyPluginsController.java`
+  (Elyx library fallback, diagnostic refusals), `AminPyPluginsActivity.java`
+  (last-path-segment fallback, typed-id dialog, Elyx library review),
+  `amin_loader.py` (log bridge), new overlay
+  `res/drawable/ic_foreground_solid.xml`.
+- **Not verifiable locally:** whether the DEX now loads on a real
+  phone (the `ic_foreground_solid` theory, the Chaquopy varargs
+  path on `Method.invoke`, and the fragment-walk refresh are
+  unproven until device); whether Amin's picker supplies a
+  DISPLAY_NAME or a usable last path segment (the typed-id dialog
+  covers the worst case either way).
+
+### On-device test list (Amin, v13.2.2-amingram.50 when CI is green)
+1. Add the real ZwyLib `.plugin` — should install as a library
+   (via filename, last path segment, or the typed-id dialog).
+2. Enable MaterialSettingsList — DEX should load; check the hub
+   log view for the plugin's log lines if it does not.
+3. All 8 toggles, restart persistence, disable → stock Settings
+   returns; `hello_py`, `settings_demo`, `hooks_demo`.
+4. M4 items: catalog, `.elyx`, library-only `.plugin`, DevServer
+   curl install, cold-start time engine OFF vs ON, APK size delta.
+
 ## v2.5.5 — Fix 3: library install + R8 keeps (2026-11-16, uncommitted)
 
 Two bugs from Amin's on-device test of v13.2.2-amingram.48

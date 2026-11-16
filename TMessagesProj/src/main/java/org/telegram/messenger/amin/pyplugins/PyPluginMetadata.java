@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -64,6 +65,12 @@ public final class PyPluginMetadata {
         return error != null && error.startsWith(MISSING_METADATA_PREFIX);
     }
 
+    /** True when {@code id} is a usable plugin id: 2-32 chars,
+     *  starts with a letter, only letters, digits, '_' and '-'. */
+    public static boolean isValidId(String id) {
+        return id != null && ID_PATTERN.matcher(id).matches();
+    }
+
     /** Filename stem: last path segment, minus a trailing
      *  {@code .plugin} / {@code .py} extension. Null in, null out. */
     public static String fileNameStem(String fileName) {
@@ -82,6 +89,25 @@ public final class PyPluginMetadata {
             name = name.substring(0, name.length() - ".py".length());
         }
         return name;
+    }
+
+    /** A candidate filename is usable as a library-id source
+     *  only when it looks like a real plugin file name (Fix 4 /
+     *  v2.5.6): it must end with {@code .plugin} or {@code .py}.
+     *  A bare last-path segment such as a numeric document id
+     *  (\"1234\") or \"msf:1234\" is NOT a filename — accepting it
+     *  would silently install the library under a meaningless id
+     *  (\"lib_1234\") instead of asking the user. Returns the
+     *  candidate unchanged when usable, else null. */
+    public static String usableFileName(String candidate) {
+        if (candidate == null) {
+            return null;
+        }
+        String lower = candidate.toLowerCase(java.util.Locale.ROOT);
+        if (lower.endsWith(".plugin") || lower.endsWith(".py")) {
+            return candidate;
+        }
+        return null;
     }
 
     /** Sanitizes a filename stem to a valid plugin id, or null
@@ -123,6 +149,30 @@ public final class PyPluginMetadata {
                 + "used as a library id. Rename the file to a simple "
                 + "name (letters, digits, '_' or '-', at least 2 "
                 + "characters, starting with a letter) and try again.";
+    }
+
+    /** Builds a library plugin from an Elyx archive's metainfo
+     *  (Fix 4 / v2.5.6): a metadata-less entry installs as a
+     *  library under the metainfo id (name/version from metainfo
+     *  when usable, else the id / "1.0.0"). Returns null when the
+     *  metainfo has no usable id. */
+    public static PyPlugin libraryFromMetainfo(Map<String, String> metainfo) {
+        if (metainfo == null) {
+            return null;
+        }
+        String id = metainfo.get("id");
+        if (!isValidId(id)) {
+            return null;
+        }
+        PyPlugin plugin = new PyPlugin();
+        plugin.id = id;
+        String name = metainfo.get("name");
+        plugin.name = (name == null || name.isEmpty()) ? id : name;
+        String version = metainfo.get("version");
+        plugin.version = isSemver(version) ? version : "1.0.0";
+        plugin.categories.add("libraries");
+        plugin.library = true;
+        return plugin;
     }
 
     /** Builds a library plugin from a picked file's display name

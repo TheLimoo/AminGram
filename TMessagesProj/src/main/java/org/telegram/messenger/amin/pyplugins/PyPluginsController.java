@@ -311,9 +311,17 @@ public final class PyPluginsController {
             // none, so it is refused with a clear message instead
             // of installing under a guessed id.
             if (fileName == null) {
-                return parsed.error + " Install it from a file "
-                        + "instead, or add __id__ and __name__ to "
-                        + "the source.";
+                // Fix 4 (v2.5.6): say WHY instead of repeating
+                // the generic refusal — a DevServer upload carries
+                // no filename, so no library id can be derived.
+                // (The hub's file picker asks the user for an id
+                // instead; this path is only reached by uploads
+                // and other callers with no name.)
+                return "This file has no __id__/__name__ metadata "
+                        + "and no filename was provided, so no "
+                        + "library id can be derived. Install it "
+                        + "from a file instead, or add __id__ and "
+                        + "__name__ to the source.";
             }
             plugin = PyPluginMetadata.libraryFromFileName(fileName);
             if (plugin == null) {
@@ -379,20 +387,35 @@ public final class PyPluginsController {
             return loaded.error;
         }
         PyPluginMetadata.Parsed parsed = PyPluginMetadata.parse(loaded.entrySource);
+        PyPlugin plugin;
         if (parsed.error != null) {
-            return parsed.error;
-        }
-        PyPlugin plugin = parsed.plugin;
-        String metaId = loaded.metainfo.get("id");
-        if (metaId != null && !metaId.isEmpty() && !metaId.equals(plugin.id)) {
-            return "metainfo.yml id '" + metaId + "' does not match "
-                    + "the plugin source id '" + plugin.id + "'.";
-        }
-        String metaVersion = loaded.metainfo.get("version");
-        if (metaVersion != null && !metaVersion.isEmpty()
-                && !metaVersion.equals(plugin.version)) {
-            return "metainfo.yml version '" + metaVersion + "' does not "
-                    + "match the plugin source version '" + plugin.version + "'.";
+            if (!PyPluginMetadata.isMissingMetadataError(parsed.error)) {
+                return parsed.error;
+            }
+            // Fix 4 (v2.5.6): a metadata-less Elyx entry is a
+            // library when metainfo.yml carries an id — same
+            // fallback as single-file installs. Without an id
+            // there is nothing to derive one from, so the refusal
+            // says so instead of repeating the generic toast.
+            plugin = PyPluginMetadata.libraryFromMetainfo(loaded.metainfo);
+            if (plugin == null) {
+                return "This archive's entry has no __id__/__name__ "
+                        + "metadata and metainfo.yml has no usable id, "
+                        + "so no library id can be derived.";
+            }
+        } else {
+            plugin = parsed.plugin;
+            String metaId = loaded.metainfo.get("id");
+            if (metaId != null && !metaId.isEmpty() && !metaId.equals(plugin.id)) {
+                return "metainfo.yml id '" + metaId + "' does not match "
+                        + "the plugin source id '" + plugin.id + "'.";
+            }
+            String metaVersion = loaded.metainfo.get("version");
+            if (metaVersion != null && !metaVersion.isEmpty()
+                    && !metaVersion.equals(plugin.version)) {
+                return "metainfo.yml version '" + metaVersion + "' does not "
+                        + "match the plugin source version '" + plugin.version + "'.";
+            }
         }
         if (!plugin.requirements.isEmpty()) {
             return "This plugin needs PyPI packages ("

@@ -660,6 +660,20 @@ public class AminPyPluginsActivity extends BaseFragment {
                 }
             } catch (Throwable ignored) {
             }
+            // Fix 4 (v2.5.6): some pickers/providers do not supply
+            // DISPLAY_NAME — fall back to the Uri's last segment,
+            // but only when it looks like a real plugin file name.
+            // A bare document id ("1234", "msf:1234") is not one:
+            // accepting it would silently install the library
+            // under a meaningless id instead of asking the user.
+            if (displayName == null) {
+                try {
+                    String segment = uri.getLastPathSegment();
+                    displayName = org.telegram.messenger.amin.pyplugins
+                            .PyPluginMetadata.usableFileName(segment);
+                } catch (Throwable ignored) {
+                }
+            }
             byte[] bytes = null;
             try (InputStream in = context.getContentResolver().openInputStream(uri);
                  ByteArrayOutputStream out = new ByteArrayOutputStream()) {
@@ -718,25 +732,32 @@ public class AminPyPluginsActivity extends BaseFragment {
         final PyPlugin plugin;
         final boolean isLibrary;
         if (parsed.error != null) {
-            // Fix 3 (v2.5.5): same fallback as the controller —
-            // a metadata-less file with a known name is a library.
-            // Without a name there is nothing to derive an id
-            // from, so the refusal stands.
             if (!org.telegram.messenger.amin.pyplugins.PyPluginMetadata
-                    .isMissingMetadataError(parsed.error)
-                    || fileName == null) {
+                    .isMissingMetadataError(parsed.error)) {
                 bulletin(R.raw.error, parsed.error);
                 return;
             }
-            PyPlugin lib = org.telegram.messenger.amin.pyplugins.PyPluginMetadata
-                    .libraryFromFileName(fileName);
-            if (lib == null) {
-                bulletin(R.raw.error, org.telegram.messenger.amin.pyplugins.PyPluginMetadata
-                        .libraryIdRefusal(fileName));
+            // Fix 3 (v2.5.5): same fallback as the controller —
+            // a metadata-less file with a known name is a library.
+            if (fileName != null) {
+                PyPlugin lib = org.telegram.messenger.amin.pyplugins.PyPluginMetadata
+                        .libraryFromFileName(fileName);
+                if (lib == null) {
+                    bulletin(R.raw.error, org.telegram.messenger.amin.pyplugins.PyPluginMetadata
+                            .libraryIdRefusal(fileName));
+                    return;
+                }
+                plugin = lib;
+                isLibrary = true;
+            } else {
+                // Fix 4 (v2.5.6): no name at all — the file picker
+                // did not provide one, so ask the user for the
+                // library id instead of refusing with a toast
+                // that says nothing about the cause. The typed id
+                // re-enters this method as the file name.
+                promptLibraryId(bytes);
                 return;
             }
-            plugin = lib;
-            isLibrary = true;
         } else {
             plugin = parsed.plugin;
             isLibrary = false;
@@ -772,6 +793,45 @@ public class AminPyPluginsActivity extends BaseFragment {
         showDialog(builder.create());
     }
 
+    /** Asks the user to type a library id for a metadata-less
+     *  file the picker gave no name for (Fix 4 / v2.5.6). The
+     *  dialog says WHY the id is needed; the typed text re-enters
+     *  {@link #confirmInstall(byte[], String)} as the file name,
+     *  so it goes through the same derivation + install dialog.
+     *  An unusable id gets a diagnostic bulletin, not a silent
+     *  refusal — the user can pick the file again and retry. */
+    private void promptLibraryId(final byte[] bytes) {
+        final Context context = getContext();
+        if (context == null || getParentActivity() == null) {
+            return;
+        }
+        final EditText input = new EditText(context);
+        input.setHint("zwylib");
+        input.setSingleLine(true);
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle("Library id needed");
+        builder.setMessage("This file has no __id__/__name__ metadata, "
+                + "and the file picker did not provide a filename, so "
+                + "AminGram cannot tell what to call this library. "
+                + "Type a library id (letters, digits, '_' or '-', "
+                + "at least 2 characters):");
+        builder.setView(input);
+        builder.setPositiveButton("Continue", (dialog, which) -> {
+            String typed = input.getText() == null ? ""
+                    : input.getText().toString().trim();
+            if (org.telegram.messenger.amin.pyplugins.PyPluginMetadata
+                    .deriveLibraryId(typed) == null) {
+                bulletin(R.raw.error, "That cannot be a library id: "
+                        + "use at least 2 characters of letters, "
+                        + "digits, '_' or '-'.");
+                return;
+            }
+            confirmInstall(bytes, typed);
+        });
+        builder.setNegativeButton("Cancel", null);
+        showDialog(builder.create());
+    }
+
     /** Install review for a .elyx / .eaf archive (M4): the entry
      *  source and every extra module are analysed; the report
      *  names the archive's entry file. */
@@ -794,11 +854,33 @@ public class AminPyPluginsActivity extends BaseFragment {
         }
         org.telegram.messenger.amin.pyplugins.PyPluginMetadata.Parsed parsed =
                 org.telegram.messenger.amin.pyplugins.PyPluginMetadata.parse(loaded.entrySource);
+        final PyPlugin plugin;
+        final boolean isLibrary;
         if (parsed.error != null) {
-            bulletin(R.raw.error, parsed.error);
-            return;
+            if (!org.telegram.messenger.amin.pyplugins.PyPluginMetadata
+                    .isMissingMetadataError(parsed.error)) {
+                bulletin(R.raw.error, parsed.error);
+                return;
+            }
+            // Fix 4 (v2.5.6): a metadata-less entry is a library
+            // when metainfo.yml carries an id — same fallback as
+            // the controller, so the Install path cannot refuse
+            // again. Without an id the refusal says so.
+            PyPlugin lib = org.telegram.messenger.amin.pyplugins.PyPluginMetadata
+                    .libraryFromMetainfo(loaded.metainfo);
+            if (lib == null) {
+                bulletin(R.raw.error, "This archive's entry has no "
+                        + "__id__/__name__ metadata and metainfo.yml "
+                        + "has no usable id, so no library id can be "
+                        + "derived.");
+                return;
+            }
+            plugin = lib;
+            isLibrary = true;
+        } else {
+            plugin = parsed.plugin;
+            isLibrary = false;
         }
-        final PyPlugin plugin = parsed.plugin;
         List<org.telegram.messenger.amin.pyplugins.PyPluginAnalysis.Finding> findings =
                 org.telegram.messenger.amin.pyplugins.PyPluginAnalysis.analyze(
                         loaded.entrySource, plugin);
@@ -809,7 +891,10 @@ public class AminPyPluginsActivity extends BaseFragment {
         }
         StringBuilder report = new StringBuilder();
         report.append(plugin.name).append(" v").append(plugin.version);
-        if (!plugin.author.isEmpty()) {
+        if (isLibrary) {
+            report.append(" (library — no settings UI, no lifecycle; "
+                    + "other plugins can import it)");
+        } else if (!plugin.author.isEmpty()) {
             report.append(" by ").append(plugin.author);
         }
         report.append(" (.elyx archive, entry ").append(loaded.entryName);
@@ -822,12 +907,12 @@ public class AminPyPluginsActivity extends BaseFragment {
         }
         report.append("\nHidden or downloaded code would not show up here. Install only files from sources you trust.");
         AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
-        builder.setTitle("Install Python plugin?");
+        builder.setTitle(isLibrary ? "Install Python library?" : "Install Python plugin?");
         builder.setMessage(report.toString());
         builder.setPositiveButton("Install", (dialog, which) -> {
             String error = PyPluginsController.installFromBytes(context, bytes, "file");
             if (error == null) {
-                bulletin(R.raw.contact_check, "Plugin installed");
+                bulletin(R.raw.contact_check, isLibrary ? "Library installed" : "Plugin installed");
                 rebuild();
             } else {
                 bulletin(R.raw.error, error);
