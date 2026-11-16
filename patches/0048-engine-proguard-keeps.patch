@@ -1,8 +1,8 @@
 diff --git a/TMessagesProj/proguard-rules.pro b/TMessagesProj/proguard-rules.pro
-index 284b735..ada20a1 100644
+index 284b735..00946a6 100644
 --- a/TMessagesProj/proguard-rules.pro
 +++ b/TMessagesProj/proguard-rules.pro
-@@ -118,10 +118,8 @@
+@@ -118,10 +118,15 @@
  # cannot start or load plugins.
  -keep class com.chaquo.python.** { *; }
  -dontwarn com.chaquo.python.**
@@ -10,6 +10,13 @@ index 284b735..ada20a1 100644
 --keep class com.exteragram.messenger.plugins.PluginsController { *; }
 --keep class com.exteragram.messenger.plugins.PluginsController$Plugin { *; }
 --keep class com.exteragram.messenger.utils.AppUtils { *; }
++# AminGram (Fix 5 / v3.0.5): MVEL 2.5.2 ships a JSR-223 integration
++# (org.mvel2.jsr223.MvelScriptEngine[Factory]) that references
++# javax.script.* classes, which do not exist on Android — R8 fails
++# the release build with "Missing classes detected". The engine
++# never uses the JSR-223 ScriptEngine API (it calls MVEL.eval
++# directly), so this code path is dead on Android.
++-dontwarn javax.script.**
 +-keep class app.exteraless.plugins.** { *; }
 +-keep class com.exteragram.messenger.** { *; }
  # AminGram (M0): class names plugins and DEX code resolve by string

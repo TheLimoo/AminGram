@@ -3960,3 +3960,23 @@ LICENSE relicense + commit + push; this port is the technical work only.
   (the exteraless/chaquopy fork is the fallback); cold-start time
   with the engine on/off; APK size delta (v50 was ~113.9 MB);
   fragment-walk refresh behaviour of the plugin menus.
+
+## Fix 5 — R8 `javax.script` missing classes (MVEL JSR-223) (2026-11-16, uncommitted)
+
+- CI run 43850360862 (head 34d1a30, Fix 4) completed FAILURE ~11:28 UTC.
+  Step 15 "Build release APK (afat)" failed at
+  `:TMessagesProj_App:minifyAfatReleaseWithR8`: "Missing classes
+  detected while running R8" — `javax.script.AbstractScriptEngine`,
+  `javax.script.Compilable`, `javax.script.ScriptEngine`,
+  `javax.script.ScriptEngineFactory`, all referenced from
+  `org.mvel2.jsr223.MvelScriptEngine[Factory]`. (Compilation itself
+  passed this run — the Fix 4 lambda fix worked.)
+- Cause: MVEL 2.5.2 ships a JSR-223 integration whose classes
+  reference `javax.script.*`, which does not exist on Android. The
+  engine never uses the JSR-223 ScriptEngine API (it calls
+  `MVEL.eval` directly), so the code path is dead on Android.
+- Fix: `-dontwarn javax.script.**` in `TMessagesProj/proguard-rules.pro`,
+  via regenerated patch 0048 (patch regenerated from a scratch tree
+  with `git diff` — never hand-edited hunk headers).
+- Verified: patch replay 50/50 clean, JDK parse 2495/2495 OK,
+  CPython engine-port suite 20/20, secret scan zero.
