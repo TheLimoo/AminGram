@@ -2,7 +2,9 @@ package app.exteraless.plugins.ui;
 
 import static org.telegram.messenger.LocaleController.getString;
 
+import android.app.Activity;
 import android.content.Context;
+import android.content.Intent;
 import android.view.View;
 import android.widget.FrameLayout;
 
@@ -189,6 +191,21 @@ public class PluginsInfoActivity extends BaseFragment {
         }
         if (listView != null) {
             listView.adapter.update(true);
+        }
+    }
+
+    // Fix 7: LaunchActivity routes a picker result to the TOP fragment of the
+    // stack — that is this screen (it started the picker via
+    // PluginsActivity.openPluginPicker(this)), not the PluginsActivity
+    // underneath where the install handler used to live alone. Without this
+    // override the picked file was silently swallowed: "Install from file"
+    // did nothing. Forward the pick to the shared install flow (consent
+    // dialog via PluginsController.showInstallDialog, never direct install).
+    @Override
+    public void onActivityResultFragment(int requestCode, int resultCode, Intent data) {
+        if (requestCode == PluginsActivity.REQUEST_CODE_PICK_PLUGIN
+                && resultCode == Activity.RESULT_OK && data != null && data.getData() != null) {
+            PluginsActivity.installFromUri(this, data.getData());
         }
     }
 

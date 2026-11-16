@@ -4053,3 +4053,88 @@ LICENSE relicense + commit + push; this port is the technical work only.
   No migration was added: the clean-room layout holds extracted plugin
   contents, not the canonical installable files the real engine expects,
   so a copy-over would not produce valid installs.
+
+## Fix 7 — opening any chat crashes (`NoClassDefFoundError: MenuInjector`) + Install from file does nothing (2026-11-16, uncommitted)
+
+Two independent bugs, both diagnosed from Amin's on-device evidence the
+same evening v59 shipped.
+
+### Bug 1 — chat open crashes: R8 renamed `org.mvel2.**`, MVEL's name-string lookup fails
+
+- On-device (v59, 2026-11-16 ~22:55): tapping any chat/group shows the
+  long-press selection state instead of opening it; a real long-press
+  crashes the app. Network is fine, chats are listed, Telegram is
+  connected, and the engine toggle OFF changes nothing — so it is not
+  the engine, not the network, and not a freeze.
+- Root cause (proven from Amin's crash log
+  `verify-scratch/crashlog/16_11_2026_22_59_24.txt` + the v59 APK):
+  `ChatActivity.createView` touches `MenuInjector`, whose static init
+  runs `OptimizerFactory.setDefaultOptimizer(SAFE_REFLECTIVE)`, which
+  throws `RuntimeException: unable to instantiate accessor compiler`
+  (`ExceptionInInitializerError` → `NoClassDefFoundError: MenuInjector`,
+  FATAL on the second tap). MVEL's `OptimizerFactory` static init loads
+  its optimizer classes BY NAME STRING
+  (`ClassLoader.loadClass("org.mvel2.asm.ClassWriter")`, verified in
+  mvel2 2.5.2 bytecode) and instantiates the accessor compiler via
+  `newInstance()` — so when R8 renames `org.mvel2.**`, the lookup fails.
+  The v59 APK DEX contains ZERO `org/mvel2` references, confirming R8
+  stripped/renamed the whole package. (The first tap's exception is
+  swallowed somewhere up the call chain, which is why a tap only
+  *looked* like a long-press; the second tap is FATAL.)
+- Why we missed it: Fix 5 only added `-dontwarn javax.script.**` for
+  MVEL's JSR-223 integration. Upstream exteraless keeps the MVEL
+  package (`proguard-rules.pro` lines 239–243), which we never ported.
+- Fix (patch 0048 regenerated from a scratch tree with `git diff` —
+  never hand-edited; the patch is an incremental diff against the
+  post-0047 tree, same hunk header as before): add upstream's lines
+  `-keep class org.mvel2.** { *; }` + `-dontwarn org.mvel2.**`, plus
+  `-keep class com.android.dx.** { *; }` + `-dontwarn com.android.dx.**`
+  (same failure class: `ClassProxyFactory` generates DEX at runtime with
+  `com.android.dx.DexMaker`, used when MSL's hooks/proxies load).
+  Upstream's `-keep class de.robv.android.xposed.** { *; }` is NOT
+  re-added: `HookGate` does load `XposedBridge` / `$HookInfo` /
+  `$CopyOnWriteSortedSet` via `Class.forName`, but that keep already
+  exists in the M3 block below — verified, no duplicate line.
+  Upstream's other keeps (player, pillstack, AltSeekbar, settings utils,
+  kotlin/material/zxing/collect) cover features NOT ported here, so they
+  are deliberately not added.
+- Lesson (applies to every future dep): **R8 + reflection-heavy libs
+  need upstream keep rules.** A library that resolves classes by name
+  string (`Class.forName` / `loadClass` / `newInstance`) compiles fine,
+  passes CI, and dies on device the first time the code path runs — the
+  build cannot catch it. When porting a dep, port its proguard rules too
+  and check the release DEX for the dep's package names.
+
+### Bug 2 — Install from file does nothing: picker result lands on the wrong fragment
+
+- On-device (v59, 2026-11-16 ~22:58): tap "Install from file" in the
+  engine hub, pick a file — nothing happens, no dialog, no error.
+- Root cause (code-proven): `PluginsInfoActivity` starts the picker via
+  `PluginsActivity.openPluginPicker(this)`, but `LaunchActivity`
+  routes the result to the TOP fragment of the stack — that is
+  `PluginsInfoActivity` itself — which had NO `onActivityResultFragment`
+  override, so the result was swallowed by `BaseFragment`'s no-op
+  default. The handler (`installFromUri` → consent dialog) lived only
+  in `PluginsActivity`, underneath in the stack. Nothing listens to
+  `onActivityResultReceived` either. (Upstream exteraless has the same
+  shape; the 3-dot Import menu is backup-restore only, so this was the
+  only install path.)
+- Fix (overlay files, no patch): `PluginsActivity.installFromUri` is now
+  a shared `static installFromUri(BaseFragment fragment, Uri uri)`
+  (same copy-to-cache, same extension detection, same consent dialog
+  via `PluginsController.showInstallDialog(fragment, path, false)` —
+  never a direct install), `REQUEST_CODE_PICK_PLUGIN` is package-visible,
+  and `PluginsInfoActivity` overrides `onActivityResultFragment` and
+  forwards the pick to it. `PluginsActivity`'s own handler calls the
+  same helper with `this`.
+
+### Verification (Fix 7 bar, same as Fix 6)
+
+- Patch replay: all 51 patches apply clean on a fresh tree from the
+  faithful pristine tarball + overlay, CI method (overlay first, then
+  patches in filename order).
+- JDK 17 ParseCheck over the full overlaid tree: 2495/2495 OK.
+- CPython engine-port suite 20/20, secret scan zero, `git diff --check`
+  clean.
+- Artifact proof (CI watch): the new APK's DEX must contain real
+  `org/mvel2` class names — v59 had zero.

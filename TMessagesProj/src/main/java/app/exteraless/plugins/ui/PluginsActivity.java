@@ -73,7 +73,11 @@ public class PluginsActivity extends BaseFragment {
 
     private static final int ID_ENGINE_TOGGLE = -1;
 
-    private static final int REQUEST_CODE_PICK_PLUGIN = 9781;
+    // Package-visible: PluginsInfoActivity starts the picker (openPluginPicker
+    // takes the calling fragment), and LaunchActivity routes the result to the
+    // TOP fragment — so the info screen, not this list, receives it and must
+    // forward it here (Fix 7).
+    static final int REQUEST_CODE_PICK_PLUGIN = 9781;
     private static final int REQUEST_CODE_IMPORT_PLUGINS = 9782;
 
     private UniversalRecyclerView listView;
@@ -676,12 +680,15 @@ public class PluginsActivity extends BaseFragment {
                 || data == null || data.getData() == null) {
             return;
         }
-        installFromUri(data.getData());
+        installFromUri(this, data.getData());
     }
 
-    /** content:// из системного пикера копируем в кэш — движку нужен обычный читаемый файл. */
-    private void installFromUri(Uri uri) {
-        Activity activity = getParentActivity();
+    /** content:// из системного пикера копируем в кэш — движку нужен обычный читаемый файл.
+     * Static + fragment param (Fix 7): the picker can be started from
+     * PluginsInfoActivity, and the result lands on whichever fragment is on
+     * top — so both fragments' onActivityResultFragment share this helper. */
+    static void installFromUri(BaseFragment fragment, Uri uri) {
+        Activity activity = fragment.getParentActivity();
         if (activity == null) {
             return;
         }
@@ -709,7 +716,7 @@ public class PluginsActivity extends BaseFragment {
             FileLog.e("PluginsActivity: cannot read picked file", e);
         }
         if (!copied) {
-            showDialog(new AlertDialog.Builder(activity)
+            fragment.showDialog(new AlertDialog.Builder(activity)
                     .setTitle(getString(R.string.PluginsInstallError))
                     .setMessage(getString(R.string.PluginsInstallReadError))
                     .setPositiveButton(getString(R.string.OK), null)
@@ -719,7 +726,7 @@ public class PluginsActivity extends BaseFragment {
         // Через диалог согласия, а не installPlugin напрямую: иначе выбор файла
         // на этом экране выдавал бы плагину все объявленные разрешения молча,
         // в обход единственного места, где пользователь их видит.
-        PluginsController.getInstance().showInstallDialog(this, tmp.getAbsolutePath(), false);
+        PluginsController.getInstance().showInstallDialog(fragment, tmp.getAbsolutePath(), false);
     }
 
     /** Имя файла за content://-ссылкой; нужно только ради расширения. */

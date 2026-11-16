@@ -1,8 +1,8 @@
 diff --git a/TMessagesProj/proguard-rules.pro b/TMessagesProj/proguard-rules.pro
-index 284b735..00946a6 100644
+index 284b735..8bf1c0b 100644
 --- a/TMessagesProj/proguard-rules.pro
 +++ b/TMessagesProj/proguard-rules.pro
-@@ -118,10 +118,15 @@
+@@ -118,10 +118,32 @@
  # cannot start or load plugins.
  -keep class com.chaquo.python.** { *; }
  -dontwarn com.chaquo.python.**
@@ -17,6 +17,23 @@ index 284b735..00946a6 100644
 +# never uses the JSR-223 ScriptEngine API (it calls MVEL.eval
 +# directly), so this code path is dead on Android.
 +-dontwarn javax.script.**
++# AminGram (Fix 7 / v3.0.7): MVEL resolves its optimizer classes BY NAME
++# STRING at runtime (OptimizerFactory static init does
++# ClassLoader.loadClass("org.mvel2.asm.ClassWriter"); the accessor
++# compiler is then instantiated via newInstance()). R8 renamed
++# org.mvel2.** in v59, so the lookup failed and MenuInjector's static
++# init threw "unable to instantiate accessor compiler" — opening any
++# chat crashed (NoClassDefFoundError: MenuInjector). Same failure
++# class: HookGate loads de.robv.android.xposed.XposedBridge (and
++# $HookInfo / $CopyOnWriteSortedSet) via Class.forName — already kept
++# by the M3 block below, so no duplicate line here — and
++# ClassProxyFactory generates DEX at runtime with com.android.dx
++# DexMaker. Upstream exteraless keeps all three; we port the missing
++# ones (mvel2 + dx).
++-keep class org.mvel2.** { *; }
++-dontwarn org.mvel2.**
++-keep class com.android.dx.** { *; }
++-dontwarn com.android.dx.**
 +-keep class app.exteraless.plugins.** { *; }
 +-keep class com.exteragram.messenger.** { *; }
  # AminGram (M0): class names plugins and DEX code resolve by string
