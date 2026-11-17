@@ -121,6 +121,16 @@ _EXACT = {
         "org.telegram.utils.glass.source.GlassSourceBitmap",
     "org.telegram.ui.Components.blur3.source.BlurredBackgroundSource":
         "org.telegram.utils.glass.source.GlassSource",
+    # AminGram (Fix 15): in 13.2.2 the class lives at
+    # org.telegram.utils.code.highlight.CodeHighlighting; it moved to
+    # org.telegram.messenger only in a newer upstream, so plugins written
+    # against the newer base import it from there (ui_tweaks.py:44).
+    # This entry covers the jclass / find_class paths (resolve() is only
+    # consulted there). The from-import path is covered by the Java facade
+    # org.telegram.messenger.CodeHighlighting (overlay) instead — the SDK
+    # import wrapper never calls resolve() for a from-import.
+    "org.telegram.messenger.CodeHighlighting":
+        "org.telegram.utils.code.highlight.CodeHighlighting",
 }
 
 _PREFIXES = (

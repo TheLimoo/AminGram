@@ -4968,3 +4968,117 @@ a plugin's embedded DEX resolves stdlib classes through the APP
 loader, so every `kotlin.*` class a plugin DEX references must be
 kept in the app build — enumerate the plugin DEX's own references,
 not just the Python-side lookups.
+
+## Fix 15 — R8 OFF for the release build + CodeHighlighting alias (2026-11-18, v3.0.16)
+
+Amin's order (2026-11-18 ~00:14 Tehran): "do it for all of it so not
+everything needs fixing" — end the one-name-per-build loop. This is
+the R8 contingency recorded in the notes: turn off renaming/stripping
+entirely for the release build instead of patching names one by one.
+
+### Trigger
+
+A new glass/UI-tweaks plugin (file not supplied) imported and loaded
+on v68 (19 hooks installed) but the log showed "hook unavailable (no
+class)" for four classes the plugin hooks reflectively:
+
+| class | in 13.2.2 source? | v68 DEX descriptor |
+|---|---|---|
+| `org.telegram.ui.Components.blur3.LiquidGlassEffect` | yes | 0 (renamed by R8) |
+| `org.telegram.ui.Components.ChatAvatarContainer` | yes | 0 (renamed by R8) |
+| `org.telegram.ui.Components.ButtonBounce` | yes | 0 (renamed by R8) |
+| `org.telegram.ui.Components.ChatActivityTopPanelLayout` | yes | 0 (renamed by R8) |
+
+No keep covered `org.telegram.ui.Components.*` except the specific
+classes fixed in Fix 11/12/13. Each fix round so far (Fix 8, 11, 12,
+13, 14) was another class R8 had renamed or stripped — the pattern
+was converging but never finished, because no enumeration can prove
+a negative about the next plugin's imports.
+
+Two log lines are NOT fixed by this change, by design:
+
+- `hook unavailable (no method): org.telegram.ui.ActionBar.ActionBar.setTitleCentered`
+  — 0 occurrences in pristine `ActionBar.java`: the method genuinely
+  does not exist in 13.2.2 (added in a newer upstream). No build
+  change can create it; the plugin already treats it as a soft
+  failure, so that one feature simply stays off. Not ported.
+- `nostatic org.telegram.ui.LaunchActivity.getLastFragment/0` and
+  `nostatic org.telegram.ui.PhotoViewer.hasInstance/0` — hook-installer
+  noise. Source shows `getLastFragment` is an instance method (called
+  on instances at `LaunchActivity.java:537,877`) and `hasInstance` IS
+  `public static boolean` (`PhotoViewer.java:4134`); the installer
+  probed static lookup. Not chased as a fix target.
+
+### Change 1 — R8 off (patch 0058, new)
+
+`TMessagesProj_App/build.gradle`, `release` build type only (the one
+CI builds: `:TMessagesProj_App:assembleAfatRelease`):
+
+```groovy
+minifyEnabled false
+shrinkResources false
+```
+
+`minifyEnabled false` skips R8 entirely — no shrinking, no
+obfuscation, no optimization — so every class keeps its real name and
+the rename whack-a-mole ends. `shrinkResources` must be false too
+(it requires minifyEnabled). The `standalone` build type is untouched
+(CI does not build it; minimal change). The `proguardFiles` line is
+left in place (harmless with minify off) and all `-keep` rules in
+patch 0048 stay in place as no-ops — removing them risks breaking
+the patch replay for zero benefit. Patch 0058 was regenerated with
+`git diff` from a scratch tree built from the faithful pristine
+tarball (overlay copied first, patches 0001–0057 applied, then the
+edit); never hand-edited.
+
+Measured cost: APK size delta vs v68 (124,079,375 bytes) is in the
+Fix 15 release notes — that delta IS the price of the switch.
+
+### Change 2 — CodeHighlighting alias + facade (package move, NOT a rename)
+
+Separate round, same build: ui_tweaks.py imports
+`org.telegram.messenger.CodeHighlighting`, but in 13.2.2 the class
+lives at `org.telegram.utils.code.highlight.CodeHighlighting` (verified
+in pristine source; app Java code references it, e.g.
+`app/exteraless/utils/MarkdownUtils.java`). Turning R8 off does NOT
+fix this — the class is at a different address, not a different name.
+
+Two parts, because the SDK alias table does not cover every lookup
+path (traced, not assumed):
+
+- `extera_utils/class_aliases.py`, `_EXACT`:
+  `"org.telegram.messenger.CodeHighlighting" ->
+  "org.telegram.utils.code.highlight.CodeHighlighting"`. This covers
+  the `java.jclass(...)` / `find_class(...)` paths: the wrapped jclass
+  (`plugin_loader.py:1956`) calls `resolve()` unless
+  `plain_java_class()` says the name is plain, and `is_plain()` is
+  False for this name (proven by CPython simulation:
+  `resolve()` returns the mapped name, existing entries unaffected).
+- Java facade (overlay, new file):
+  `TMessagesProj/src/main/java/org/telegram/messenger/CodeHighlighting.java`
+  — `public class CodeHighlighting extends
+  org.telegram.utils.code.highlight.CodeHighlighting {}` with no added
+  behaviour. This covers the `from org.telegram.messenger import
+  CodeHighlighting` path, which the alias table CANNOT reach: the SDK
+  import wrapper `_sandboxed_import` (`plugin_loader.py:1237`) never
+  calls `resolve()` — proven by static count: zero `resolve(` calls
+  inside it; the from-import goes straight to Chaquopy's java import
+  hook. The facade makes `Class.forName` succeed at the expected
+  name, and every static method/constant is inherited from the real
+  implementation.
+
+Caveat: nested classes (`CodeHighlighting.Span`,
+`CodeHighlighting.ColorSpan`, ...) are declared on the superclass,
+not on this subclass, so `Facade.Span` resolves only if the lookup
+consults inherited nested classes. No plugin in scope uses them; if
+one does, it gets its own round.
+
+### What the switch does NOT fix
+
+- Package moves still need aliases/facades (this CodeHighlighting
+  case). A plugin importing a class from a newer package address
+  still fails until mapped.
+- Version-skew methods (like `setTitleCentered`) still do not exist.
+- A plugin's embedded DEX still resolves its own stdlib references
+  through the app loader — but with no shrinking, those classes are
+  now present, so Fix 14's gap class is closed too.
