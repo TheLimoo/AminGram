@@ -4138,3 +4138,98 @@ same evening v59 shipped.
   clean.
 - Artifact proof (CI watch): the new APK's DEX must contain real
   `org/mvel2` class names — v59 had zero.
+
+## Fix 8 — plugin install fails: `NoClassDefFoundError: DispatchQueue` + `elyx_runtime unavailable` (2026-11-17, uncommitted)
+
+Two independent bugs, both surfacing at install time in v60 (Fix 7),
+after chats and Install from file started working.
+
+### Bug A — `NoClassDefFoundError: org.telegram.messenger.DispatchQueue` at install
+
+- On-device (v60, 2026-11-17 ~06:29): installing MaterialSettingsList
+  fails with `NoClassDefFoundError: org.telegram.messenger.DispatchQueue`
+  at `java.lang.Class.forName`, inside `PythonPluginsEngine.loadPlugin`
+  <- `PluginsController.installPlugin`, triggered by MSL's
+  `material_settings_list.py:115: run_on_queue(force_stop, delay=50)` —
+  its `get_queue_by_name` does the `forName` OUTSIDE any try.
+- Root cause (proven from the v60 APK): R8 renames
+  `org.telegram.messenger.*` classes — the v60 DEX contains ZERO
+  `org/telegram/messenger/DispatchQueue` references. The pristine base
+  proguard only keeps messenger NATIVE methods
+  (`-keepclasseswithmembers ... native <methods>`), not the class
+  names. Upstream exteraless adds (its proguard lines 9 and 40)
+  `-keep class org.telegram.messenger.* { *; }` and
+  `-keep class org.telegram.ui.ActionBar.* { *; }`, which we never
+  ported.
+- Coverage check (every string-looked-up Telegram class enumerated
+  from the Python SDK's `jclass` / `forName` call sites, then checked
+  against the v60 DEX class descriptors):
+  `messenger.*` — ApplicationLoader, SendMessagesHelper, UserConfig,
+  FileLoader, R, MediaController, DispatchQueue, BuildVars,
+  AndroidUtilities, AccountInstance (all covered by the messenger keep);
+  `ui.ActionBar.*` — AlertDialog (descriptor count 0 in v60 — renamed),
+  Theme (kept already by direct Java refs, 1375 refs); LaunchActivity
+  (585 refs — kept via the manifest); `Components.BulletinFactory`
+  (descriptor count 0 in v60 — renamed, and covered by NEITHER upstream
+  keep, since it lives in `ui.Components`, not `ui.ActionBar`) gets its
+  own targeted keep; `tgnet.*` — TLRPC, RequestDelegate (covered by the
+  base proguard `-keep class org.telegram.tgnet.**`). Other
+  `org.telegram.*` strings in the SDK (StarGiftSheet, blur3/glass
+  sources, RLottieDrawable, UItem) are NOT `jclass`/`forName` arguments
+  (docstrings / attribute paths); UItem already has a `-keepnames` line.
+- Fix (patch 0048 regenerated from a scratch tree with `git diff` —
+  never hand-edited; incremental diff against the post-0047 tree):
+  `-keep class org.telegram.messenger.* { *; }`,
+  `-keep class org.telegram.ui.ActionBar.* { *; }`,
+  `-keep class org.telegram.ui.Components.BulletinFactory { *; }`.
+
+### Bug B — `elyx_runtime unavailable` installing the ZwyLib .elyx
+
+- On-device (v60): installing `zwylib-3.1.0_3_jazb.elyx` fails with
+  `elyx_runtime unavailable` — `extera_utils/plugin_loader.py:60`
+  returns `'{"ok":false,"error":"elyx_runtime unavailable"}'` when
+  `import elyx_runtime` raises ImportError.
+- Root cause (proven from the v60 APK): `elyx_runtime/` imports
+  `yaml` (PyYAML) at top level in archive.py, assets.py,
+  localization.py, metadata.py, namespace.py — and our Chaquopy config
+  (patch 0025) has NO `pip {}` block at all, so the v60 APK's
+  `assets/chaquopy/requirements-*.imy` are all empty 22-byte zips and
+  PyYAML is absent (zero `yaml` entries in the APK).
+- Fix (patch 0025 regenerated from a scratch tree with `git diff`):
+  a `pip {}` block in the `chaquopy.defaultConfig` with
+  `install "PyYAML"` (proven required), `install "requests"` and
+  `install "packaging"` (both proven used: `pip_controller.py`
+  lazily imports `requests` and `packaging.version`; `plugin_loader.py`
+  imports `pip_controller` inside try/except and silently disables
+  mini-pip when they are absent — so installing them re-enables pip
+  support for plugin `__requirements__`). NOT installed:
+  `beautifulsoup4` / `lxml` / `pillow` (no unguarded SDK import needs
+  them) and `debugpy` (`dev_server.py` imports it inside try/except
+  and degrades cleanly with "debugpy is not available") — upstream
+  installs all seven, we install only the three the SDK provably
+  needs, keeping the APK lean.
+
+### Lesson (extends Fix 7)
+
+- **Plugins access Telegram classes AND pip packages by name — the
+  R8 keeps and the pip block must mirror upstream.** The engine's
+  Python SDK resolves Telegram classes via `jclass` / `Class.forName`
+  string lookups and imports third-party packages at runtime, so both
+  the class names and the packages must survive the release build
+  untouched. When porting a dep, port its proguard rules AND its pip
+  block; check the release DEX for the dep's package names and the
+  requirements `.imy` files for the packages.
+
+### Verification (Fix 8 bar, same as Fix 7)
+
+- Patch replay: all 51 patches apply clean on a fresh tree from the
+  faithful pristine tarball + overlay, CI method (overlay first, then
+  patches in filename order).
+- JDK 17 ParseCheck over the full overlaid tree: 2495/2495 OK.
+- CPython engine-port suite 20/20, secret scan zero, `git diff --check`
+  clean.
+- Artifact proof (CI watch): the new APK's DEX must contain
+  `org/telegram/messenger/DispatchQueue` under its real name (v60 had
+  zero) plus the other string-looked-up classes, and
+  `assets/chaquopy/requirements-common.imy` must be non-empty and
+  contain PyYAML.

@@ -1,5 +1,5 @@
 diff --git a/TMessagesProj/build.gradle b/TMessagesProj/build.gradle
-index 6c29cc7..6387f88 100644
+index 6c29cc7..b6fa3e8 100644
 --- a/TMessagesProj/build.gradle
 +++ b/TMessagesProj/build.gradle
 @@ -3,6 +3,7 @@ import org.gradle.nativeplatform.platform.internal.DefaultNativePlatform
@@ -35,7 +35,7 @@ index 6c29cc7..6387f88 100644
          vectorDrawables.generatedDensities = ['mdpi', 'hdpi', 'xhdpi', 'xxhdpi']
  
          multiDexEnabled true
-@@ -247,6 +262,31 @@ android {
+@@ -247,6 +262,46 @@ android {
  }
  
  
@@ -51,6 +51,21 @@ index 6c29cc7..6387f88 100644
 +    defaultConfig {
 +        version "3.11"
 +        buildPython "python3.11"
++        // AminGram (Fix 8 / v3.0.8): elyx_runtime imports PyYAML at
++        // top level (archive/assets/localization/metadata/namespace),
++        // and pip_controller lazily imports requests +
++        // packaging.version (plugin_loader disables mini-pip when
++        // they are absent). Without a pip block the requirements
++        // .imy files ship empty (22 bytes) and installing any .elyx
++        // fails with "elyx_runtime unavailable". debugpy is NOT
++        // installed: dev_server imports it inside try/except and
++        // degrades cleanly. No beautifulsoup4/lxml/pillow: no
++        // unguarded SDK import needs them.
++        pip {
++            install "PyYAML"
++            install "requests"
++            install "packaging"
++        }
 +        // AminGram (M4): bytecode compilation is Chaquopy's
 +        // default, but only as a best-effort warning — when it
 +        // fails, the app still builds and compiles on the phone

@@ -1,8 +1,8 @@
 diff --git a/TMessagesProj/proguard-rules.pro b/TMessagesProj/proguard-rules.pro
-index 284b735..8bf1c0b 100644
+index 284b735..e307057 100644
 --- a/TMessagesProj/proguard-rules.pro
 +++ b/TMessagesProj/proguard-rules.pro
-@@ -118,10 +118,32 @@
+@@ -118,10 +118,48 @@
  # cannot start or load plugins.
  -keep class com.chaquo.python.** { *; }
  -dontwarn com.chaquo.python.**
@@ -34,6 +34,22 @@ index 284b735..8bf1c0b 100644
 +-dontwarn org.mvel2.**
 +-keep class com.android.dx.** { *; }
 +-dontwarn com.android.dx.**
++# AminGram (Fix 8 / v3.0.8): plugin Python code resolves Telegram
++# classes BY NAME STRING (jclass / Class.forName). R8 renamed
++# org.telegram.messenger.* in v60, so MSL's run_on_queue — which
++# does Class.forName("org.telegram.messenger.DispatchQueue") outside
++# any try — threw NoClassDefFoundError at install time. Upstream
++# exteraless keeps messenger.* and ui.ActionBar.* whole (its
++# proguard lines 9 and 40); BulletinFactory is the one
++# string-looked-up class outside both packages (ui/bulletin.py),
++# so it gets its own keep. LaunchActivity is already kept via the
++# manifest (585 refs in the v60 DEX) and Theme is kept by direct
++# Java references (1375 refs); tgnet.** is kept by the base
++# proguard. Every other jclass/forName target was enumerated from
++# the SDK and is covered by these three lines.
++-keep class org.telegram.messenger.* { *; }
++-keep class org.telegram.ui.ActionBar.* { *; }
++-keep class org.telegram.ui.Components.BulletinFactory { *; }
 +-keep class app.exteraless.plugins.** { *; }
 +-keep class com.exteragram.messenger.** { *; }
  # AminGram (M0): class names plugins and DEX code resolve by string
