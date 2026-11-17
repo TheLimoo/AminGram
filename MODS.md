@@ -4650,3 +4650,112 @@ this section.
   `SettingsActivity.listView`) under their real names, and
   `kotlin/Unit` + `kotlin/jvm/internal/DefaultConstructorMarker`
   descriptors.
+
+## Fix 13 — plugin load fails: `AttributeError: GroupCreateActivity has no attribute 'GroupCreateActivityDelegate'` — a single-class keep does not keep nested classes (2026-11-17, uncommitted)
+
+### Symptom (v65 on device, 2026-11-17 ~21:20 Tehran)
+
+ZwyLib got past the imports (ViewOutlineProviderImpl fixed), but load
+now fails at `src/ui/navigation.py:100`:
+`class _PickerDelegate(dynamic_proxy(GroupCreateActivity.GroupCreateActivityDelegate))`
+with `AttributeError: type object 'GroupCreateActivity' has no attribute
+'GroupCreateActivityDelegate'`.
+
+### Root cause
+
+`GroupCreateActivityDelegate` EXISTS in the 13.2.2 base
+(`GroupCreateActivity.java:164`, `public interface
+GroupCreateActivityDelegate`), but its v65 DEX descriptor count is 0 —
+R8 renamed the nested class. A single-class keep (`-keep class
+org.telegram.ui.GroupCreateActivity { *; }`, Fix 11) keeps that class
+and its members but NOT its nested classes: nested classes are separate
+classes in R8. Package-wildcard keeps DO cover nested classes — proven
+by `NotificationCenter$NotificationCenterDelegate` (1) and
+`AlertDialog$OnButtonClickListener` (1) surviving in the v65 DEX via
+the messenger.*/ActionBar.* wildcards, while single-class-kept parents
+lost theirs.
+
+### The full missing set (re-enumeration found FOUR, not three)
+
+AST-based re-enumeration of `Parent.Nested` attribute access +
+`dynamic_proxy(Parent.Nested)` + `Parent.Nested.getClass()` +
+`jclass("...$...")` across the SDK, ZwyLib 3.1.0 and MSL (131 refs;
+script `verify-scratch/fix13/enum_nested.py`, output
+`nested_refs.json`), each checked by exact class-descriptor match
+against the v65 DEX (`verify-scratch/fix12/apk65/all.dex.txt`):
+
+| Nested class | Accessed at | v65 DEX | Source |
+|---|---|---|---|
+| `GroupCreateActivity$GroupCreateActivityDelegate` | navigation.py:100 | 0 | GroupCreateActivity.java:164 |
+| `DialogsActivity$DialogsActivityDelegate` | navigation.py:132 | 0 | DialogsActivity.java:2693 |
+| `GroupCreateActivity$GroupCreateAdapter` | navigation.py:199 (`.getClass()`) | 0 | GroupCreateActivity.java:1166 |
+| `UItem$UItemFactory` | plugin_cells.py:116 (`UItem.UItemFactory.setup(...)`, module level) | 0 | UItem.java:845 (`public static abstract class UItemFactory`, `setup(UItemFactory)` :846) |
+
+The fourth one is new: the Fix 13 brief said `UItem$UItemFactory`
+had no Python lookup, which was wrong — the attribute-access
+enumeration found it. It would have failed next: `api.py:87` imports
+navigation before `api.py:157` imports plugin_cells, so the delegate
+error surfaced first, but the factory `setup()` call runs at ZwyLib
+import time (`main.py:19` imports plugin_cells) and would have died
+right after the delegates were fixed. `ContactsAddActivityDelegate`
+(GroupCreateActivity.java:168) has no lookup — covered anyway by the
+wildcard below, at no extra cost.
+
+Present already, no action: `NotificationCenter$NotificationCenterDelegate`,
+`R$raw`, `R$string`, `AlertDialog$Builder`/`$OnButtonClickListener`,
+`Theme$ThemeInfo`, `BulletinFactory$FileType`,
+`StarGiftSheet$PageTransition`, `SendMessagesHelper$SendMessageParams`,
+`SharedConfig$ProxyInfo`, `Utilities$Callback/2/3/Return`, `TLRPC$*`
+(tgnet.** keep), `CustomSetting$Factory`, `PluginsConstants$Xposed`,
+`PluginsController$InstallCallback`. UItem's reflectively-read fields
+`factories`/`factoryInstances` (plugin_cells.py:106-107,
+`get_static_private_field`) are present under their real names on
+`UItem` in v65 — no field keep needed. The only other reflective
+field-name lookups in the corpus are those two (plus the MSL DEX ones
+fixed in Fix 12).
+
+### Fix (patch 0048 regenerated, 1 file)
+
+Three wildcard keeps, scoped to three already-kept parents (so no new
+obfuscation loss elsewhere), instead of one line per nested class —
+nested classes of a kept class are one unit for plugin access, and the
+wildcard also covers any other nested class of these parents:
+
+- `-keep class org.telegram.ui.GroupCreateActivity$* { *; }`
+- `-keep class org.telegram.ui.DialogsActivity$* { *; }`
+- `-keep class org.telegram.ui.Components.UItem$* { *; }`
+
+Patch `0048-engine-proguard-keeps.patch` regenerated from a scratch
+tree (pristine tarball + patches 0001–0047, current 0048 applied, edit,
+`git diff` — never hand-edited): same anchor (`index 284b735`, hunk
+`@@ -118,10 +118,167 @@`), 161 insertions / 4 deletions.
+
+### Lessons
+
+- **A keep list built from from-imports + jclass strings misses
+  `Parent.Nested` attribute access.** The sweep (232 refs) enumerated
+  from-imports and jclass strings; the nested-class accesses
+  (`GroupCreateActivity.GroupCreateActivityDelegate`,
+  `UItem.UItemFactory.setup`) live in neither. Enumerate attribute
+  access too — the AST script in `verify-scratch/fix13/` does all
+  three patterns now.
+- **A single-class keep does not keep nested classes.** When a kept
+  class is accessed by name from Python, keep its `$*` as well unless
+  the enumeration proves no nested class is touched.
+
+### Verification (Fix 13 bar, same as Fix 7–12)
+
+- Patch replay: all 51 patches apply clean on a fresh tree from the
+  faithful pristine tarball + overlay, CI method; the 3 new keeps are
+  present in the replayed `proguard-rules.pro`.
+- JDK 17 ParseCheck over the full overlaid tree (Compiler-API
+  ParseCheck, `verify-scratch/fix10/ParseCheck.java`): 2504/2504 OK
+  (no Java files added or removed in this fix).
+- CPython engine-port suite 20/20, secret scan zero, `git diff --check`
+  clean.
+- Artifact proof (CI watch): the new APK's DEX must contain
+  `GroupCreateActivity$GroupCreateActivityDelegate`,
+  `DialogsActivity$DialogsActivityDelegate`,
+  `GroupCreateActivity$GroupCreateAdapter`, and
+  `UItem$UItemFactory` as class descriptors under their real names
+  (v65: 0 for all four).

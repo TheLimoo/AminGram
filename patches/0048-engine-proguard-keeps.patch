@@ -1,8 +1,8 @@
 diff --git a/TMessagesProj/proguard-rules.pro b/TMessagesProj/proguard-rules.pro
-index 284b735..7f0b6e2 100644
+index 284b735..ee193e0 100644
 --- a/TMessagesProj/proguard-rules.pro
 +++ b/TMessagesProj/proguard-rules.pro
-@@ -118,10 +118,128 @@
+@@ -118,10 +118,167 @@
  # cannot start or load plugins.
  -keep class com.chaquo.python.** { *; }
  -dontwarn com.chaquo.python.**
@@ -130,6 +130,45 @@ index 284b735..7f0b6e2 100644
 +-keepclassmembers class org.telegram.ui.SettingsActivity { private org.telegram.ui.Components.UniversalRecyclerView listView; }
 +-keep class kotlin.Unit { *; }
 +-keep class kotlin.jvm.internal.DefaultConstructorMarker { *; }
++# AminGram (Fix 13 / v3.0.13): nested classes are separate classes in R8.
++# A single-class keep (-keep class org.telegram.ui.GroupCreateActivity
++# { *; }, Fix 11) keeps that class and its members but NOT its nested
++# classes, so ZwyLib's ui/navigation.py:100
++# `class _PickerDelegate(dynamic_proxy(GroupCreateActivity.GroupCreateActivityDelegate))`
++# died on device with "AttributeError: type object 'GroupCreateActivity'
++# has no attribute 'GroupCreateActivityDelegate'" - the interface exists
++# in the 13.2.2 base (GroupCreateActivity.java:164) but its v65 DEX
++# descriptor count is 0. Package-wildcard keeps DO cover nested classes
++# (proven: NotificationCenter$NotificationCenterDelegate and
++# AlertDialog$OnButtonClickListener survive via the messenger.*/ActionBar.*
++# wildcards), so these three use the $* wildcard form, scoped to three
++# already-kept parents - it also covers ContactsAddActivityDelegate
++# (GroupCreateActivity.java:168, no current lookup) and any other nested
++# class of these parents. Re-enumeration (AST-based, Parent.Nested
++# attribute access + dynamic_proxy + jclass("...$...") across the SDK,
++# ZwyLib 3.1.0 and MSL, checked by exact descriptor match against the
++# v65 DEX) found FOUR missing nested classes, not three: the brief's
++# three below, PLUS UItem$UItemFactory - ZwyLib's ui/plugin_cells.py:116
++# calls UItem.UItemFactory.setup(...) at import time (api.py:87 imports
++# navigation before api.py:157 imports plugin_cells, so the delegate
++# error surfaced first, but the factory call would have failed next).
++# UItemFactory is `public static abstract class UItemFactory`
++# (UItem.java:845) with `setup(UItemFactory)` (:846); descriptor 0 in
++# v65. All four exist in the 13.2.2 base. Present already, no action:
++# NotificationCenter$NotificationCenterDelegate, R$raw, R$string,
++# AlertDialog$Builder/$OnButtonClickListener, Theme$ThemeInfo,
++# BulletinFactory$FileType, StarGiftSheet$PageTransition,
++# SendMessagesHelper$SendMessageParams, SharedConfig$ProxyInfo,
++# Utilities$Callback/2/3/Return, TLRPC$* (tgnet.** keep),
++# CustomSetting$Factory, PluginsConstants$Xposed,
++# PluginsController$InstallCallback. UItem's reflectively-read fields
++# `factories`/`factoryInstances` (plugin_cells.py:106-107) are present
++# under their real names in v65 - no field keep needed. Lesson: a keep
++# list built from from-imports + jclass strings misses Parent.Nested
++# attribute access - enumerate that pattern too.
++-keep class org.telegram.ui.GroupCreateActivity$* { *; }
++-keep class org.telegram.ui.DialogsActivity$* { *; }
++-keep class org.telegram.ui.Components.UItem$* { *; }
 +-keep class app.exteraless.plugins.** { *; }
 +-keep class com.exteragram.messenger.** { *; }
  # AminGram (M0): class names plugins and DEX code resolve by string
