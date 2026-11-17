@@ -1,8 +1,8 @@
 diff --git a/TMessagesProj/proguard-rules.pro b/TMessagesProj/proguard-rules.pro
-index 284b735..a582b42 100644
+index 284b735..7f0b6e2 100644
 --- a/TMessagesProj/proguard-rules.pro
 +++ b/TMessagesProj/proguard-rules.pro
-@@ -118,10 +118,96 @@
+@@ -118,10 +118,128 @@
  # cannot start or load plugins.
  -keep class com.chaquo.python.** { *; }
  -dontwarn com.chaquo.python.**
@@ -98,6 +98,38 @@ index 284b735..a582b42 100644
 +-keep class org.telegram.utils.glass.source.GlassSourceColor { *; }
 +-keep class org.telegram.utils.glass.source.GlassSourceRenderNode { *; }
 +-keep class org.telegram.utils.glass.source.GlassSourceWrapped { *; }
++# AminGram (Fix 12 / v3.0.12): pre-flight sweep (2026-11-17, report
++# verify-scratch/sweep/SWEEP-REPORT-2026-11-17.md) of the full ZwyLib
++# 3.1.0 + MSL 1.1.1 corpus (232 Java refs, AST-based) found the gaps
++# below against the v63 DEX. P0: ZwyLib's ui/uikit.py:18 does
++# `from org.telegram.messenger.utils import ViewOutlineProviderImpl`
++# (used at uikit.py:394, boundsWithRoundRect) - the class exists in the
++# 13.2.2 base but R8 renamed it (descriptor count 0 in v63), and Fix 8's
++# `-keep class org.telegram.messenger.*` is single-level and does NOT
++# cover the messenger.utils subpackage. Without this keep the next
++# device test fails exactly like Fix 9 (import zwylib fails, MSL falls
++# to RecursiveMock, NameError: SettingEntry at line 119). Single class,
++# not the whole subpackage: the sweep found this as the ONLY gap in
++# messenger.utils, and the class's anonymous inner classes (BOUNDS_OVAL
++# etc.) are referenced only from inside the class itself, so they need
++# no name keep. Lesson: a single-level -keep does not cover
++# subpackages - enumerate subpackages too. P1-1: MSL's embedded DEX
++# reflectively reads three fields to live-refresh open Settings
++# screens (SettingsSyncManager): LaunchActivity.instance (public
++# static, LaunchActivity.java:393), LaunchActivity.actionBarLayout
++# (public, :312), SettingsActivity.listView (private
++# UniversalRecyclerView, SettingsActivity.java:162). All three were
++# renamed in v63; the failure is swallowed (logged, no crash), so the
++# toggle applies but the open screen stays stale until Settings is
++# reopened. P1-2: MSL DEX lambdas return kotlin/Unit; the app DEX has
++# no kotlin.Unit or DefaultConstructorMarker (R8 stripped them as
++# unused). Likely benign (the 8 setters return void) but the keeps cost
++# nothing; on-device toggle testing is still the proof.
++-keep class org.telegram.messenger.utils.ViewOutlineProviderImpl { *; }
++-keepclassmembers class org.telegram.ui.LaunchActivity { public static org.telegram.ui.LaunchActivity instance; public org.telegram.ui.ActionBar.ActionBarLayout actionBarLayout; }
++-keepclassmembers class org.telegram.ui.SettingsActivity { private org.telegram.ui.Components.UniversalRecyclerView listView; }
++-keep class kotlin.Unit { *; }
++-keep class kotlin.jvm.internal.DefaultConstructorMarker { *; }
 +-keep class app.exteraless.plugins.** { *; }
 +-keep class com.exteragram.messenger.** { *; }
  # AminGram (M0): class names plugins and DEX code resolve by string

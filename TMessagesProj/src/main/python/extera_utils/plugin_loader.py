@@ -57,6 +57,13 @@ def read_metadata_json(path: str) -> str:
             import elyx_runtime
             return elyx_runtime.read_metadata_json(path)
         except ImportError:
+            # AminGram (Fix 12): log the ORIGINAL exception with its
+            # traceback. The user-facing value below stays unchanged, but
+            # swallowing the cause cost a whole round in Fix 8 (the real
+            # cause was a missing PyYAML, invisible behind this string).
+            logging.getLogger(__name__).warning(
+                "elyx_runtime import failed; returning 'elyx_runtime unavailable'",
+                exc_info=True)
             return '{"ok":false,"error":"elyx_runtime unavailable"}'
         except Exception as e:  # malformed archive etc.
             return '{"ok":false,"error":%s}' % __import__("json").dumps(str(e))
@@ -2891,6 +2898,12 @@ def _load_elyx_plugin(path: str, plugin_id: str, clock=None) -> str:
     try:
         import elyx_runtime
     except ImportError:
+        # AminGram (Fix 12): log the ORIGINAL exception with its
+        # traceback (see read_metadata_json above - same masking
+        # problem); the user-facing error below stays unchanged.
+        logging.getLogger(__name__).warning(
+            "elyx_runtime import failed; load aborted as 'Elyx runtime unavailable'",
+            exc_info=True)
         return _error_json(RuntimeError("Elyx runtime unavailable"))
     try:
         if plugin_id in plugins:

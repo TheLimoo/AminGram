@@ -4536,3 +4536,117 @@ beyond 0048.
 - Artifact proof (CI watch): the new APK's DEX must contain every
   class from the missing list above under its real name as a class
   descriptor (v63 DEX has zero for all of them).
+
+## Fix 12 — pre-flight sweep gaps: `ViewOutlineProviderImpl` (P0), MSL reflective fields (P1-1), kotlin.Unit (P1-2), elyx_runtime error masking (P2-3), cold-start load order assessed (P1-3) (2026-11-17, uncommitted)
+
+Fix 11 went GREEN (v13.2.2-amingram.64) but a pre-flight sweep of the
+full ZwyLib 3.1.0 + MSL 1.1.1 corpus (232 Java refs, AST-based;
+report `verify-scratch/sweep/SWEEP-REPORT-2026-11-17.md`) found gaps
+that would break the next device test, so they are folded in here
+instead of asking Amin to test v64 (it would fail on the P0 below
+with the same `NameError: SettingEntry` symptom as Fix 9).
+
+### Root causes
+
+- **P0 — `org.telegram.messenger.utils.ViewOutlineProviderImpl`.**
+  ZwyLib `src/ui/uikit.py:18` from-imports it (used at uikit.py:394,
+  `boundsWithRoundRect`). The class exists in the 13.2.2 base but R8
+  renamed it (v63 DEX descriptor count 0), and Fix 8's
+  `-keep class org.telegram.messenger.*` is single-level and does NOT
+  cover the `messenger.utils` subpackage. Fix 11's ui.* list was
+  complete (18/18); its one miss was outside `org.telegram.ui`, which
+  is why the enumeration missed it too. Single-class keep, not the
+  whole subpackage: the sweep found this as the only gap in
+  `messenger.utils`, and the class's anonymous inner classes
+  (BOUNDS_OVAL etc.) are referenced only from inside the class itself.
+- **P1-1 — MSL reflective field reads.** MSL's embedded DEX reads
+  three fields to live-refresh open Settings screens
+  (`SettingsSyncManager`): `LaunchActivity.instance` (public static,
+  `LaunchActivity.java:393`), `LaunchActivity.actionBarLayout`
+  (public, `:312`), `SettingsActivity.listView` (private
+  `UniversalRecyclerView`, `SettingsActivity.java:162`; type
+  verified against the pristine source import
+  `org.telegram.ui.Components.UniversalRecyclerView`). All three were
+  renamed in v63; the failure is swallowed (logged, no crash), so the
+  toggle applies but the open screen stays stale until Settings is
+  reopened. All three keeps are needed (collect aborts at `instance`;
+  then `actionBarLayout` for the fragment stack; then `listView`
+  per-activity).
+- **P1-2 — kotlin.Unit / DefaultConstructorMarker.** MSL DEX
+  `SettingsSyncManager` lambdas return `Lkotlin/Unit;`; the app DEX
+  has 0 occurrences of either class (R8 stripped them as unused).
+  Likely benign (the 8 invoked setters return void), but the keeps
+  cost nothing. On-device toggle testing is still the proof.
+- **P2-3 — elyx_runtime error masking.** `plugin_loader.py:59` and
+  `:2893` caught ImportError from `elyx_runtime` and returned
+  "elyx_runtime unavailable" without the underlying exception — this
+  exact masking cost a round in Fix 8 (the real cause was missing
+  PyYAML). Both sites now log the original exception with
+  `exc_info=True` (`logging.getLogger(__name__).warning(...)`;
+  `logging` is imported at module top); the user-facing return values
+  are unchanged.
+- **P1-3 — cold-start load-order race: ASSESSED, no change.** The
+  sweep's mechanism ("rescanPlugins loads in `File.listFiles()`
+  order") does not describe the actual load path. `rescanPlugins()`
+  only scans metadata; loading happens in `rescanAndLoadEnabled()`
+  (called from engine start), which loads via `loadOrder()`: `.elyx` /
+  `.eaf` (structured) rank 0, `.py` / `.plugin` rank 1, then
+  topological by Elyx `requires` metadata. ZwyLib (`zwylib.elyx`)
+  therefore always precedes MSL (`.plugin`) in the cold-start pass,
+  so MSL's `import zwylib` finds it loaded. ZwyLib's
+  `_reload_plugins_require_zwylib` (run during ZwyLib's own load) is
+  gated by the 15 s uptime check and is skipped on cold start — but
+  it is redundant there for the same reason. The remaining hole is
+  install-time only: `installPlugin` loads the just-installed plugin
+  directly via `loadPluginInternal`, bypassing `loadOrder` — installing
+  MSL while ZwyLib was installed-but-not-loaded would fail (and the
+  install then auto-uninstalls on load error, leaving nothing
+  behind). That cannot occur in Amin's flow (ZwyLib is installed
+  first and loads on install; it stays loaded). Changing the 15 s
+  gate or extending `_unloaded_neighbour` (`.py`-only by design) to
+  `.elyx` would be a behavior change to a recovery heuristic with
+  reload-loop risk, for a scenario `loadOrder` already covers — not
+  minimal, not clearly safe, so no load-order change was made.
+  **Device test for this:** restart the app with both plugins
+  installed and check MSL is enabled and its toggles work (this
+  exercises the cold-start `loadOrder` path). If MSL ever shows the
+  ZwyLib-required error, toggle MSL off/on once.
+
+### Change
+
+Patch `0048` regenerated (incremental diff vs post-0047 tree, never
+hand-edited): P0 class keep, P1-1 field keeps, P1-2 kotlin keeps,
+with a comment block recording the sweep evidence and the
+single-class-vs-subpackage decision. `plugin_loader.py` (overlay):
+two `exc_info=True` log lines, return values unchanged. MODS.md:
+this section.
+
+### Lessons
+
+- **A single-level `-keep` does not cover subpackages — enumerate
+  subpackages too.** `org.telegram.messenger.*` kept every messenger
+  class except the ones one level deeper (`messenger.utils`). The
+  sweep's full-corpus enumeration (232 refs) is what caught it; the
+  per-package enumerations of Fix 8 and Fix 11 each missed the layer
+  outside their package.
+- **The load path is not the scan path.** `rescanPlugins` order is
+  irrelevant to load order; `loadOrder` (structured-first +
+  topological) decides. Verify a race against the actual loader
+  before changing it.
+
+### Verification (Fix 12 bar, same as Fix 7–11)
+
+- Patch replay: all 51 patches apply clean on a fresh tree from the
+  faithful pristine tarball + overlay, CI method.
+- JDK 17 ParseCheck over the full overlaid tree (Compiler-API
+  ParseCheck, `verify-scratch/fix10/ParseCheck.java`): 2504/2504 OK
+  (no Java files added or removed in this fix).
+- CPython engine-port suite 20/20, secret scan zero, `git diff --check`
+  clean.
+- Artifact proof (CI watch): the new APK's DEX must contain
+  `org/telegram/messenger/utils/ViewOutlineProviderImpl` as a class
+  descriptor (v63/v64: 0), the three fields
+  (`LaunchActivity.instance`, `LaunchActivity.actionBarLayout`,
+  `SettingsActivity.listView`) under their real names, and
+  `kotlin/Unit` + `kotlin/jvm/internal/DefaultConstructorMarker`
+  descriptors.
