@@ -5,8 +5,10 @@ A personal Telegram Android client — a fork of the official
 (DrKLO/Telegram, pinned at 13.2.2, commit
 `21f7d109da6ab3506c9e9577f98c6a38771ab335`) with a modular feature
 layer under `org.telegram.messenger.amin.**`, a native modules hub in
-Settings, and a JavaScript plugin system (Mozilla Rhino) whose
-plugins install instantly from inside the app — no rebuild needed.
+Settings, and a Python plugin engine (exteraless / Chaquopy) that runs
+exteraGram and AyuGram `.plugin` / `.elyx` plugins — install from
+inside the app, no rebuild needed. (The old JavaScript/Rhino engine
+and its bundled JS plugins were removed in v3.0.14; see below.)
 
 **v2.0 — the Grand Update.** Rich card viewers for Deleted / Edit
 history, a redesigned collapsible hub, true plugin deletion, a
@@ -47,8 +49,8 @@ status line in the hub:
   their presence update arrives (event-driven, no polling).
 - Plus: numeric **user/chat ID row** in profiles (tap to copy),
   custom **app icons**, **AminGram Backup** (one-JSON export/import
-  of settings, stores and JS plugins), and a **Google Account** page
-  (native OAuth sign-in whose token `google`-capable plugins use).
+  of settings and stores), and a **Google Account** page
+  (native OAuth sign-in).
 
 v2.0 hub: sections are **collapsible with count-labelled headers**,
 there is a **plugin search**, the JS engine is a **standard switch
@@ -61,56 +63,20 @@ metadata, Copy, Open chat, **Delete this record**).
 
 ## Plugin system
 
-- Runtime: sandboxed JavaScript (Rhino), one dedicated plugin
-  thread, per-hook error isolation — a throwing plugin is logged
-  and skipped, never crashes the app or other plugins. No polling,
-  no timers, no wakelocks: everything rides Telegram's update flow.
-- Contract: `docs/PLUGIN-MASTER-PROMPT.md` is the single source of
-  truth (manifest header, capabilities, hooks, the `amin` bridge).
-  Capabilities: `observe`, `commands`, `send`, `settings`, `http`,
-  `menu`, `google`, `file`. Settings schemas are `bool` / `text`
-  only.
-- v2.0 bridge: `amin.sendFile(url, opts)` (`file` capability,
-  synchronous boolean; `video`/`photo`/`audio`/`file`, caption,
-  optional chatId; 200 MB cap) and `amin.httpPost` returning the
-  HTTP **error body** on non-2xx so plugins can surface the server's
-  real verdict (`extractError` is the canonical helper). `httpGet`
-  is unchanged.
-- Attach menu: `menu`-capable plugins appear as buttons in the
-  chat attach menu; the hub's **Menu plugins** page controls
-  inclusion, order, icon and label per plugin (manifest defaults:
-  `@icon` — a set name or `emoji:<glyph>` — and `@menuLabel`).
-- Deleting a plugin is a **true delete**: record, code, settings,
-  storage and log are all removed — no tombstone. A deleted bundled
-  plugin stays deleted across restarts and upgrades; it can be
-  reinstalled manually from the hub's **Built-in library**.
-
-### Bundled plugins (10, pre-installed)
-
-| id | what it does |
-| --- | --- |
-| `shout` | `/shout <text>` posts the text in uppercase. |
-| `vip-alert` | Toasts when a chosen person writes in any chat. |
-| `media-dl` | Media Downloader v2: TikTok / X / Reddit / Instagram media sent into the chat as real files (`/dl`, `/mp3`, attach menu), link fallback. |
-| `temp-mail` | Disposable email addresses + verification codes inside Telegram (`/tm`, attach menu). |
-| `aesthetic-text` | `/wide`, `/space`, `/fliptext` text restyling (+ attach menu). |
-| `quick-translate` | `/tr <text>` translation via the keyless Google endpoint (default target Persian). |
-| `gemini-chat` | `/ai <question>` asks Gemini with your connected Google account — OAuth, no API key. |
-| `link-cleaner` | `/clean <url>` strips tracking parameters and resolves short links; attach-menu button reuses the last link in the chat. |
-| `qr-maker` | `/qr <text or link>` posts a QR code image via `amin.sendFile` (link fallback). |
-| `price-check` | `/price` — live Iran-market prices in tomans (dollar, gold 18k, Emami coin, BTC, ETH). |
-
-### Install a plugin
-
-1. Get a plugin `.js` file written to the contract in
-   `docs/PLUGIN-MASTER-PROMPT.md` (the document doubles as a prompt
-   for an AI: paste it, describe the plugin, get one file back).
-2. In AminGram: **Settings → AminGram → Plugins → Add plugin** —
-   pick the file, or paste the code.
-3. The app validates the manifest, syntax-checks and probe-runs the
-   file (its `onLoad` is *not* called at install), then stores it.
-4. Enable it on its hub card; open its page for settings
-   (generated from its `SETTINGS` schema) and its log.
+- Runtime: the exteraGram Python plugin engine (Chaquopy Python
+  3.11), ported in v3.0.0. It runs exteraGram / AyuGram `.plugin`
+  and `.elyx` plugins — the whole exteraGram plugin ecosystem
+  (e.g. ZwyLib + MaterialSettingsList). The old JavaScript (Rhino)
+  engine and its 10 bundled JS plugins were removed in v3.0.14;
+  `docs/PLUGIN-MASTER-PROMPT.md` is kept only as history.
+- Install a plugin: **Settings → AminGram → Plugins → Python
+  plugins (.plugin) → Install from file** (the info icon, top
+  right — the three-dot Import is backup-restore only). Install
+  library plugins (ZwyLib `.elyx`) first, then the plugins that
+  depend on them (`.plugin`).
+- The hub's Plugins page shows the Python engine state and the
+  installed-plugin count; each plugin's own page (inside the
+  engine hub) holds its settings.
 
 ## Build from source
 
@@ -129,7 +95,9 @@ CI (`.github/workflows/build.yml`) does exactly this; locally:
    `0003-phase2-hooks`, `0004-videobg-rebrand`,
    `0006-message-pipeline-hook`, `0007-icon-changer`,
    `0008-hide-stories`, `0009-profile-user-id`,
-   `0010-js-runtime-gradle`, `0011-hidden-chats-dialogs-filter`,
+   `0010-js-runtime-gradle` (deleted in v3.0.14 — the Rhino dep it
+   added was removed; the series keeps its number gap like 0005
+   and 0015), `0011-hidden-chats-dialogs-filter`,
    `0012-ghost-stories`, `0013-outgoing-command-hook`,
    `0014-attach-menu-plugins`, `0016-google-auth`.
    (0005 and 0015 are intentionally absent — gaps in the series:

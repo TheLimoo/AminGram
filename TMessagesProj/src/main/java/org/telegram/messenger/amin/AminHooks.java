@@ -34,8 +34,6 @@ import org.telegram.messenger.amin.modules.LocalPremiumModule;
 import org.telegram.messenger.amin.modules.MessageFiltersModule;
 import org.telegram.messenger.amin.modules.SpeedBoostModule;
 import org.telegram.messenger.amin.plugins.PluginRegistry;
-import org.telegram.messenger.amin.plugins.js.JsPlugin;
-import org.telegram.messenger.amin.plugins.js.JsPluginManager;
 import org.telegram.messenger.amin.ui.AminDialogPickerActivity;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.TLRPC;
@@ -630,7 +628,7 @@ public final class AminHooks {
 
     // ------------------------------------------------------------------
     // Raw update stream (patch 0006, top of processUpdateArray).
-    // Drives: Edit History capture, Send-When-Online, JS plugins, and
+    // Drives: Edit History capture, Send-When-Online, and
     // Speed Boost experimental-param sync.
     // ------------------------------------------------------------------
 
@@ -645,8 +643,7 @@ public final class AminHooks {
                 DeletedStore.recordEdits(context, updates);
             }
             boolean swo = moduleEnabled("send_when_online");
-            boolean jsAny = JsPluginManager.hasEnabledPlugins(context);
-            if (!swo && !jsAny) {
+            if (!swo) {
                 return;
             }
             for (TLRPC.Update update : updates) {
@@ -657,21 +654,6 @@ public final class AminHooks {
                                     (org.telegram.tgnet.tl.TL_update.TL_updateUserStatus) update;
                             if (statusUpdate.status instanceof TLRPC.TL_userStatusOnline) {
                                 onUserOnline(context, account, statusUpdate.user_id);
-                            }
-                        }
-                    } else if (update instanceof org.telegram.tgnet.tl.TL_update.TL_updateNewMessage
-                            || update instanceof org.telegram.tgnet.tl.TL_update.TL_updateNewChannelMessage) {
-                        if (jsAny) {
-                            TLRPC.Message message = update instanceof org.telegram.tgnet.tl.TL_update.TL_updateNewMessage
-                                    ? ((org.telegram.tgnet.tl.TL_update.TL_updateNewMessage) update).message
-                                    : ((org.telegram.tgnet.tl.TL_update.TL_updateNewChannelMessage) update).message;
-                            if (message != null) {
-                                if (message.out && message.message != null && message.message.startsWith("/")) {
-                                    // Own command sent from another device.
-                                    JsPluginManager.dispatchCommand(account, message);
-                                } else if (!message.out) {
-                                    JsPluginManager.dispatchMessage(account, message);
-                                }
                             }
                         }
                     }
@@ -751,21 +733,9 @@ public final class AminHooks {
      *  exteraless engine (SendMessagesHelper patch 0036), not here.
      */
     public static boolean onOutgoingMessage(SendMessagesHelper.SendMessageParams params) {
-        try {
-            Context context = ApplicationLoader.applicationContext;
-            if (context == null || params == null) {
-                return false;
-            }
-            // 1. Outgoing '/' command suppression for JS plugins (Phase A.4)
-            if (params.message != null && params.message.startsWith("/")) {
-                if (JsPluginManager.hasEnabledPlugins(context)) {
-                    if (JsPluginManager.dispatchOutgoingCommand(params)) {
-                        return true;
-                    }
-                }
-            }
-        } catch (Throwable ignored) {
-        }
+        // JS engine removed: no outgoing-command suppression anymore.
+        // Python (.plugin) send-message hooks live in the
+        // exteraless engine (SendMessagesHelper patch 0036), not here.
         return false;
     }
 
@@ -1684,28 +1654,19 @@ public final class AminHooks {
     // ------------------------------------------------------------------
 
     public static List<String[]> attachMenuPlugins() {
-        try {
-            Context context = ApplicationLoader.applicationContext;
-            if (context == null) {
-                return new ArrayList<>();
-            }
-            // Copy: JsPluginManager's list must not be mutated.
-            List<String[]> out = new ArrayList<>(JsPluginManager.menuPlugins(context));
-            return out;
-        } catch (Throwable ignored) {
-            return new ArrayList<>();
-        }
+        // JS engine removed: no attach-menu plugins anymore.
+        // (Patch 0014 still calls this; it now always returns empty.)
+        return new ArrayList<>();
     }
 
     public static void onPluginMenuAction(String pluginId, long chatId) {
-        try {
-            JsPluginManager.dispatchMenuAction(pluginId, chatId);
-        } catch (Throwable ignored) {
-        }
+        // JS engine removed: no-op. (Patch 0014 still calls this.)
     }
 
     // ------------------------------------------------------------------
-    // JS plugin message context-menu items (patch 0020)
+    // Plugin message context-menu items (patch 0020). JS engine
+    // removed: these are now no-ops kept only so the patched call
+    // sites still compile — no context-menu plugin items exist.
     // ------------------------------------------------------------------
 
     public static final int OPTION_PLUGIN_CONTEXT_BASE = 300;
@@ -1722,43 +1683,11 @@ public final class AminHooks {
     }
 
     public static List<ContextItem> pluginContextItems(long chatId, TLRPC.Message message) {
-        try {
-            Context context = ApplicationLoader.applicationContext;
-            if (context == null) {
-                return new ArrayList<>();
-            }
-            List<ContextItem> out = new ArrayList<>();
-            if (!JsPluginManager.isEngineEnabled(context)) {
-                return out;
-            }
-            for (JsPlugin plugin : JsPluginManager.plugins(context)) {
-                if (out.size() >= MAX_PLUGIN_CONTEXT_ITEMS) {
-                    break;
-                }
-                if (plugin == null || !plugin.enabled || !plugin.hasContext) {
-                    continue;
-                }
-                String label = plugin.contextMenu;
-                if (label == null || label.trim().isEmpty()) {
-                    continue;
-                }
-                out.add(new ContextItem(plugin.id, label));
-            }
-            return out;
-        } catch (Throwable ignored) {
-            return new ArrayList<>();
-        }
+        return new ArrayList<>();
     }
 
     public static void onPluginContextAction(String pluginId, long chatId, TLRPC.Message message) {
-        try {
-            if (pluginId == null || message == null) {
-                return;
-            }
-            int account = UserConfig.selectedAccount;
-            JsPluginManager.dispatchContextAction(pluginId, account, message);
-        } catch (Throwable ignored) {
-        }
+        // JS engine removed: no-op. (Patch 0020 still calls this.)
     }
 
     // ------------------------------------------------------------------

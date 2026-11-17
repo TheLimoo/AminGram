@@ -61,9 +61,6 @@ import org.telegram.messenger.amin.modules.MessageFiltersModule;
 import org.telegram.messenger.amin.modules.SpeedBoostModule;
 import org.telegram.messenger.amin.plugins.ModModule;
 import org.telegram.messenger.amin.plugins.PluginRegistry;
-import org.telegram.messenger.amin.plugins.js.BundledPlugins;
-import org.telegram.messenger.amin.plugins.js.JsPlugin;
-import org.telegram.messenger.amin.plugins.js.JsPluginManager;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.tgnet.tl.TL_stars;
 import org.telegram.ui.ActionBar.AlertDialog;
@@ -173,11 +170,8 @@ public final class HubCommon {
         }
     }
 
-    private static final int REQUEST_PLUGIN_FILE = 3918;
     private static final int REQUEST_BACKUP_EXPORT = 3919;
     private static final int REQUEST_BACKUP_IMPORT = 3920;
-    private static final int REQUEST_PACK_EXPORT = 3921;
-    private static final int REQUEST_PACK_IMPORT = 3922;
 
     public static final int MODE_HOME = 0;
     public static final int MODE_PAGE = 1;
@@ -192,8 +186,6 @@ public final class HubCommon {
     private static final int KIND_ACTION = 3;
     private static final int KIND_FOOTER = 6;
     private static final int KIND_PAGE_HEADER = 17;
-    private static final int KIND_ENGINE = 8;
-    private static final int KIND_PLUGIN_CARD = 9;
     private static final int KIND_SUBROW = 16;
     private static final int KIND_SEARCH_RESULT = 18;
     private static final int KIND_NOTE = 19;
@@ -221,8 +213,6 @@ public final class HubCommon {
         String value;
         String action;
         ModModule module;
-        JsPlugin plugin;
-        BundledPlugins.Bundled bundled;
         SendWhenOnlineStore.Entry swoEntry;
         // Presentation:
         int seg = SEG_NONE;
@@ -262,7 +252,7 @@ public final class HubCommon {
 
     static final Category[] CATEGORIES = {
             new Category("plugins", "01", "Plugins",
-                    "Engine · library · catalog · packs", null),
+                    "Python (.plugin) engine", null),
             new Category("privacy", "02", "Privacy & Ghost",
                     "Ghost · records · AyuForward · hidden", "7 MODULES · 3 GROUPS · ALL ON-DEVICE"),
             new Category("appearance", "03", "Appearance & Media",
@@ -345,7 +335,6 @@ public final class HubCommon {
     private final List<Row> rows = new ArrayList<>();
     private int blockCounter;
     private View lastRowView;
-    private List<String> pendingPackExportIds;
     private final Runnable swoListener = () -> AndroidUtilities.runOnUIThread(this::rebuild);
 
     // Home search state.
@@ -534,10 +523,6 @@ public final class HubCommon {
 
         labelRow("PINNED // QUICK ACCESS");
         int quickBlock = nextBlock();
-        Row engine = addRow(KIND_QUICK);
-        engine.block = quickBlock;
-        engine.quickId = "engine";
-        engine.title = "Plugins Engine";
         Row ghost = addRow(KIND_QUICK);
         ghost.block = quickBlock;
         ghost.quickId = "ghost";
@@ -569,7 +554,12 @@ public final class HubCommon {
     private String categoryHomeValue(Context context, Category category) {
         switch (category.id) {
             case "plugins":
-                return String.valueOf(JsPluginManager.plugins(context).size());
+                try {
+                    return String.valueOf(app.exteraless.plugins.PluginsController
+                            .getInstance().getPlugins().size());
+                } catch (Throwable ignored) {
+                    return "";
+                }
             case "privacy":
                 return "07";
             case "appearance":
@@ -647,8 +637,13 @@ public final class HubCommon {
 
     private String pageMeta(Context context, Category category) {
         if ("plugins".equals(category.id)) {
-            int count = JsPluginManager.plugins(context).size();
-            return count + " PLUGINS · 2 GROUPS · ALL ON-DEVICE";
+            int count = 0;
+            try {
+                count = app.exteraless.plugins.PluginsController
+                        .getInstance().getPlugins().size();
+            } catch (Throwable ignored) {
+            }
+            return count + " PYTHON PLUGINS · ALL ON-DEVICE";
         }
         return category.meta != null ? category.meta : "";
     }
@@ -714,38 +709,9 @@ public final class HubCommon {
     }
 
     private void buildPluginsPage(Context context) {
-        List<JsPlugin> allPlugins = JsPluginManager.plugins(context);
-        labelRow("01 // ENGINE & INSTALLED");
-        Row engine = addRow(KIND_ENGINE);
-        engine.block = nextBlock();
-        actionRow(nextBlock(), "search_plugins", "Search plugins", "All plugins");
-        for (JsPlugin plugin : allPlugins) {
-            Row card = addRow(KIND_PLUGIN_CARD);
-            card.plugin = plugin;
-            card.block = nextBlock();
-        }
-        if (allPlugins.isEmpty()) {
-            Row note = addRow(KIND_NOTE);
-            note.title = "No plugins installed yet. Use Add Plugin below or open the Built-in library.";
-        }
-
-        labelRow("02 // ADD & MANAGE");
-        int block = nextBlock();
-        int libraryCount = 0;
-        for (BundledPlugins.Bundled bundled : BundledPlugins.all()) {
-            if (!BundledPlugins.isInstalled(context, bundled)) libraryCount++;
-        }
-        actionRow(block, "built_in_library", "Built-in library",
-                libraryCount == 0 ? "All installed" : libraryCount + " available");
-        actionRow(block, "menu_plugins", "Menu plugins", "Customize attach menu");
-        actionRow(block, "add_plugin_file", "Add plugin from file…", ".js");
-        actionRow(block, "add_plugin_paste", "Paste plugin code…", null);
-        actionRow(block, "pack_export", "Export plugin pack…", "Share plugins");
-        actionRow(block, "pack_import", "Import plugin pack…", ".json");
-
-        // Python (.plugin) engine — the real exteraless engine
-        // (port v3.0.0); its own hub page. The JS engine above is untouched.
-        labelRow("03 // PYTHON (.plugin)");
+        // Only the Python (.plugin) engine remains (the JS engine
+        // was removed): its own hub page.
+        labelRow("01 // PYTHON (.plugin)");
         int pyBlock = nextBlock();
         actionRow(pyBlock, "py_plugins", "Python plugins (.plugin)",
                 app.exteraless.plugins.PluginsController.getInstance().isEngineEnabled() ? "Engine on" : "Engine off");
@@ -1028,10 +994,6 @@ public final class HubCommon {
         switch (row.kind) {
             case KIND_MODULE:
                 return row.module != null ? "module:" + row.module.id() : null;
-            case KIND_ENGINE:
-                return "engine";
-            case KIND_PLUGIN_CARD:
-                return row.plugin != null ? "plugin:" + row.plugin.id : null;
             case KIND_ACTION:
             case KIND_SUBROW:
                 // swo_entry rows are per-entry data, not navigable.
@@ -1109,22 +1071,6 @@ public final class HubCommon {
                     entry.title = row.module.title();
                     entry.haystack = (row.module.title() + " " + row.module.id() + " "
                             + row.module.description()).toLowerCase(Locale.US);
-                } else if (row.kind == KIND_PLUGIN_CARD && row.plugin != null) {
-                    entry.title = row.plugin.name;
-                    // The pre-v3 plugin search's haystack, kept:
-                    // name, id, author, description, capabilities.
-                    StringBuilder hay = new StringBuilder();
-                    hay.append(row.plugin.name).append(' ')
-                            .append(row.plugin.id).append(' ')
-                            .append(row.plugin.author == null ? "" : row.plugin.author).append(' ')
-                            .append(row.plugin.description == null ? "" : row.plugin.description)
-                            .append(' ');
-                    if (row.plugin.capabilities != null) {
-                        for (String cap : row.plugin.capabilities) {
-                            hay.append(cap).append(' ');
-                        }
-                    }
-                    entry.haystack = hay.toString().toLowerCase(Locale.US);
                 } else {
                     entry.title = row.title;
                     entry.haystack = row.title == null ? ""
@@ -1185,14 +1131,6 @@ public final class HubCommon {
                 rebuild();
                 break;
             }
-            case KIND_ENGINE:
-                JsPluginManager.setEngineEnabled(context,
-                        !JsPluginManager.isEngineEnabled(context));
-                rebuild();
-                break;
-            case KIND_PLUGIN_CARD:
-                host.present(new AminJsPluginActivity(row.plugin.id));
-                break;
             case KIND_ACTION:
             case KIND_SUBROW:
                 onAction(context, row);
@@ -1219,11 +1157,6 @@ public final class HubCommon {
      *  toggle) — no parallel implementations. */
     private void onQuickClick(Context context, Row row) {
         switch (row.quickId) {
-            case "engine":
-                JsPluginManager.setEngineEnabled(context,
-                        !JsPluginManager.isEngineEnabled(context));
-                rebuild();
-                break;
             case "ghost": {
                 for (ModModule module : PluginRegistry.modules()) {
                     if ("ghost_mode".equals(module.id())) {
@@ -1242,100 +1175,6 @@ public final class HubCommon {
             default:
                 break;
         }
-    }
-
-    /** Rich-card buttons run the exact operations the plugin page
-     *  runs (same JsPluginManager calls, same strings). */
-    private final PluginCardView.Callbacks pluginCardCallbacks = new PluginCardView.Callbacks() {
-        @Override
-        public void onTogglePlugin(JsPlugin plugin) {
-            Context context = host.context();
-            if (context != null) {
-                JsPluginManager.setEnabled(context, plugin, !plugin.enabled);
-                rebuild();
-            }
-        }
-
-        @Override
-        public void onOpenPlugin(JsPlugin plugin) {
-            host.present(new AminJsPluginActivity(plugin.id));
-        }
-
-        @Override
-        public void onPluginLog(JsPlugin plugin) {
-            host.present(new AminStoreListActivity(plugin.name + " — log",
-                    JsPluginManager.PREFS, "log_" + plugin.id));
-        }
-
-        @Override
-        public void onPluginMore(JsPlugin plugin) {
-            showPluginOverflow(plugin);
-        }
-
-        @Override
-        public void onDeletePlugin(JsPlugin plugin) {
-            Context context = host.context();
-            if (context == null || host.parentActivity() == null) {
-                return;
-            }
-            AlertDialog.Builder builder = new AlertDialog.Builder(host.parentActivity());
-            builder.setTitle("Delete " + plugin.name + "?");
-            builder.setMessage("The plugin file, its settings and its log are removed.");
-            builder.setPositiveButton("Delete", (dialog, which) -> {
-                JsPluginManager.delete(context, plugin);
-                bulletin(R.raw.ic_delete, "Plugin deleted");
-                rebuild();
-            });
-            builder.setNegativeButton("Cancel", null);
-            host.showDialog(builder.create());
-        }
-    };
-
-    private void showPluginOverflow(JsPlugin plugin) {
-        Context context = host.context();
-        if (context == null || host.parentActivity() == null) return;
-        // v2.1: the item list is built per plugin state — a suspended
-        // plugin (watchdog error storm) gains a Resume item; the
-        // parallel action codes keep the dispatch below unchanged
-        // for the always-present items.
-        List<String> labels = new ArrayList<>();
-        List<Integer> actions = new ArrayList<>();
-        labels.add("Settings");
-        actions.add(0);
-        labels.add("Log");
-        actions.add(1);
-        if (JsPluginManager.isSuspended(plugin.id)) {
-            labels.add("Resume");
-            actions.add(5);
-        }
-        labels.add("Move up");
-        actions.add(2);
-        labels.add("Move down");
-        actions.add(3);
-        labels.add("Delete");
-        actions.add(4);
-        CharSequence[] items = labels.toArray(new CharSequence[0]);
-        AlertDialog.Builder builder = new AlertDialog.Builder(host.parentActivity());
-        builder.setTitle(plugin.name);
-        builder.setItems(items, (dialog, which) -> {
-            if (which < 0 || which >= actions.size()) {
-                return;
-            }
-            switch (actions.get(which)) {
-                case 0: host.present(new AminJsPluginActivity(plugin.id)); break;
-                case 1: pluginCardCallbacks.onPluginLog(plugin); break;
-                case 2: JsPluginManager.movePlugin(context, plugin.id, -1); rebuild(); break;
-                case 3: JsPluginManager.movePlugin(context, plugin.id, 1); rebuild(); break;
-                case 4: pluginCardCallbacks.onDeletePlugin(plugin); break;
-                case 5:
-                    JsPluginManager.resumePlugin(context, plugin.id);
-                    bulletin(R.raw.contact_check, "Plugin resumed");
-                    rebuild();
-                    break;
-            }
-        });
-        builder.setNegativeButton("Cancel", null);
-        host.showDialog(builder.create());
     }
 
     private void onAction(Context context, Row row) {
@@ -1440,18 +1279,6 @@ public final class HubCommon {
             case "dns_open":
                 host.present(new AminDnsTunnelActivity());
                 break;
-            case "search_plugins":
-                // v3: the pre-v3 in-page filter dialog is gone —
-                // search lives on the home as a real field; this row
-                // routes there, pre-filtered to plugins.
-                host.openHomePluginSearch();
-                break;
-            case "built_in_library":
-                host.present(new AminBundledLibraryActivity());
-                break;
-            case "menu_plugins":
-                host.present(new AminMenuPluginsActivity());
-                break;
             case "swo_new":
                 host.present(new AminDialogPickerActivity("Send when online — pick a person", true,
                         (dialogId, name) -> swoComposeText(context, dialogId, name)));
@@ -1465,12 +1292,6 @@ public final class HubCommon {
             case "backup_import":
                 importBackup();
                 break;
-            case "add_plugin_file":
-                pickPluginFile();
-                break;
-            case "add_plugin_paste":
-                pastePlugin(context);
-                break;
             case "dev_mode": {
                 boolean devNow = !AminPluginsActivity.isDeveloperMode();
                 AminPluginsActivity.setDeveloperMode(devNow);
@@ -1482,12 +1303,6 @@ public final class HubCommon {
             }
             case "py_plugins":
                 host.present(new app.exteraless.plugins.ui.PluginsActivity());
-                break;
-            case "pack_export":
-                pickPackExport(context);
-                break;
-            case "pack_import":
-                pickPackImport();
                 break;
             case "ayu_forward_media":
                 AyuForwardModule.setReuploadMedia(context,
@@ -1557,18 +1372,6 @@ public final class HubCommon {
                         !SpeedBoostModule.uploadBoost(context));
                 rebuild();
                 break;
-            case "bundled": {
-                final BundledPlugins.Bundled b = row.bundled;
-                BundledPlugins.installAsync(context, b, error -> {
-                    if (error == null) {
-                        bulletin(R.raw.contact_check, b.name + " installed");
-                    } else {
-                        showError(error);
-                    }
-                    rebuild();
-                });
-                break;
-            }
             default:
                 break;
         }
@@ -1595,18 +1398,7 @@ public final class HubCommon {
         }
         Uri uri = data.getData();
         try {
-            if (requestCode == REQUEST_PLUGIN_FILE) {
-                String path = AndroidUtilities.getPath(uri);
-                if (path == null || path.startsWith("content://")) {
-                    path = MediaController.copyFileToCache(uri, "js");
-                }
-                String source = path != null ? readTextFile(new File(path)) : null;
-                if (source != null) {
-                    installPluginSource(source, "file");
-                } else {
-                    showError("Could not read that file.");
-                }
-            } else if (requestCode == REQUEST_BACKUP_EXPORT) {
+            if (requestCode == REQUEST_BACKUP_EXPORT) {
                 OutputStream out = context.getContentResolver().openOutputStream(uri);
                 if (out != null) {
                     out.write(BackupManager.exportJson(context).getBytes(StandardCharsets.UTF_8));
@@ -1614,25 +1406,6 @@ public final class HubCommon {
                     bulletin(R.raw.contact_check, "Backup saved");
                 } else {
                     bulletin(R.raw.error, "Could not write the backup file");
-                }
-            } else if (requestCode == REQUEST_PACK_EXPORT) {
-                OutputStream out = context.getContentResolver().openOutputStream(uri);
-                if (out != null && pendingPackExportIds != null) {
-                    out.write(BackupManager.exportPackJson(context, pendingPackExportIds)
-                            .getBytes(StandardCharsets.UTF_8));
-                    out.close();
-                    bulletin(R.raw.contact_check, "Plugin pack saved");
-                } else {
-                    bulletin(R.raw.error, "Could not write the pack file");
-                }
-                pendingPackExportIds = null;
-            } else if (requestCode == REQUEST_PACK_IMPORT) {
-                InputStream in = context.getContentResolver().openInputStream(uri);
-                String json = in != null ? readStream(in) : null;
-                if (json != null) {
-                    importPack(context, json);
-                } else {
-                    showError("Could not read that file.");
                 }
             } else if (requestCode == REQUEST_BACKUP_IMPORT) {
                 InputStream in = context.getContentResolver().openInputStream(uri);
@@ -1656,13 +1429,6 @@ public final class HubCommon {
         }
     }
 
-    private static String readTextFile(File file) {
-        try {
-            return readStream(new FileInputStream(file));
-        } catch (Exception e) {
-            return null;
-        }
-    }
 
     private static String readStream(InputStream in) throws Exception {
         java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
@@ -2085,177 +1851,25 @@ public final class HubCommon {
         host.showDialog(builder.create());
     }
 
-    private void pastePlugin(Context context) {
-        EditTextBoldCursor field = textField(context, "Paste the whole plugin file here", true);
-        AlertDialog.Builder builder = new AlertDialog.Builder(host.parentActivity());
-        builder.setTitle("Add plugin — paste code");
-        builder.setView(fieldContainer(context, field));
-        builder.setPositiveButton("Review", (dialog, which) ->
-                installPluginSource(field.getText().toString(), "paste"));
-        builder.setNegativeButton("Cancel", null);
-        host.showDialog(builder.create());
-    }
 
-    /** Paste/file installs go through the permission review
-     *  screen (§3.2) since v2.2: the review shows what the plugin
-     *  can do and installs on confirmation. The hub rebuilds when
-     *  the review reports back. */
-    private void installPluginSource(String source, String sourceTag) {
-        if (source == null || source.trim().isEmpty()) {
-            showError("Nothing to install — the plugin code is empty.");
-            return;
-        }
-        host.present(PluginReviewActivity.forInstall(source, sourceTag, null,
-                (installed, pluginId, error) -> rebuild()));
-    }
 
     // ------------------------------------------------------------------
     // Plugin packs (§3.4)
     // ------------------------------------------------------------------
 
     /** Export step 1: multi-select over the installed plugins. */
-    private void pickPackExport(Context context) {
-        List<JsPlugin> installed = JsPluginManager.plugins(context);
-        if (installed.isEmpty()) {
-            bulletin(R.raw.error, "No plugins installed to pack");
-            return;
-        }
-        CharSequence[] items = new CharSequence[installed.size()];
-        boolean[] checked = new boolean[installed.size()];
-        for (int i = 0; i < installed.size(); i++) {
-            items[i] = installed.get(i).name + "  v" + installed.get(i).version;
-            checked[i] = true;
-        }
-        AlertDialog.Builder builder = new AlertDialog.Builder(host.parentActivity());
-        builder.setTitle("Export plugin pack");
-        // Telegram's AlertDialog.Builder has no setMultiChoiceItems
-        // (run #15's compile error) — the multi-select is a scroll
-        // list of check cells in a custom dialog view instead.
-        android.widget.ScrollView scroll = new android.widget.ScrollView(context);
-        LinearLayout checkList = new LinearLayout(context);
-        checkList.setOrientation(LinearLayout.VERTICAL);
-        scroll.addView(checkList);
-        for (int i = 0; i < installed.size(); i++) {
-            final int idx = i;
-            org.telegram.ui.Cells.TextCheckCell cell =
-                    new org.telegram.ui.Cells.TextCheckCell(context);
-            cell.setTextAndCheck(items[idx], checked[idx], idx < installed.size() - 1);
-            cell.setOnClickListener(v -> {
-                checked[idx] = !checked[idx];
-                cell.setChecked(checked[idx]);
-            });
-            checkList.addView(cell);
-        }
-        builder.setView(scroll);
-        builder.setPositiveButton("Export…", (dialog, which) -> {
-            List<String> ids = new ArrayList<>();
-            for (int i = 0; i < installed.size(); i++) {
-                if (checked[i]) {
-                    ids.add(installed.get(i).id);
-                }
-            }
-            if (ids.isEmpty()) {
-                bulletin(R.raw.error, "Nothing selected");
-                return;
-            }
-            pendingPackExportIds = ids;
-            try {
-                Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
-                intent.setType("application/json");
-                intent.addCategory(Intent.CATEGORY_OPENABLE);
-                intent.putExtra(Intent.EXTRA_TITLE, "amingram-plugin-pack.json");
-                host.startActivityForResult(intent, REQUEST_PACK_EXPORT);
-            } catch (Exception e) {
-                FileLog.e(e);
-                bulletin(R.raw.error, "No file picker available");
-            }
-        });
-        builder.setNegativeButton("Cancel", null);
-        host.showDialog(builder.create());
-    }
 
-    private void pickPackImport() {
-        try {
-            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-            intent.setType("*/*");
-            intent.addCategory(Intent.CATEGORY_OPENABLE);
-            host.startActivityForResult(intent, REQUEST_PACK_IMPORT);
-        } catch (Exception e) {
-            FileLog.e(e);
-            bulletin(R.raw.error, "No file picker available");
-        }
-    }
 
     /** Import: parse the pack, then walk its entries through the
      *  permission review screen one at a time (source "pack").
      *  Each confirmed entry installs and gets its storage
      *  restored; the chain ends with a summary. */
-    private void importPack(Context context, String json) {
-        List<org.json.JSONObject> entries = BackupManager.parsePack(json);
-        if (entries == null || entries.isEmpty()) {
-            showError("That file is not an AminGram plugin pack.");
-            return;
-        }
-        List<String> results = new ArrayList<>();
-        advancePackReview(context, entries, 0, results);
-    }
 
-    private void advancePackReview(final Context context,
-                                   final List<org.json.JSONObject> entries,
-                                   final int index,
-                                   final List<String> results) {
-        if (index >= entries.size()) {
-            AlertDialog.Builder builder = new AlertDialog.Builder(host.parentActivity());
-            builder.setTitle("Pack import finished");
-            builder.setMessage(results.isEmpty()
-                    ? "Nothing was installed."
-                    : String.join("\n", results));
-            builder.setPositiveButton("OK", null);
-            host.showDialog(builder.create());
-            rebuild();
-            return;
-        }
-        org.json.JSONObject entry = entries.get(index);
-        String code = entry.optString("code", "");
-        org.json.JSONObject storage = entry.optJSONObject("storage");
-        final String storageJson = storage != null ? storage.toString() : null;
-        host.present(PluginReviewActivity.forInstall(code, "pack", storageJson,
-                (installed, pluginId, error) -> {
-                    String name = pluginId == null || pluginId.isEmpty() ? "plugin" : pluginId;
-                    if (installed) {
-                        if (storageJson != null) {
-                            try {
-                                BackupManager.restorePluginStorage(context, pluginId,
-                                        new org.json.JSONObject(storageJson));
-                            } catch (Exception ignored) {
-                            }
-                        }
-                        results.add("✓ " + name + " installed");
-                    } else if ("skipped".equals(error) || "cancelled".equals(error)) {
-                        results.add("— " + name + " skipped");
-                    } else {
-                        results.add("✗ " + name + " failed: " + error);
-                    }
-                    AndroidUtilities.runOnUIThread(() ->
-                            advancePackReview(context, entries, index + 1, results));
-                }));
-    }
 
     // ------------------------------------------------------------------
     // File pickers
     // ------------------------------------------------------------------
 
-    private void pickPluginFile() {
-        try {
-            Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
-            intent.setType("*/*");
-            intent.addCategory(Intent.CATEGORY_OPENABLE);
-            host.startActivityForResult(intent, REQUEST_PLUGIN_FILE);
-        } catch (Exception e) {
-            FileLog.e(e);
-            bulletin(R.raw.error, "No file picker available");
-        }
-    }
 
     private void exportBackup() {
         try {
@@ -2429,15 +2043,26 @@ public final class HubCommon {
         }
 
         void bind(Context context, String profile) {
-            List<JsPlugin> plugins = JsPluginManager.plugins(context);
+            int total = 0;
             int active = 0;
-            for (JsPlugin plugin : plugins) {
-                if (plugin.enabled) {
-                    active++;
+            boolean engineOn = false;
+            try {
+                app.exteraless.plugins.PluginsController controller =
+                        app.exteraless.plugins.PluginsController.getInstance();
+                engineOn = controller.isEngineEnabled();
+                java.util.Map<String, ? extends app.exteraless.plugins.Plugin> plugins =
+                        controller.getPlugins();
+                if (plugins != null) {
+                    total = plugins.size();
+                    for (app.exteraless.plugins.Plugin plugin : plugins.values()) {
+                        if (plugin.isEnabled()) {
+                            active++;
+                        }
+                    }
                 }
+            } catch (Throwable ignored) {
             }
-            boolean engineOn = JsPluginManager.isEngineEnabled(context);
-            setCell(0, pad2(plugins.size()), "PLUGINS",
+            setCell(0, pad2(total), "PLUGINS",
                     active + " ACTIVE" + (engineOn ? "" : " · ENGINE OFF"));
 
             String dnsValue = "OFF";
@@ -3135,306 +2760,6 @@ public final class HubCommon {
      *  v3: presentation moved to the dossier skin (surface fill,
      *  hairline stroke, Fraunces name, mono meta/chips); structure,
      *  listeners and the v1.3.4 suppression fix are unchanged. */
-    private static class PluginCardView extends LinearLayout {
-        interface Callbacks {
-            void onTogglePlugin(JsPlugin plugin);
-            void onOpenPlugin(JsPlugin plugin);
-            void onPluginLog(JsPlugin plugin);
-            void onPluginMore(JsPlugin plugin);
-            void onDeletePlugin(JsPlugin plugin);
-        }
-
-        private static final PorterDuffColorFilter GRAY_FILTER =
-                new PorterDuffColorFilter(HubSkin.GRAY, PorterDuff.Mode.SRC_IN);
-        private static final PorterDuffColorFilter ACCENT_FILTER =
-                new PorterDuffColorFilter(HubSkin.ACCENT, PorterDuff.Mode.SRC_IN);
-
-        private final FrameLayout chip;
-        private final TextView chipLetter;
-        private final Switch switchView;
-        private final TextView nameView;
-        private final TextView metaView;
-        private final TextView descView;
-        private final LinearLayout chipsRow;
-        private final ImageView settingsBtn;
-        private final ImageView logBtn;
-        private final TextView moreBtn;
-        private final ImageView deleteBtn;
-        private JsPlugin bound;
-        private Callbacks callbacks;
-
-        PluginCardView(Context context) {
-            super(context);
-            setOrientation(VERTICAL);
-            setPadding(AndroidUtilities.dp(16), AndroidUtilities.dp(14),
-                    AndroidUtilities.dp(16), AndroidUtilities.dp(6));
-
-            LinearLayout header = new LinearLayout(context);
-            header.setOrientation(HORIZONTAL);
-            header.setGravity(Gravity.CENTER_VERTICAL);
-            // v1.3.4: header and the actions row are CLICKABLE
-            // containers. RecyclerListView's item-click listener
-            // suppresses the item click only when a DIRECT child
-            // of the item view under the touch is clickable (its
-            // one-level check — see RecyclerListViewItemClick-
-            // Listener.onInterceptTouchEvent); the card's real
-            // buttons (switch hit area, settings/log/delete) are
-            // nested two levels deep, so without this the item
-            // click fired ALONGSIDE the button click — tapping
-            // delete opened the confirm AND navigated into the
-            // plugin page (Amin's field report). The containers
-            // have no listener of their own: deepest children get
-            // the touch first, and taps on the containers' empty
-            // areas are simply consumed.
-            header.setClickable(true);
-            addView(header, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-            chip = new FrameLayout(context);
-            header.addView(chip, new LinearLayout.LayoutParams(
-                    AndroidUtilities.dp(40), AndroidUtilities.dp(40)));
-            chipLetter = new TextView(context);
-            chipLetter.setTextSize(16);
-            chipLetter.setTypeface(HubSkin.displaySemiBold(context));
-            chipLetter.setGravity(Gravity.CENTER);
-            chip.addView(chipLetter, new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-
-            View spacer = new View(context);
-            header.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
-
-            FrameLayout switchBox = new FrameLayout(context);
-            header.addView(switchBox, new LinearLayout.LayoutParams(
-                    AndroidUtilities.dp(56), AndroidUtilities.dp(40)));
-            switchView = HubSkin.newSwitch(context);
-            switchView.setFocusable(false);
-            switchView.setClickable(false);
-            switchBox.addView(switchView, new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                    Gravity.RIGHT | Gravity.CENTER_VERTICAL));
-            View switchHit = new View(context);
-            switchHit.setOnClickListener(v -> {
-                if (callbacks != null && bound != null) {
-                    callbacks.onTogglePlugin(bound);
-                }
-            });
-            switchBox.addView(switchHit, new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-
-            nameView = new TextView(context);
-            nameView.setTextSize(18);
-            nameView.setTypeface(HubSkin.displaySemiBold(context));
-            nameView.setTextColor(HubSkin.BONE);
-            nameView.setSingleLine(true);
-            nameView.setEllipsize(TextUtils.TruncateAt.END);
-            LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            nameParams.topMargin = AndroidUtilities.dp(10);
-            addView(nameView, nameParams);
-
-            metaView = new TextView(context);
-            metaView.setTextSize(11.5f);
-            metaView.setTypeface(HubSkin.mono(context));
-            metaView.setTextColor(HubSkin.GRAY);
-            metaView.setSingleLine(true);
-            metaView.setEllipsize(TextUtils.TruncateAt.END);
-            LinearLayout.LayoutParams metaParams = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            metaParams.topMargin = AndroidUtilities.dp(2);
-            addView(metaView, metaParams);
-
-            descView = new TextView(context);
-            descView.setTextSize(13);
-            descView.setTypeface(HubSkin.sans(context));
-            descView.setTextColor(HubSkin.SECONDARY);
-            descView.setMaxLines(2);
-            descView.setEllipsize(TextUtils.TruncateAt.END);
-            LinearLayout.LayoutParams descParams = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            descParams.topMargin = AndroidUtilities.dp(6);
-            addView(descView, descParams);
-
-            chipsRow = new LinearLayout(context);
-            chipsRow.setOrientation(HORIZONTAL);
-            LinearLayout.LayoutParams chipsParams = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            chipsParams.topMargin = AndroidUtilities.dp(10);
-            addView(chipsRow, chipsParams);
-
-            View hairline = new View(context);
-            hairline.setBackgroundColor(HubSkin.HAIRLINE);
-            LinearLayout.LayoutParams hairlineParams = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, 1);
-            hairlineParams.topMargin = AndroidUtilities.dp(12);
-            addView(hairline, hairlineParams);
-
-            LinearLayout actions = new LinearLayout(context);
-            actions.setOrientation(HORIZONTAL);
-            actions.setGravity(Gravity.CENTER_VERTICAL);
-            actions.setClickable(true); // see header note above
-            addView(actions, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, AndroidUtilities.dp(44)));
-
-            settingsBtn = actionButton(context, R.drawable.msg_settings);
-            settingsBtn.setOnClickListener(v -> {
-                if (callbacks != null && bound != null) {
-                    callbacks.onOpenPlugin(bound);
-                }
-            });
-            actions.addView(settingsBtn);
-            logBtn = actionButton(context, R.drawable.msg_log);
-            logBtn.setOnClickListener(v -> {
-                if (callbacks != null && bound != null) {
-                    callbacks.onPluginLog(bound);
-                }
-            });
-            actions.addView(logBtn);
-            View actionSpacer = new View(context);
-            actions.addView(actionSpacer, new LinearLayout.LayoutParams(0, 1, 1f));
-            moreBtn = new TextView(context);
-            moreBtn.setText("⋯");
-            moreBtn.setTextSize(24);
-            moreBtn.setGravity(Gravity.CENTER);
-            moreBtn.setTextColor(HubSkin.GRAY);
-            moreBtn.setLayoutParams(new LinearLayout.LayoutParams(
-                    AndroidUtilities.dp(42), AndroidUtilities.dp(42)));
-            moreBtn.setOnClickListener(v -> {
-                if (callbacks != null && bound != null) callbacks.onPluginMore(bound);
-            });
-            actions.addView(moreBtn);
-            deleteBtn = actionButton(context, R.drawable.msg_delete);
-            deleteBtn.setOnClickListener(v -> {
-                if (callbacks != null && bound != null) {
-                    callbacks.onDeletePlugin(bound);
-                }
-            });
-            actions.addView(deleteBtn);
-        }
-
-        private static ImageView actionButton(Context context, int iconRes) {
-            ImageView button = new ImageView(context);
-            button.setImageResource(iconRes);
-            button.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
-            button.setPadding(AndroidUtilities.dp(9), AndroidUtilities.dp(9),
-                    AndroidUtilities.dp(9), AndroidUtilities.dp(9));
-            button.setLayoutParams(new LinearLayout.LayoutParams(
-                    AndroidUtilities.dp(42), AndroidUtilities.dp(42)));
-            return button;
-        }
-
-        void setCallbacks(Callbacks callbacks) {
-            this.callbacks = callbacks;
-        }
-
-        void bind(JsPlugin plugin, boolean engineOn) {
-            bound = plugin;
-            setBackground(HubSkin.blockDrawable(SEG_ONLY));
-
-            if (chip.getBackground() == null) {
-                GradientDrawable chipBg = new GradientDrawable();
-                chipBg.setShape(GradientDrawable.RECTANGLE);
-                chipBg.setColor(HubSkin.SURFACE2);
-                chipBg.setStroke(1, HubSkin.HAIRLINE);
-                chipBg.setCornerRadius(AndroidUtilities.dp(2));
-                chip.setBackground(chipBg);
-            }
-            chipLetter.setText(plugin.name == null || plugin.name.isEmpty() ? "?"
-                    : plugin.name.substring(0, 1).toUpperCase(Locale.US));
-            chipLetter.setTextColor(HubSkin.ACCENT);
-
-            switchView.setChecked(plugin.enabled, false);
-            nameView.setText(plugin.name);
-
-            String meta = "Version " + (plugin.version == null ? "?" : plugin.version);
-            // v2.1 watchdog badge on the meta (subtitle/status) line:
-            // a suspended plugin's line is replaced by the suspended
-            // text (takes precedence); otherwise today's error count
-            // is appended when there is one.
-            boolean suspended = JsPluginManager.isSuspended(plugin.id);
-            int errorsToday = !suspended
-                    ? JsPluginManager.errorsToday(plugin.id) : 0;
-            if (suspended) {
-                metaView.setText("⏸ Suspended — error storm");
-            } else if (plugin.author != null && !plugin.author.isEmpty()) {
-                String author = plugin.author.startsWith("@")
-                        ? plugin.author : "@" + plugin.author;
-                String full = meta + " · " + author;
-                if (errorsToday > 0) {
-                    full += " · ⚠ " + errorsToday;
-                }
-                SpannableString spanned = new SpannableString(full);
-                spanned.setSpan(new ForegroundColorSpan(HubSkin.ACCENT),
-                        meta.length() + 3, meta.length() + 3 + author.length(),
-                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                metaView.setText(spanned);
-            } else {
-                metaView.setText(errorsToday > 0
-                        ? meta + " · ⚠ " + errorsToday : meta);
-            }
-
-            if (plugin.description == null || plugin.description.isEmpty()) {
-                descView.setVisibility(GONE);
-            } else {
-                descView.setVisibility(VISIBLE);
-                descView.setText(plugin.description);
-            }
-
-            // Chips: recycle existing child TextViews instead of reallocating on every bind (A-22).
-            List<String> chipTexts = new ArrayList<>();
-            if (plugin.installSource != null && !plugin.installSource.isEmpty()) {
-                chipTexts.add("from " + plugin.installSource);
-            }
-            if (plugin.capabilities != null) {
-                chipTexts.addAll(plugin.capabilities);
-            }
-            if (chipTexts.isEmpty()) {
-                chipsRow.setVisibility(GONE);
-            } else {
-                chipsRow.setVisibility(VISIBLE);
-                int needed = chipTexts.size();
-                while (chipsRow.getChildCount() < needed) {
-                    TextView chipView = new TextView(getContext());
-                    chipView.setTextSize(10);
-                    chipView.setTypeface(HubSkin.mono(getContext()));
-                    chipView.setTextColor(HubSkin.SECONDARY);
-                    chipView.setSingleLine(true);
-                    chipView.setPadding(AndroidUtilities.dp(8), AndroidUtilities.dp(3),
-                            AndroidUtilities.dp(8), AndroidUtilities.dp(3));
-                    GradientDrawable chipDrawable = new GradientDrawable();
-                    chipDrawable.setShape(GradientDrawable.RECTANGLE);
-                    chipDrawable.setColor(HubSkin.SURFACE2);
-                    chipDrawable.setStroke(1, HubSkin.HAIRLINE);
-                    chipDrawable.setCornerRadius(AndroidUtilities.dp(2));
-                    chipView.setBackground(chipDrawable);
-                    LinearLayout.LayoutParams chipParams = new LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.WRAP_CONTENT,
-                            ViewGroup.LayoutParams.WRAP_CONTENT);
-                    chipParams.rightMargin = AndroidUtilities.dp(6);
-                    chipsRow.addView(chipView, chipParams);
-                }
-                for (int i = 0; i < chipsRow.getChildCount(); i++) {
-                    TextView child = (TextView) chipsRow.getChildAt(i);
-                    if (i < needed) {
-                        child.setText(chipTexts.get(i));
-                        child.setVisibility(VISIBLE);
-                    } else {
-                        child.setVisibility(GONE);
-                    }
-                }
-            }
-
-            settingsBtn.setColorFilter(GRAY_FILTER);
-            logBtn.setColorFilter(GRAY_FILTER);
-            moreBtn.setTextColor(HubSkin.GRAY);
-            deleteBtn.setColorFilter(ACCENT_FILTER);
-
-            float contentAlpha = engineOn ? 1f : 0.55f;
-            nameView.setAlpha(contentAlpha);
-            metaView.setAlpha(contentAlpha);
-            descView.setAlpha(contentAlpha);
-            chipsRow.setAlpha(contentAlpha);
-        }
-    }
 
     // ------------------------------------------------------------------
     // Adapter
@@ -3489,18 +2814,11 @@ public final class HubCommon {
                     view = new CategoryRowView(context);
                     break;
                 case KIND_QUICK:
-                case KIND_ENGINE:
                     view = new ToggleRowView(context);
                     break;
                 case KIND_MODULE:
                     view = new ModuleCardView(context);
                     break;
-                case KIND_PLUGIN_CARD: {
-                    PluginCardView card = new PluginCardView(context);
-                    card.setCallbacks(pluginCardCallbacks);
-                    view = card;
-                    break;
-                }
                 case KIND_ACTION:
                     view = new ActionRowView(context);
                     break;
@@ -3543,7 +2861,7 @@ public final class HubCommon {
             lp.topMargin = row.seg == SEG_FIRST || row.seg == SEG_ONLY
                     ? AndroidUtilities.dp(12) : 0;
             holder.itemView.setLayoutParams(lp);
-            if (carded && row.kind != KIND_PLUGIN_CARD) {
+            if (carded) {
                 holder.itemView.setBackground(isFlashing(row)
                         ? HubSkin.highlightDrawable(row.seg)
                         : HubSkin.blockDrawable(row.seg));
@@ -3574,10 +2892,7 @@ public final class HubCommon {
                     break;
                 case KIND_QUICK: {
                     ToggleRowView toggle = (ToggleRowView) holder.itemView;
-                    if ("engine".equals(row.quickId)) {
-                        boolean on = JsPluginManager.isEngineEnabled(context);
-                        toggle.bind(row.title, on, on ? "ON" : "OFF", row.seg);
-                    } else if ("ghost".equals(row.quickId)) {
+                    if ("ghost".equals(row.quickId)) {
                         boolean on = PluginRegistry.isEnabledById(context, "ghost_mode");
                         toggle.bind(row.title, on, on ? "ON" : "OFF", row.seg);
                     } else {
@@ -3605,20 +2920,8 @@ public final class HubCommon {
                     }
                     break;
                 }
-                case KIND_ENGINE: {
-                    boolean on = JsPluginManager.isEngineEnabled(context);
-                    ((ToggleRowView) holder.itemView).bind("Plugins Engine", on, on ? "ON" : "OFF", row.seg);
-                    break;
-                }
                 case KIND_MODULE:
                     ((ModuleCardView) holder.itemView).bind(context, row);
-                    break;
-                case KIND_PLUGIN_CARD:
-                    ((PluginCardView) holder.itemView).bind(row.plugin,
-                            JsPluginManager.isEngineEnabled(context));
-                    if (isFlashing(row)) {
-                        holder.itemView.setBackground(HubSkin.highlightDrawable(SEG_ONLY));
-                    }
                     break;
                 case KIND_ACTION:
                     ((ActionRowView) holder.itemView).bind(row);

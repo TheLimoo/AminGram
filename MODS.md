@@ -4759,3 +4759,139 @@ tree (pristine tarball + patches 0001–0047, current 0048 applied, edit,
   `GroupCreateActivity$GroupCreateAdapter`, and
   `UItem$UItemFactory` as class descriptors under their real names
   (v65: 0 for all four).
+
+## JS engine removal — the whole Rhino JS engine + bundled JS plugins deleted, Python engine only (2026-11-17, v3.0.14)
+
+Amin chose "Remove the whole JS engine" (2026-11-17 ~22:24 Tehran) after
+being told it deletes the 10 bundled JS features and saves only ~2 MB
+of a ~119 MB APK. The Python (exteraGram) engine is the only plugin
+engine now; there is no exteraGram plugin that replaces the JS
+features one-to-one, and the catalog-plugin path for future
+capabilities goes with the JS engine.
+
+### What disappears for the user
+
+- The 10 bundled JS features (all in `assets/amingram_plugins/`,
+  16 files — the parent's count of 10 was from an older listing):
+  Gemini chat, AI Actions, Article Composer, media downloader,
+  link cleaner, price check, QR maker, quick replies, aesthetic
+  text, fun tools, plus quick-translate, shout, sticker-dl,
+  temp-mail, theme-manager, vip-alert.
+- The JS plugin editor and library UI (`AminJsPluginActivity`,
+  `AminPluginEditorActivity`, `AminBundledLibraryActivity`,
+  `AminMenuPluginsActivity`, `PluginReviewActivity`), the hub's
+  Plugins-Engine switch row, JS plugin cards + overflow menu,
+  "Add plugin from file / paste code", plugin packs
+  (export/import), the built-in library, and menu-plugin
+  customization.
+- Backup no longer exports/imports JS plugins, the plugin database
+  (`amin.db` / PluginDb rows), or plugin file sandboxes.
+- `catalog/index.json` (JS-only catalog: shout, vip-alert) deleted.
+- The JS engine's send hooks: outgoing-message command dispatch
+  and the attach-menu plugin buttons are gone. The Python engine's
+  send hook (patch 0036, `executeOnSendMessageHook`) is untouched.
+
+### What was removed (code)
+
+- Rhino dep: `org.mozilla:rhino:1.7.15` + its proguard keeps
+  (`org.mozilla.**`, `java.beans`/`javax.swing`/`java.awt`
+  dontwarns, all `AminBridge*` keeps) — patch 0010 is DELETED,
+  not emptied: plain `git apply` (what CI uses) rejects an empty
+  patch file with "No valid patches in input", so an empty 0010
+  would break the build. The series is never renumbered; 0010
+  joins 0005 and 0015 as a documented gap in the series.
+- The whole `org.telegram.messenger.amin.plugins.js` package
+  (11 files: AminBridge, AminContextFactory, AminMenuConfig,
+  BundledPlugins, ErrorStormTracker, JsManifest, JsPlugin,
+  JsPluginManager, PluginDb, PluginFiles, SettingsSchema).
+- 5 JS UI files (listed above) + 16 JS asset files +
+  `catalog/index.json`.
+- Call sites: `AminHooks` (JS dispatch, menu hooks, context-menu
+  hooks — see stubs below), `HubCommon` (~770 lines: engine row,
+  plugin cards, PluginCardView, pack flows, JS search index,
+  plugin-log collection — the hub stats cell now reads the Python
+  engine's plugin count/active state), `BackupManager` (JS export/
+  import sections + pack methods), `PluginFilePickerActivity`
+  (rewrote the copy path off `PluginFiles`; the activity itself is
+  KEPT — the DNS tunnel uses it to pick PEM certificates).
+
+### Patches regenerated (from a scratch tree, `git diff` — never hand-edited)
+
+- `0010-js-runtime-gradle.patch`: emptied (both hunks removed).
+- `0021-dns-tunnel.patch`: regenerated — the soarbridge.aar line
+  now anchors on the nanohttpd line instead of the removed rhino
+  line; the other three hunks (manifest, ApplicationLoader,
+  ProxyListActivity) are unchanged.
+- `0025-pyplugins-gradle.patch`: regenerated — its proguard hunk
+  now anchors on the pristine EOF (`#-dontobfuscate`, no trailing
+  newline) instead of the removed AminBridge keeps; the 20 Chaquopy
+  keep lines are byte-identical.
+- `0048-engine-proguard-keeps.patch`: NOT regenerated — it applies
+  clean on the new tree (its hunks anchor on lines that still
+  exist). All Fix 5/7/8/11/12/13 keeps survive in the final
+  proguard (verified in the replay tree).
+
+### Deliberately kept (verify each is untouched by the diff)
+
+- Python engine: `app/exteraless/plugins/**`, `com/exteragram/**`,
+  `TMessagesProj/src/main/python/**`, Chaquopy config/deps
+  (PyYAML, requests, packaging, typing_extensions).
+- Widget engine (`IWidgetEngine` / `assets/WidgetSandbox/*`):
+  verified zero `org.mozilla` imports outside the deleted js
+  package; left alone regardless.
+- Hub UI itself (only its JS-plugin hooks went), all
+  `org.telegram.messenger.amin.modules` features (GhostMode,
+  SpeedBoost, etc. — Java features, not JS plugin hosts).
+- The SharedPreferences file name `"amingram_plugins"` (used by
+  the 7 Java modules + PluginRegistry + BackupManager's
+  `plugin_prefs` section): it is only a name now, and renaming it
+  would wipe every existing user's module on/off states. Kept
+  on purpose; the zero-refs grep below excludes this string.
+- `docs/PLUGIN-MASTER-PROMPT.md`: kept as history (documents the
+  removed JS contract).
+- `AminHooks` stubs (future cleanup, not deletion): the JS hook
+  methods are stubbed (`onOutgoingMessage` returns false,
+  `attachMenuPlugins`/`pluginContextItems` return empty,
+  `onPluginMenuAction`/`onPluginContextAction` no-ops) instead of
+  regenerating patches 0013/0014/0020/0024/0036, whose call sites
+  in `ChatActivity`/`ChatAttachAlert` still reference them.
+  Patch 0036's Python `executeOnSendMessageHook` runs first and
+  is intact. `OPTION_PLUGIN_CONTEXT_BASE` /
+  `MAX_PLUGIN_CONTEXT_ITEMS` constants and the `ContextItem`
+  class are kept because the patched call sites reference them.
+- `HubCommon.openHomePluginSearch` (Host interface + FragmentHost
+  impl): kept — generic hub search plumbing, its only caller was
+  the removed `search_plugins` row.
+- No JS-specific strings/layouts existed (the JS UI used only
+  generic Telegram drawables `ic_ab_back` / `notification`), so
+  no resource deletions were needed.
+
+### Size saving (measured in the artifact)
+
+- TBD — filled from the CI artifact after the release build
+  (v66 baseline: 124,580,580 bytes; expected saving ~2 MB:
+  Rhino ~2 MB + bundled JS ~255 KB).
+
+### Verification (same bar as Fix 7–13)
+
+- Patch replay: all 50 patches apply clean on a fresh tree from
+  the faithful pristine tarball + overlay, CI method (overlay
+  copied first, then patches in filename order; 0010 is deleted —
+  see above). Regen note: the first regen attempt failed on
+  0024 because the script's string-range patch selection silently
+  skipped 0009 and 0020 — fixed to numeric-prefix selection and
+  re-run clean.
+- JDK 17 ParseCheck over the full overlaid tree (Compiler-API
+  ParseCheck, `verify-scratch/fix10/ParseCheck.java`): 2488/2488 OK
+  (2504 in Fix 13 minus the 16 deleted Java files: 11 js-package +
+  5 JS UI).
+- CPython engine-port suite 20/20, secret scan zero,
+  `git diff --check` clean.
+- Zero-refs grep over the overlaid tree for `org.mozilla.javascript`,
+  `JsPluginManager`, `AminBridge` — zero (excluding this MODS.md
+  section and `docs/`); `amingram_plugins` remains only as the
+  SharedPreferences file name (see above).
+- Artifact proof (CI watch): the new APK's DEX must contain zero
+  `org/mozilla/javascript` references (v65: 22,624) and zero
+  `assets/amingram_plugins` entries; Python engine spot-checks:
+  `org/mvel2` refs present, `requirements-common.imy` non-empty.
