@@ -4895,3 +4895,76 @@ capabilities goes with the JS engine.
   `org/mozilla/javascript` references (v65: 22,624) and zero
   `assets/amingram_plugins` entries; Python engine spot-checks:
   `org/mvel2` refs present, `requirements-common.imy` non-empty.
+
+## Fix 14 — MSL install fails: `Exception: Failed to load dex module.` — R8 stripped the kotlin-stdlib classes the plugin's embedded DEX resolves through the app loader (2026-11-17, v3.0.15)
+
+### Symptom (on device, v66, 2026-11-17 ~22:54 Tehran)
+
+ZwyLib imported OK, but installing MSL failed with
+`Exception: Failed to load dex module.` (material_settings_list.py:344,
+raised from `on_plugin_load` when `dex_loader.inject()` returns False).
+The log (`crashlog2/17_11_2026_22_53_57.txt:398-425`) gives the real
+cause, which the user-facing message hides:
+
+```
+java.lang.NoClassDefFoundError: Failed resolution of: [Lkotlin/Pair;
+    at org.zwylair.msldex.PaletteManager.<clinit>(PaletteManager.kt:103)
+    at org.zwylair.msldex.PluginCore.<clinit>(PluginCore.kt:14)
+    ...
+Caused by: java.lang.ClassNotFoundException: kotlin.Pair
+```
+
+### Root cause
+
+MSL's `DexLoader.inject()` (material_settings_list.py:134-160) loads its
+embedded Kotlin DEX with
+`InMemoryDexClassLoader(buffer, ctx.getClassLoader())` and then calls
+`PluginCore.init(ctx)` (line 154). The in-memory DEX resolves its
+dependencies through the PARENT loader — the app's own class loader.
+`PluginCore.<clinit>` touches `PaletteManager`, whose `<clinit>`
+references `[Lkotlin/Pair;`, but R8 had stripped kotlin-stdlib from the
+app DEX as unused (the app's own code barely uses Kotlin), so the parent
+loader cannot resolve `kotlin.Pair` and the whole `inject()` fails
+(swallowed by MSL's try/except, which only logs it).
+
+### The 20-class table (MSL DEX vs v66 app DEX, exact descriptor match)
+
+The MSL DEX references exactly 20 `kotlin.*` classes (extracted from
+`DEX_BASE64` via base64 + LZMA; the DEX itself is intact, SHA-256
+`bbeb7267b8cf5de2ff0b4f0bee305d2c0e2bf7fec62961fa51c669cfe01b1e`):
+
+| kotlin class | v66 DEX | action |
+|---|---|---|
+| kotlin.Unit | present (Fix 12 keep) | none |
+| kotlin.jvm.internal.DefaultConstructorMarker | present (Fix 12 keep) | none |
+| kotlin.jvm.functions.Function0 / Function1 | present | none |
+| kotlin.Pair | absent (0) | **keep added** |
+| kotlin.Function0 / Function1 | absent | keep added |
+| kotlin.Metadata | absent | keep added |
+| kotlin.Result / Result$Companion / ResultKt | absent | keep added |
+| kotlin.TuplesKt | absent | keep added |
+| kotlin.collections.ArrayList / ArraysKt / CollectionsKt / HashMap / MapsKt | absent | keep added |
+| kotlin.jvm.JvmStatic | absent | keep added |
+| kotlin.jvm.internal.Intrinsics | absent | keep added |
+| kotlin.ranges.RangesKt | absent | keep added |
+
+16 keeps added, one `-keep class <fqn> { *;}` per class, patch 0048
+(regenerated from a scratch tree built from the faithful pristine
+tarball; the hunk anchor moved from `@@ -118,10 +118,167 @@` /
+`index 284b735..ee193e0` to `@@ -93,10 +93,205 @@` /
+`index 8e5e8a3..948d8e6` because the JS-engine removal (v3.0.14)
+changed earlier patches 0021/0025, shifting the pre-image by 25
+lines — the regenerated patch is correct for the current series).
+Deliberately NOT a broad `-keep class kotlin.**` (keeps all of
+kotlin-stdlib, costs size). No live kotlin jclass lookups exist in
+ZwyLib 3.1.0 / MSL / SDK Python (grep: zero matches;
+`plugin_loader.py` only lists `"kotlin"` as a namespace root), so
+nothing more was needed.
+
+### Lesson
+
+Fix 12's P1-2 `kotlin.Unit` keep was this same gap, one class early:
+a plugin's embedded DEX resolves stdlib classes through the APP
+loader, so every `kotlin.*` class a plugin DEX references must be
+kept in the app build — enumerate the plugin DEX's own references,
+not just the Python-side lookups.

@@ -1,8 +1,8 @@
 diff --git a/TMessagesProj/proguard-rules.pro b/TMessagesProj/proguard-rules.pro
-index 284b735..ee193e0 100644
+index 8e5e8a3..948d8e6 100644
 --- a/TMessagesProj/proguard-rules.pro
 +++ b/TMessagesProj/proguard-rules.pro
-@@ -118,10 +118,167 @@
+@@ -93,10 +93,205 @@
  # cannot start or load plugins.
  -keep class com.chaquo.python.** { *; }
  -dontwarn com.chaquo.python.**
@@ -169,6 +169,44 @@ index 284b735..ee193e0 100644
 +-keep class org.telegram.ui.GroupCreateActivity$* { *; }
 +-keep class org.telegram.ui.DialogsActivity$* { *; }
 +-keep class org.telegram.ui.Components.UItem$* { *; }
++# AminGram (Fix 14 / v3.0.15): a plugin's embedded DEX resolves
++# kotlin-stdlib classes through the APP class loader. MSL's DexLoader
++# (material_settings_list.py:154) loads its embedded DEX with
++# InMemoryDexClassLoader(buffer, ctx.getClassLoader()) and calls
++# PluginCore.init(ctx); PluginCore.<clinit> touches PaletteManager,
++# whose <clinit> (PaletteManager.kt:103) references [Lkotlin/Pair; -
++# on device v66 it died with "NoClassDefFoundError: Failed resolution
++# of: [Lkotlin/Pair;" caused by "ClassNotFoundException: kotlin.Pair".
++# R8 had stripped kotlin-stdlib from the app DEX as unused (the app's
++# own code barely uses Kotlin), so the parent loader cannot resolve
++# it. The MSL DEX references exactly 20 kotlin.* classes (extracted
++# from DEX_BASE64, base64+LZMA; DEX intact, SHA-256 bbeb7267...;
++# checked by exact descriptor match against the v66 DEX): 4 already
++# present - kotlin.Unit + DefaultConstructorMarker (Fix 12 keeps),
++# kotlin.jvm.functions.Function0/Function1 - and the 16 below absent
++# (descriptor 0). One keep per class, NOT a broad kotlin.** keep
++# (that would keep all of kotlin-stdlib and cost size). No live
++# kotlin jclass lookups exist in ZwyLib 3.1.0 / MSL / SDK Python
++# (grep: zero matches; plugin_loader.py only lists "kotlin" as a
++# namespace root). Lesson: Fix 12's P1-2 kotlin.Unit keep was this
++# same gap, one class early - every kotlin.* class a plugin DEX
++# references must be kept in the app build.
++-keep class kotlin.Pair { *; }
++-keep class kotlin.Function0 { *; }
++-keep class kotlin.Function1 { *; }
++-keep class kotlin.Metadata { *; }
++-keep class kotlin.Result { *; }
++-keep class kotlin.Result$Companion { *; }
++-keep class kotlin.ResultKt { *; }
++-keep class kotlin.TuplesKt { *; }
++-keep class kotlin.collections.ArrayList { *; }
++-keep class kotlin.collections.ArraysKt { *; }
++-keep class kotlin.collections.CollectionsKt { *; }
++-keep class kotlin.collections.HashMap { *; }
++-keep class kotlin.collections.MapsKt { *; }
++-keep class kotlin.jvm.JvmStatic { *; }
++-keep class kotlin.jvm.internal.Intrinsics { *; }
++-keep class kotlin.ranges.RangesKt { *; }
 +-keep class app.exteraless.plugins.** { *; }
 +-keep class com.exteragram.messenger.** { *; }
  # AminGram (M0): class names plugins and DEX code resolve by string
