@@ -4233,3 +4233,73 @@ after chats and Install from file started working.
   zero) plus the other string-looked-up classes, and
   `assets/chaquopy/requirements-common.imy` must be non-empty and
   contain PyYAML.
+
+## Fix 9 — plugin load fails: `NameError: SettingEntry` is a downstream symptom of missing `typing_extensions` (2026-11-17, uncommitted)
+
+One root cause, two errors — both surfacing at plugin LOAD time in v61
+(Fix 8), after the DispatchQueue and elyx_runtime fixes worked (MSL got
+past its line-115 `run_on_queue` call, and ZwyLib's metadata read
+succeeded, so Fix 8's keeps and PyYAML are proven on device).
+
+### The error chain (proven from the plugin sources)
+
+- On-device (v61, 2026-11-17 ~09:36): installing ZwyLib / MSL fails
+  with `ModuleNotFoundError: No module named 'typing_extensions'` at
+  `java_utils.py:3: from typing_extensions import deprecated`. That file
+  is ZwyLib 3.1.0's `src/utils/java_utils.py` — NOT our SDK. ZwyLib
+  imports `typing_extensions` in 3 files (utils/java_utils.py,
+  autoupdate/updater.py, commands/manager.py) and `packaging.version`
+  in 3 files (packaging was already added in Fix 8).
+- Because ZwyLib fails to import, MSL's guarded import block fails:
+  `material_settings_list_1_87g4.plugin` lines ~55-60 do
+  `try: import zwylib; ...; from zwylib import SettingEntry,
+  ExpandableSwitchManager, ExpandableOption, HookUtils / except
+  Exception:` (RecursiveMock fallback that never defines
+  `SettingEntry`). Execution then reaches `class S:` line 119
+  `reorder_settings_list = SettingEntry("reorder_settings_list", False)`
+  → `NameError: name 'SettingEntry' is not defined`.
+- So the `NameError` is a DOWNSTREAM symptom of the missing pip
+  package, not a second bug. Do not chase MSL's import structure —
+  fix the missing dependency.
+
+### Fix
+
+- Patch 0025 regenerated from a scratch tree with `git diff` (never
+  hand-edited; incremental diff against the post-0024 tree — note this
+  patch spans three files: `TMessagesProj/build.gradle`,
+  `TMessagesProj/proguard-rules.pro`, `build.gradle`, so the diff must
+  NOT be scoped to one file): added `install "typing_extensions"` to
+  the `pip {}` block in `chaquopy.defaultConfig`, alongside the Fix 8
+  entries (PyYAML, requests, packaging).
+- Upstream exteraless's pip block does NOT list `typing_extensions`
+  and their SDK has no such reference — but their ZwyLib-facing plugins
+  need it, so we install it regardless; it is tiny and has no native
+  code.
+- NOT installed: `beautifulsoup4` / `lxml` / `pillow` / `debugpy`.
+  The parent swept ZwyLib 3.1.0 + MSL + our SDK for third-party
+  imports: the only unguarded needs are yaml, requests, packaging,
+  typing_extensions (debugpy is imported inside try/except in
+  dev_server.py and degrades cleanly).
+
+### Lesson (extends Fix 8)
+
+- **A plugin dependency's own imports are part of the pip surface —
+  sweep plugin deps, not just the SDK.** Fix 8 audited the engine
+  SDK's imports; ZwyLib (a plugin, not the engine) has its own
+  third-party imports that only show up when the plugin actually
+  loads. Any pip package a bundled plugin or library imports
+  unguarded must be in the Chaquopy pip block, even if upstream
+  doesn't list it.
+
+### Verification (Fix 9 bar, same as Fix 7/8)
+
+- Patch replay: all 51 patches apply clean on a fresh tree from the
+  faithful pristine tarball + overlay, CI method (overlay first, then
+  patches in filename order).
+- JDK 17 ParseCheck over the full overlaid tree: 2495/2495 OK.
+- CPython engine-port suite 20/20, secret scan zero, `git diff --check`
+  clean.
+- Artifact proof (CI watch): the new APK's
+  `assets/chaquopy/requirements-common.imy` must contain
+  typing_extensions entries (v61 had 197 entries with yaml/requests/
+  packaging; the new one must add typing_extensions).

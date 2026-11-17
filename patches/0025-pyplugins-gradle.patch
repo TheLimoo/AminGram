@@ -1,5 +1,5 @@
 diff --git a/TMessagesProj/build.gradle b/TMessagesProj/build.gradle
-index 6c29cc7..b6fa3e8 100644
+index 6c29cc7..1be7acf 100644
 --- a/TMessagesProj/build.gradle
 +++ b/TMessagesProj/build.gradle
 @@ -3,6 +3,7 @@ import org.gradle.nativeplatform.platform.internal.DefaultNativePlatform
@@ -35,7 +35,7 @@ index 6c29cc7..b6fa3e8 100644
          vectorDrawables.generatedDensities = ['mdpi', 'hdpi', 'xhdpi', 'xxhdpi']
  
          multiDexEnabled true
-@@ -247,6 +262,46 @@ android {
+@@ -247,6 +262,56 @@ android {
  }
  
  
@@ -61,10 +61,20 @@ index 6c29cc7..b6fa3e8 100644
 +        // installed: dev_server imports it inside try/except and
 +        // degrades cleanly. No beautifulsoup4/lxml/pillow: no
 +        // unguarded SDK import needs them.
++        // AminGram (Fix 9 / v3.0.9): ZwyLib 3.1.0 imports
++        // typing_extensions in utils/java_utils.py, autoupdate/
++        // updater.py and commands/manager.py (unguarded, top level).
++        // Without it ZwyLib fails to import, MSL's guarded zwylib
++        // import falls to its RecursiveMock branch (which never
++        // defines SettingEntry) and the plugin dies at line 119 with
++        // NameError: name 'SettingEntry' is not defined. A plugin
++        // dependency's own imports are part of the pip surface —
++        // sweep plugin deps, not just the SDK.
 +        pip {
 +            install "PyYAML"
 +            install "requests"
 +            install "packaging"
++            install "typing_extensions"
 +        }
 +        // AminGram (M4): bytecode compilation is Chaquopy's
 +        // default, but only as a best-effort warning — when it
