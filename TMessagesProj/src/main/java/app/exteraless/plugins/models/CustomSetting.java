@@ -4,66 +4,24 @@ import android.view.View;
 
 import com.chaquo.python.PyObject;
 
-import app.exteraless.plugins.Plugin;
-
 import org.telegram.ui.Components.UItem;
 
 /**
  * Произвольная строка настроек: либо готовый {@link UItem}, либо вью, либо фабрика.
  *
- * Фабрику плагины наследуют из Python через `@java_subclass(CustomSetting.Factory)`,
- * поэтому она обязана оставаться абстрактным джавовым классом поверх
- * {@link UItem.UItemFactory}.
+ * Наследник {@code com.exteragram.messenger.plugins.models.CustomSetting} — та же
+ * схема, что у {@code Plugin}: фасад по пути стокового exteraGram, реализация
+ * здесь. Фабрика ({@code Factory}) живёт в фасаде и наследуется отсюда, поэтому
+ * подкласс фабрики, созданный плагином из Python через
+ * {@code @java_subclass(CustomSetting.Factory)}, является и нашей фабрикой.
  */
-public final class CustomSetting extends SettingItem {
+public class CustomSetting extends com.exteragram.messenger.plugins.models.CustomSetting {
 
     private PyObject onClickCallback;
     private PyObject createSubFragmentCallback;
     private PyObject factoryArgs;
     private Factory<?> factory;
     private UItem item;
-
-    public static abstract class Factory<V extends View> extends UItem.UItemFactory<V> {
-
-        private boolean isShadowValue;
-        private boolean isClickableValue = true;
-
-        public UItem create(Plugin plugin, CustomSetting setting, PyObject args) {
-            return null;
-        }
-
-        public void onClick(Plugin plugin, UItem item, View view) {
-        }
-
-        public void onLongClick(Plugin plugin, UItem item, View view) {
-        }
-
-        @Override
-        public boolean isShadow() {
-            return isShadowValue;
-        }
-
-        @Override
-        public boolean isClickable() {
-            return isClickableValue;
-        }
-
-        public final boolean isShadowValue() {
-            return isShadowValue;
-        }
-
-        public final void setShadowValue(boolean value) {
-            this.isShadowValue = value;
-        }
-
-        public final boolean isClickableValue() {
-            return isClickableValue;
-        }
-
-        public final void setClickableValue(boolean value) {
-            this.isClickableValue = value;
-        }
-    }
 
     private CustomSetting(PyObject onClickCallback, PyObject createSubFragmentCallback,
                           PyObject onLongClickCallback, String linkAlias) {
