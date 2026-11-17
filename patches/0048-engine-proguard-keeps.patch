@@ -1,8 +1,8 @@
 diff --git a/TMessagesProj/proguard-rules.pro b/TMessagesProj/proguard-rules.pro
-index 284b735..e307057 100644
+index 284b735..a582b42 100644
 --- a/TMessagesProj/proguard-rules.pro
 +++ b/TMessagesProj/proguard-rules.pro
-@@ -118,10 +118,48 @@
+@@ -118,10 +118,96 @@
  # cannot start or load plugins.
  -keep class com.chaquo.python.** { *; }
  -dontwarn com.chaquo.python.**
@@ -50,6 +50,54 @@ index 284b735..e307057 100644
 +-keep class org.telegram.messenger.* { *; }
 +-keep class org.telegram.ui.ActionBar.* { *; }
 +-keep class org.telegram.ui.Components.BulletinFactory { *; }
++# AminGram (Fix 11 / v3.0.11): same failure class as Fix 8, one package
++# further out. ZwyLib's ui/navigation.py does
++# `from org.telegram.ui import LaunchActivity, GroupCreateActivity,
++# DialogsActivity` - R8 renamed GroupCreateActivity in v63, so the
++# plugin load died with "cannot import name 'GroupCreateActivity'".
++# The pristine base proguard keeps only ONE org.telegram.ui class by
++# name (Stories.recorder.FfmpegAudioWaveformLoader); Fix 8 added
++# ActionBar.* + BulletinFactory. A fresh enumeration of EVERY
++# `from org.telegram.ui ... import` and jclass("org.telegram.ui...")
++# across the SDK, ZwyLib 3.1.0 and MSL, checked class-by-class
++# against the v63 DEX descriptors, found the classes below missing
++# (descriptor count 0). Targeted keeps, one per class - no
++# package-wide keep, to preserve obfuscation elsewhere. Present in
++# v63 already (no keep needed): LaunchActivity (manifest),
++# AlertDialog/Theme/BottomSheet (ActionBar.* keep), BulletinFactory,
++# UItem, EditTextBoldCursor. The blur3.source names exist only as
++# alias keys in extera_utils/class_aliases.py - the classes do not
++# exist in the 13.2.2 base (verified: no blur3 files in the pristine
++# tree, the overlay, or the patches); the alias rewrites them to
++# org.telegram.utils.glass.source.GlassSource*, which DO exist and
++# are kept below. The blur3 keeps are no-ops today, kept so a future
++# base that gains them still resolves. LayoutHelper was wrongly
++# listed as present in the Fix 11 brief - the v63 DEX has descriptor
++# count 0 for it, so it is kept here too.
++-keep class org.telegram.ui.GroupCreateActivity { *; }
++-keep class org.telegram.ui.DialogsActivity { *; }
++-keep class org.telegram.ui.Cells.CheckBoxCell { *; }
++-keep class org.telegram.ui.Cells.RadioColorCell { *; }
++-keep class org.telegram.ui.Cells.TextCheckCell2 { *; }
++-keep class org.telegram.ui.Components.ItemOptions { *; }
++-keep class org.telegram.ui.Components.BackupImageView { *; }
++-keep class org.telegram.ui.Components.LineProgressView { *; }
++-keep class org.telegram.ui.Components.RLottieDrawable { *; }
++-keep class org.telegram.ui.Components.BulletinFactory$FileType { *; }
++-keep class org.telegram.ui.Components.LayoutHelper { *; }
++-keep class org.telegram.ui.Components.blur3.source.BlurredBackgroundSource { *; }
++-keep class org.telegram.ui.Components.blur3.source.BlurredBackgroundSourceBitmap { *; }
++-keep class org.telegram.ui.Components.blur3.source.BlurredBackgroundSourceColor { *; }
++-keep class org.telegram.ui.Components.blur3.source.BlurredBackgroundSourceRenderNode { *; }
++-keep class org.telegram.ui.Components.blur3.source.BlurredBackgroundSourceWrapped { *; }
++-keep class org.telegram.ui.Gifts.ProfileGiftsContainer$SelectGiftsBottomSheet { *; }
++-keep class org.telegram.ui.Gifts.SelectGiftsBottomSheet { *; }
++-keep class org.telegram.ui.Stars.StarGiftSheet$PageTransition { *; }
++-keep class org.telegram.utils.glass.source.GlassSource { *; }
++-keep class org.telegram.utils.glass.source.GlassSourceBitmap { *; }
++-keep class org.telegram.utils.glass.source.GlassSourceColor { *; }
++-keep class org.telegram.utils.glass.source.GlassSourceRenderNode { *; }
++-keep class org.telegram.utils.glass.source.GlassSourceWrapped { *; }
 +-keep class app.exteraless.plugins.** { *; }
 +-keep class com.exteragram.messenger.** { *; }
  # AminGram (M0): class names plugins and DEX code resolve by string

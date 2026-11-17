@@ -4425,3 +4425,114 @@ ExteraConfig`.
   `com/exteragram/messenger/ExteraConfig` and
   `com/exteragram/messenger/plugins/models/CustomSetting` under their
   real names (v62 DEX has neither).
+
+## Fix 11 — plugin load fails: `ImportError: GroupCreateActivity` — R8 renames `org.telegram.ui.*` classes that Python looks up by name (2026-11-17, uncommitted)
+
+### Symptom (on device, v63)
+
+ZwyLib's `src/ui/navigation.py:14` does
+`from org.telegram.ui import LaunchActivity, GroupCreateActivity, DialogsActivity`
+and the load dies with
+`ImportError: cannot import name 'GroupCreateActivity' from '<java import hook>' (unknown location)`.
+ExteraConfig (Fix 10) is past the load — ZwyLib reached navigation.py.
+
+### Root cause
+
+Same failure class as Fix 8's DispatchQueue, one package further
+out. The pristine base proguard keeps only ONE `org.telegram.ui`
+class by name (`Stories.recorder.FfmpegAudioWaveformLoader`); Fix 8
+added `org.telegram.ui.ActionBar.*` + `Components.BulletinFactory`.
+Every other `org.telegram.ui.*` class gets renamed by R8. Java-side
+references survive renaming; Python string lookups
+(`from org.telegram.ui import ...`, `jclass("org.telegram.ui...")`)
+do not.
+
+### The list (re-enumerated, not taken from the error report)
+
+Every `from org.telegram.ui ... import ...` and
+`jclass("org.telegram.ui...")` plus every other `org.telegram.ui.*`
+string literal was enumerated across the SDK
+(`TMessagesProj/src/main/python`), ZwyLib 3.1.0 and MSL, and each
+candidate was checked against the v63 DEX class descriptors
+(`verify-scratch/fix10/apk63/all.dex.txt`).
+
+Missing in v63 (descriptor count 0) — kept by patch 0048, one
+targeted `-keep class <fqcn> { *; }` per class, no package-wide
+keep:
+
+- `org.telegram.ui.GroupCreateActivity`, `org.telegram.ui.DialogsActivity`
+- `org.telegram.ui.Cells.CheckBoxCell`, `RadioColorCell`, `TextCheckCell2`
+- `org.telegram.ui.Components.ItemOptions`, `BackupImageView`,
+  `LineProgressView`, `RLottieDrawable`, `BulletinFactory$FileType`
+  (nested — the plain BulletinFactory keep does NOT cover it),
+  `LayoutHelper`
+- `org.telegram.ui.Components.blur3.source.BlurredBackgroundSource`
+  (+ `Bitmap`, `Color`, `RenderNode`, `Wrapped`)
+- `org.telegram.ui.Gifts.ProfileGiftsContainer$SelectGiftsBottomSheet`,
+  `org.telegram.ui.Gifts.SelectGiftsBottomSheet`
+- `org.telegram.ui.Stars.StarGiftSheet$PageTransition`
+- `org.telegram.utils.glass.source.GlassSource` (+ `Bitmap`, `Color`,
+  `RenderNode`, `Wrapped`) — found by the re-enumeration, not in the
+  Fix 11 brief: `extera_utils/class_aliases.py` maps the blur3 names
+  to these, so they are the classes actually looked up at runtime.
+
+Present in v63 (descriptor count ≥ 1) — no action: `LaunchActivity`
+(manifest-kept), `EditTextBoldCursor`, `UItem`, `AlertDialog`
+(+ `$Builder`, `$OnButtonClickListener`), `Theme` (+ `$ThemeInfo`),
+`BulletinFactory`, `ActionBar.BottomSheet`.
+
+Corrections to the Fix 11 brief, found by the re-enumeration:
+
+- `LayoutHelper` was listed as present — the v63 DEX has descriptor
+  count 0 for it, so it is kept here too.
+- The five `blur3.source` classes do NOT exist in the 13.2.2 base
+  (verified: no blur3 files in the pristine tarball, the overlay, or
+  any patch; the only references are the alias-table keys in
+  `class_aliases.py`). No keep can make a nonexistent class exist;
+  the alias rewrites blur3 → `GlassSource` before any Java lookup,
+  and the GlassSource classes ARE kept. The blur3 keeps are included
+  anyway as no-ops, so a future base that gains them still resolves.
+- The `androidx.media3` alias targets (`PlaybackException`, `C`) are
+  also descriptor-0 in v63, but nothing in the SDK, ZwyLib or MSL
+  references exoplayer/media3 outside the alias table itself — latent,
+  no keep added.
+
+### Change
+
+Patch `0048` regenerated (incremental diff vs post-0047 tree, never
+hand-edited): 24 effective keeps + 5 blur3 no-op keeps, with a
+comment block recording the enumeration, the present list, and the
+blur3/glass alias note. No other code changes. No proguard change
+beyond 0048.
+
+### Lessons
+
+- **Any Telegram class a plugin/SDK touches by name needs a keep —
+  the enumeration, not the error report, defines the list.** Fix 8's
+  list was incomplete because it only covered the messenger package;
+  each fix round since has peeled one more layer (pip packages,
+  ExteraConfig, now ui classes). Enumerate the whole surface — every
+  `from org.telegram... import` and `jclass("org.telegram...")` in the
+  SDK + the plugin + its library — and check each against the DEX
+  before calling a round complete.
+- **Check the descriptor, not the string.** A class name can appear
+  in the DEX as a method/field string while its class descriptor is
+  gone (Fix 8's AlertDialog/BulletinFactory). Only
+  `Class descriptor : 'L...;'` counts as present.
+- **Alias-table targets are lookups too.** The blur3 → GlassSource
+  rewrite means the GlassSource classes are runtime lookups even
+  though no plugin file names them directly; the alias table itself
+  is part of the enumeration surface.
+
+### Verification (Fix 11 bar, same as Fix 7–10)
+
+- Patch replay: all 51 patches apply clean on a fresh tree from the
+  faithful pristine tarball + overlay, CI method.
+- JDK 17 ParseCheck over the full overlaid tree (Compiler-API
+  ParseCheck, `verify-scratch/fix10/ParseCheck.java`): 2504/2504 OK
+  (no Java files added or removed in this fix).
+- CPython engine-port suite 20/20, secret scan zero, `git diff --check`
+  clean.
+- Artifact proof (CI watch): the new APK's DEX must contain every
+  class from the missing list above under its real name as a class
+  descriptor (v63 DEX has zero for all of them).
