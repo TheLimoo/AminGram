@@ -17,6 +17,7 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import org.telegram.messenger.AndroidUtilities;
+import org.telegram.ui.ActionBar.ActionBar;
 import org.telegram.ui.ActionBar.AlertDialog;
 import org.telegram.ui.ActionBar.BackDrawable;
 import org.telegram.ui.ActionBar.BaseFragment;
@@ -200,7 +201,7 @@ public class AminResourcesActivity extends BaseFragment {
     }
 
     private void tick() {
-        if (!isResumed() || getContext() == null) {
+        if (isPaused() || getContext() == null) {
             return;
         }
         rebuild();

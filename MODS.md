@@ -5251,3 +5251,21 @@ overlaid tree (JS removal intact). Artifact DEX check: the new
 On-device behaviour (live updating, interval switching) can only be
 proven by Amin's phone test — CI green + DEX presence is the proof
 given here.
+
+### Fix-up — first CI run (44233683030) failed to compile (2026-11-18)
+
+The run failed at `compileReleaseJavaWithJavac` with 3 errors, all in
+`AminResourcesActivity.java` — my code, not the feature design:
+
+1. Missing `import org.telegram.ui.ActionBar.ActionBar;` (line 152:
+   `package ActionBar does not exist` on
+   `new ActionBar.ActionBarMenuOnItemClick()`; the `@Override` error
+   at line 153 was downstream of it). Copied the import list from
+   `AminDnsTunnelActivity` but dropped that one line.
+2. `isResumed()` does not exist on Telegram's `BaseFragment`
+   (line 203). The framework guard is `isPaused()` (`BaseFragment.java:716`).
+
+Fixed with the import added and `tick()` guarded by `isPaused()`.
+Lesson: ParseCheck is syntax-only — a missing import or a wrong
+method name passes it and only surfaces in CI. (Same class of miss
+as Fix 16's QRCodeSheet strings, which failed the same way.)
