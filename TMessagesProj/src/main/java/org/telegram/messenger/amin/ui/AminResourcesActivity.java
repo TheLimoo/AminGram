@@ -6,7 +6,6 @@ import android.content.SharedPreferences;
 import android.os.Debug;
 import android.os.Process;
 import android.os.SystemClock;
-import android.system.ErrnoException;
 import android.system.Os;
 import android.system.OsConstants;
 import android.view.View;
@@ -413,7 +412,7 @@ public class AminResourcesActivity extends BaseFragment {
             if (ticks > 0) {
                 return (int) ticks;
             }
-        } catch (ErrnoException | RuntimeException ignored) {
+        } catch (RuntimeException ignored) {
             // fall through to the Linux/Android default
         }
         return 100;

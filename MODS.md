@@ -5269,3 +5269,14 @@ Fixed with the import added and `tick()` guarded by `isPaused()`.
 Lesson: ParseCheck is syntax-only — a missing import or a wrong
 method name passes it and only surfaces in CI. (Same class of miss
 as Fix 16's QRCodeSheet strings, which failed the same way.)
+
+### Fix-up 2 — second CI run (44238756409) failed to compile (2026-11-18)
+
+One error remained: `clockTicksPerSecond()` caught
+`ErrnoException | RuntimeException` around `Os.sysconf()`, but the
+compile SDK's `Os.sysconf` does not declare `ErrnoException`
+(`exception ErrnoException is never thrown in body of corresponding
+try statement`, AminResourcesActivity.java:416). Dropped the
+`ErrnoException` catch and its import; `RuntimeException` alone
+covers the fallback. (Same lesson as fix-up 1: ParseCheck is
+syntax-only; these only surface in CI.)
