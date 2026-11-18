@@ -26,6 +26,7 @@ from typing import Iterator, Optional, Union
 
 import yaml
 
+from .errors import ElyxError
 from .utils import lazy_wrap
 
 _NORMALIZE_PATTERN = re.compile(r"[^0-9A-Za-z]")
@@ -112,13 +113,22 @@ class Asset:
         return self.path.read_bytes()
 
     def content_string(self) -> str:
-        return self.path.read_text(encoding="utf-8")
+        try:
+            return self.path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as e:
+            raise ElyxError(f"asset {self.path_str} is not valid UTF-8 text: {e}")
 
     def content_json(self):
-        return lazy_wrap(json.loads(self.content_bytes().decode("utf-8")))
+        try:
+            return lazy_wrap(json.loads(self.content_bytes().decode("utf-8")))
+        except UnicodeDecodeError as e:
+            raise ElyxError(f"asset {self.path_str} is not valid UTF-8 JSON: {e}")
 
     def content_yaml(self):
-        return lazy_wrap(yaml.safe_load(self.content_bytes().decode("utf-8")))
+        try:
+            return lazy_wrap(yaml.safe_load(self.content_bytes().decode("utf-8")))
+        except UnicodeDecodeError as e:
+            raise ElyxError(f"asset {self.path_str} is not valid UTF-8 YAML: {e}")
 
     def content(self):
         """Parse .json/.yaml/.yml, else UTF-8 text, else raw bytes."""

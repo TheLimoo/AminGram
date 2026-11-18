@@ -157,7 +157,10 @@ def find_metainfo_member(zf: zipfile.ZipFile, refmap: Dict[str, str]) -> str:
 
 def parse_refmap(name: str, data: bytes) -> Dict[str, str]:
     """Parse a refmap file (YAML or JSON by extension) into a str->str mapping."""
-    text = data.decode("utf-8")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise RefmapError(f"cannot parse {name}: not valid UTF-8: {e}")
     try:
         if name.endswith(".json"):
             parsed = json.loads(text)

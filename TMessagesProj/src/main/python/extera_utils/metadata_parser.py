@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sys
+import zipfile
 from typing import Any, Dict, Optional
 
 
@@ -113,13 +114,37 @@ def top_level_import_roots(nodes):
                     yield from top_level_import_roots(block)
 
 
+def _reject_archive(path: str) -> None:
+    """Fail fast on files that can never be a plain-text plugin.
+
+    A ZIP archive (e.g. a website project a user mistook for a plugin)
+    is not UTF-8 Python source: without this guard the strict UTF-8 read
+    below dies with a raw UnicodeDecodeError on a ZIP-header byte
+    (reported 2026-11-18: byte 0xc7 at offset 10 of a Next.js .zip).
+    Only .elyx/.eaf archives go through the archive path; anything else
+    that is a ZIP is a user mistake, not a plugin.
+    """
+    if zipfile.is_zipfile(path):
+        raise PluginMetadataError(
+            f"plugin file {os.path.basename(path)!r} is a ZIP archive, not a plugin — "
+            "only .elyx archives (or plain .plugin/.py text) can be installed"
+        )
+
+
 def import_roots(path: str):
+    _reject_archive(path)
     key = _file_key(path)
     cached = _roots_cache.get(path)
     if key is not None and cached is not None and cached[0] == key:
         return list(cached[1])
-    with open(path, encoding="utf-8") as source:
-        tree = ast.parse(source.read(), filename=path)
+    try:
+        with open(path, encoding="utf-8") as source:
+            tree = ast.parse(source.read(), filename=path)
+    except UnicodeDecodeError as e:
+        raise PluginMetadataError(
+            f"plugin file {os.path.basename(path)!r} is not valid UTF-8 text: {e} — "
+            "only plain .plugin/.py text (or .elyx archives) can be installed"
+        )
     roots = list(dict.fromkeys(top_level_import_roots(tree.body)))
     if key is not None:
         _roots_cache[path] = (key, tuple(roots))
@@ -130,8 +155,16 @@ def _extract_constants(path: str) -> Dict[str, Any]:
     """Pull top-level literal assignments out of a plugin source without running it."""
     key = _file_key(path)
     try:
+        _reject_archive(path)
         with open(path, "r", encoding="utf-8") as handle:
             source = handle.read()
+    except PluginMetadataError:
+        raise
+    except UnicodeDecodeError as e:
+        raise PluginMetadataError(
+            f"plugin file {os.path.basename(path)!r} is not valid UTF-8 text: {e} — "
+            "only plain .plugin/.py text (or .elyx archives) can be installed"
+        )
     except OSError as e:
         raise PluginMetadataError(f"cannot read plugin file {path!r}: {e}")
 

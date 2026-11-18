@@ -5280,3 +5280,70 @@ try statement`, AminResourcesActivity.java:416). Dropped the
 `ErrnoException` catch and its import; `RuntimeException` alone
 covers the fallback. (Same lesson as fix-up 1: ParseCheck is
 syntax-only; these only surface in CI.)
+
+## Fix 17 — importing a non-plugin file crashes with a raw UnicodeDecodeError (2026-11-18, v3.0.19)
+
+### Symptom
+
+Amin imported `liquid-glass-ui_12_1b9a.zip` — a Next.js website project
+(React/TypeScript liquid-glass demo), NOT a plugin — and the import
+crashed with a raw
+`UnicodeDecodeError: 'utf-8' codec can't decode byte 0xc7 in position 10:
+invalid continuation byte` (2026-11-18 ~12:35 Tehran).
+
+### Root cause (verified byte-for-byte)
+
+The file is a ZIP (`PK\x03\x04` magic); raw byte[10] is 0xc7 (the DOS
+mod-time byte in the ZIP local header), and whole-file UTF-8 decode
+fails with the exact same error. All 42 ZIP members are valid UTF-8,
+so the crash is the engine reading the raw archive bytes as text.
+The plain-plugin route in `load_plugin()` (`plugin_loader.py:2832`)
+dispatches only `.elyx`/`.eaf` to the archive path; ANY other
+extension (`.zip`, binary, wrong-encoding text) goes to
+`read_metadata()` → `_extract_constants()` (`metadata_parser.py:133`,
+`open(path, "r", encoding="utf-8")`, catches OSError only) and
+`import_roots()` (`metadata_parser.py:121`, no error handling). Both
+strict-decode the file and let UnicodeDecodeError escape raw to the
+user instead of a clean PluginMetadataError.
+
+### Fix (Python-only, no Java, no new deps)
+
+- `extera_utils/metadata_parser.py`: new `_reject_archive()` guard —
+  `zipfile.is_zipfile(path)` raises PluginMetadataError ("is a ZIP
+  archive, not a plugin — only .elyx archives (or plain .plugin/.py
+  text) can be installed"), called at the top of both `_extract_constants`
+  and `import_roots`. Both read sites now also catch UnicodeDecodeError
+  and raise PluginMetadataError ("is not valid UTF-8 text") — so a
+  Latin-1 `.plugin` fails cleanly too. `read_metadata_json()` already
+  mapped PluginMetadataError to `{"ok": false, ...}` and `load_plugin()`
+  already wrapped `read_metadata()` in `_error_json`, so the message
+  now reaches the user instead of a traceback.
+- Same one-line hardening on the other strict decodes on the load
+  path, so a real plugin with one bad member fails cleanly instead of
+  a raw traceback: `elyx_runtime/archive.py:160` (`parse_refmap` →
+  RefmapError), `elyx_runtime/namespace.py:264,266`
+  (`_DataModuleLoader.exec_module` → ElyxError; new
+  `from .errors import ElyxError`),
+  `elyx_runtime/assets.py:118,121` (`content_json`/`content_yaml` →
+  ElyxError; also `content_string`, same class of bug) — new
+  `from .errors import ElyxError`. `assets.py:132` (`content()`) was
+  already guarded (returns raw bytes on decode failure) — left as is.
+  `metadata.py:77` already wraps into MetainfoError — left as is.
+  `capability_scan.py` already uses errors="replace" — left as is.
+- No behaviour change for valid plugins: the guards only fire on
+  files that could never parse as UTF-8 Python source.
+
+### Regression test
+
+`verify-scratch/engine-port/test_engine_port.py` §6 (13 new checks;
+suite now 33/33): fixture is a COPY of Amin's uploaded zip at
+`verify-scratch/engine-port/fixtures/liquid-glass-ui_12_1b9a.zip`
+(the original stays in `~/workspace/user/files/`), plus a Latin-1
+`.plugin` written to a temp dir. Asserts: the fixture reproduces the
+reported crash bytes (PK magic, byte[10] == 0xc7, whole-file UTF-8
+decode fails at position 10); `read_metadata`/`import_roots` on the
+zip raise PluginMetadataError (never UnicodeDecodeError) and
+`read_metadata_json` returns ok:false; same for the Latin-1 file;
+`parse_refmap` → RefmapError, `Asset.content_json`/`content_string`
+and `_DataModuleLoader.exec_module` → ElyxError on non-UTF-8 bytes;
+the real MSL `.plugin` still reads fine.

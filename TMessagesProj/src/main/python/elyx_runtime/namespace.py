@@ -37,6 +37,7 @@ from typing import Dict, List, Optional
 
 import yaml
 
+from .errors import ElyxError
 from .utils import lazy_wrap
 
 NAMESPACE_ROOT = "ElyxPlugins"
@@ -260,10 +261,13 @@ class _DataModuleLoader(importlib.abc.Loader):
     def exec_module(self, module):
         with open(self._path, "rb") as handle:
             raw = handle.read()
-        if self._ext == ".txt":
-            module.content = raw.decode("utf-8")
-            return
-        text = raw.decode("utf-8")
+        try:
+            if self._ext == ".txt":
+                module.content = raw.decode("utf-8")
+                return
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as e:
+            raise ElyxError(f"data file {self._path} is not valid UTF-8: {e}")
         data = json.loads(text) if self._ext == ".json" else yaml.safe_load(text)
         module.content = lazy_wrap(data)
         if isinstance(data, dict):
