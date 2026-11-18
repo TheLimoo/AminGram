@@ -1,0 +1,30 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java
+index cdc4252..9d7722b 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java
+@@ -125,6 +125,7 @@ import org.telegram.ui.Components.ShareAlert;
+ import org.telegram.ui.Components.SizeNotifierFrameLayout;
+ import org.telegram.ui.Components.TextHelper;
+ import org.telegram.messenger.amin.ui.AminPluginsActivity;
++import org.telegram.messenger.amin.ui.AminResourcesActivity;
+ import org.telegram.ui.Components.UItem;
+ import org.telegram.ui.Components.UniversalAdapter;
+ import org.telegram.ui.Components.UniversalRecyclerView;
+@@ -807,6 +808,7 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
+         items.add(SettingCell.Factory.of(10, IconBackgroundColors.PURPLE.top, IconBackgroundColors.PURPLE.bottom, R.drawable.settings_language, getString(R.string.SettingsLanguage), LocaleController.getCurrentLanguageName()));
+         items.add(UItem.asHeader("AminGram"));
+         items.add(SettingCell.Factory.of(90, IconBackgroundColors.PURPLE.top, IconBackgroundColors.PURPLE.bottom, R.drawable.settings_features, "Plugins", "AminGram feature modules"));
++        items.add(SettingCell.Factory.of(91, IconBackgroundColors.BLUE_ALT.top, IconBackgroundColors.BLUE_ALT.bottom, R.drawable.settings_data, "Resource Usage", "RAM, CPU and uptime"));
+ 
+         items.add(UItem.asShadow(null));
+         if (!walletAbove && getMessagesController().config.walletAvailable.get()) {
+@@ -923,6 +925,9 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
+             case 90:
+                 presentSettingFragment(new AminPluginsActivity());
+                 break;
++            case 91:
++                presentSettingFragment(new AminResourcesActivity());
++                break;
+             case 1:
+                 presentSettingFragment(new UserInfoActivity());
+                 break;

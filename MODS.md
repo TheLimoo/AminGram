@@ -5149,3 +5149,90 @@ overlaid tree (JS removal intact). Artifact DEX check: both
 `app.exteraless.components.ActionRow` and
 `com.exteragram.messenger.components.ActionRow` present (plus the
 other three ported classes + facades); earlier fixes still hold.
+
+## Resources tab — live RAM / CPU / uptime screen in Settings (2026-11-18, v3.0.18)
+
+Amin ordered a resource-usage tab: Settings row, Telegram-style UI,
+refresh every 5 seconds by default and adjustable.
+
+### Placement
+
+- Patch `0059-resources-settings-row.patch`: one new row under the
+  existing "AminGram" header in `SettingsActivity` — id 91,
+  `SettingCell.Factory.of(91, BLUE_ALT, settings_data, "Resource Usage",
+  "RAM, CPU and uptime")`, next to the Plugins row (id 90). Click
+  opens `AminResourcesActivity` via the same `presentSettingFragment`
+  call patch 0001 uses. Row id 91 was free (no other patch or amin
+  code uses it).
+- New overlay file
+  `TMessagesProj/src/main/java/org/telegram/messenger/amin/ui/AminResourcesActivity.java`
+  (modelled on `AminDnsTunnelActivity`: `BaseFragment` +
+  `RecyclerListView` + `SelectionAdapter`).
+
+### UI (Telegram-native, no custom skin)
+
+`HeaderCell` section headers, `TextDetailSettingsCell` value rows,
+`TextSettingsCell` for the interval row, `TextInfoPrivacyCell` for
+explanations, `ShadowSectionCell` dividers, `Theme` colors — the same
+visual language as the rest of Settings (unlike the Hub, which has
+its own skin).
+
+Sections and rows:
+
+| Section | Row | Value |
+|---|---|---|
+| RAM | App RAM (PSS) | e.g. `412.3 MB` |
+| RAM | Java heap | `182.4 MB of 512.0 MB` (used / max) |
+| RAM | Native heap | e.g. `96.1 MB` |
+| RAM | Device RAM | `5.1 GB free of 7.7 GB` |
+| CPU | CPU (app) | e.g. `12.4%` (`Measuring…` on the first tick) |
+| CPU | Threads | e.g. `87` |
+| Uptime | App uptime | e.g. `2h 14m 33s` |
+| Uptime | Device uptime | e.g. `1d 3h 22m` |
+| Refresh | Refresh interval | `5 seconds` (tap to change) |
+
+### Refresh interval (adjustable, default 5 s)
+
+Single-choice list on the same screen via the `AlertDialog.Builder`
+`.setItems` picker (the same pattern `AminDnsTunnelActivity`
+uses — Telegram's `AlertDialog.Builder` has no
+`setSingleChoiceItems`; the current choice is prefixed with `✓`):
+**1 s / 5 s / 10 s / 30 s / Paused**. Stored in SharedPreferences
+file `amingram_resources`, key `resources_refresh_interval`
+(default 5; 0 = Paused). The timer is `AndroidUtilities.runOnUIThread`
+started in `onResume` and stopped in `onPause`/`onFragmentDestroy`,
+so nothing runs and no battery is spent once the screen is closed.
+
+### Data sources (stock Android APIs only — no new deps, no new permissions)
+
+- App PSS: `ActivityManager.getProcessMemoryInfo(new int[]{Process.myPid()})`
+  (`getTotalPss()`, KB → bytes).
+- Java heap: `Runtime.getRuntime()` — used = `totalMemory() - freeMemory()`,
+  max = `maxMemory()`.
+- Native heap: `Debug.getNativeHeapAllocatedSize()`.
+- Device RAM: `ActivityManager.getMemoryInfo()` (`totalMem` / `availMem`).
+- CPU %: sampled from `/proc/self/stat` utime+stime deltas over the
+  refresh interval, ticks/second from `Os.sysconf(_SC_CLK_TCK)`
+  (fallback 100). **Definition: (process CPU time / wall-clock time)
+  × 100, i.e. 100% = one CPU core fully used; multi-threaded work
+  can exceed 100%.** Stated on the screen itself, next to the value.
+- Threads: `/proc/self/status` `Threads:` line, `Thread.activeCount()`
+  fallback.
+- App uptime: `SystemClock.elapsedRealtime() - Process.getStartElapsedRealtime()`
+  (API 24+; minSdk is 24, so no guard needed). Device uptime:
+  `SystemClock.elapsedRealtime()`.
+- Formatting: bytes as MB (GB ≥ 1 GB) with one decimal, CPU % with
+  one decimal, durations as `42s` / `5m 12s` / `2h 14m 33s` /
+  `1d 3h 22m`.
+
+### Verification
+
+Patch replay clean on a fresh tree from the faithful pristine
+tarball + overlay; JDK 17 ParseCheck clean; CPython engine-port
+suite 20/20; secret scan zero; `git diff --check` clean; zero
+`org.mozilla.javascript` / `amingram_plugins` references in the
+overlaid tree (JS removal intact). Artifact DEX check: the new
+`AminResourcesActivity` class present; earlier fixes still hold.
+On-device behaviour (live updating, interval switching) can only be
+proven by Amin's phone test — CI green + DEX presence is the proof
+given here.
