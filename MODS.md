@@ -5119,7 +5119,6 @@ CodeHighlighting facade and Fix 10's CustomSetting facade).
 | --- | --- | --- |
 | `app/exteraless/components/ActionRow.java` | 167 | stock only (AndroidUtilities, Theme, CubicBezierInterpolator, LayoutHelper, ScaleStateListAnimator) |
 | `app/exteraless/components/ProfileMusicCard.java` | 338 | stock + `AppearanceConfig.sectionRadius()` (stub has it); drawables `nocover_big` etc. all stock |
-| `app/exteraless/components/QRCodeSheet.java` | 326 | stock only (`TelegramQRCodeWriter` exists in 13.2.2) |
 | `app/exteraless/components/VerticalImageSpan.java` | 78 | stock only |
 
 Each ported class got a matching facade at
@@ -5130,6 +5129,21 @@ closes a latent gap: the alias table already rewrote NowPlayingCard
 → ProfileMusicCard, but the class itself had never been ported, so
 the rewrite pointed at nothing.
 
+**Follow-up (first Fix 16 CI run 44227361378 failed):** `QRCodeSheet`
+was ported in the first attempt but the build failed with 11
+`cannot find symbol` errors — it references 10 string resources
+(`QrWifiOpenSettings`, `QrWifiCopyPassword`, `QrWifiPasswordCopied`,
+`QrLoginConfirm`, `QrLoginHint`, `QrTitleLink`, `QrTitleWifi`,
+`QrTitleLogin`, `QrTitleText`, `QrWifiUnknownNetwork`) that do NOT
+exist in 13.2.2's `R.string`; they are exteraless-added resources
+(defined in upstream's `strings_oe.xml`). The pre-emptive
+"stock only" check had only verified the drawables and listed the
+strings without checking each one exists in the base — that check
+must be per-resource, not per-file. `QRCodeSheet` (real + facade)
+was dropped in the follow-up commit; adding the 10 strings to our
+own resources was judged not worth it for a pre-emptive port (the
+requesting plugin does not use it).
+
 ### Left out (known gaps — dep tree not chased)
 
 | File | Missing dep(s) |
@@ -5138,6 +5152,7 @@ the rewrite pointed at nothing.
 | `MessageDetailsPopupWrapper.java` | `app.exteraless.chats.UserLookup`, `app.exteraless.utils.MediaUtils`, `tw.nekomimi.nekogram.DatacenterActivity` (only `MessageHelper` of its exteraless/Neko deps exists here) |
 | `ReceiveContentEditText.java` | `app.exteraless.math.InlineMathController` (math package never ported) |
 | `TranslateBeforeSendWrapper.java` | `tw.nekomimi.nekogram.NekoConfig`, `tw.nekomimi.nekogram.translate.Translator`, `TranslatorKt` (NekoConfig deliberately never ported — see Fix 10) |
+| `QRCodeSheet.java` | 10 exteraless-added string resources (`QrWifi*`, `QrTitle*`, `QrLogin*`) absent from 13.2.2 `R.string` (first CI run failed on them) |
 
 ### Verification
 
