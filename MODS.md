@@ -5082,3 +5082,70 @@ one does, it gets its own round.
 - A plugin's embedded DEX still resolves its own stdlib references
   through the app loader — but with no shrinking, those classes are
   now present, so Fix 14's gap class is closed too.
+
+## Fix 16 — plugin load fails: `ImportError: ActionRow` — the `components` package was never ported (2026-11-18, v3.0.17)
+
+### Symptom
+
+`ios_like_selection.py:24: from com.exteragram.messenger.components import ActionRow`
+fails with `ImportError: cannot import name 'ActionRow' from
+'com.exteragram.messenger.components' (unknown location)` on v69
+(Amin 2026-11-18 ~06:25 Tehran; v69 otherwise works for more plugins).
+
+### Root cause
+
+Our repo had NO `com.exteragram.messenger.components` package and NO
+`app.exteraless.components` package at all (`app/exteraless/` held only
+appearance, chats, debug, plugins, utils) — the whole components
+package was never ported in v3.0.0. Upstream exteraless HAS the real
+class at `app/exteraless/components/ActionRow.java` (167 lines,
+`public class ActionRow extends FrameLayout`, nested
+`public static class ActionItem`, deps all stock: AndroidUtilities,
+Theme, CubicBezierInterpolator, LayoutHelper, ScaleStateListAnimator);
+upstream has no `com.exteragram.messenger.components` package either
+— the plugin's path is a facade path. The SDK alias table already has
+the prefix rewrite `("com.exteragram.messenger.components.",
+"app.exteraless.components.")` (`class_aliases.py:149`), so the
+`jclass` / `find_class` paths resolve — but Fix 15 proved
+`_sandboxed_import` (`plugin_loader.py:1237`) contains zero `resolve()`
+calls, so a `from ... import ...` goes straight to Chaquopy's java
+import hook and the alias does NOT fix it. The load-bearing fix is a
+real Java class at the imported path (same lesson as Fix 15's
+CodeHighlighting facade and Fix 10's CustomSetting facade).
+
+### What was ported (verbatim from upstream, all self-contained)
+
+| File | Lines | Deps check |
+| --- | --- | --- |
+| `app/exteraless/components/ActionRow.java` | 167 | stock only (AndroidUtilities, Theme, CubicBezierInterpolator, LayoutHelper, ScaleStateListAnimator) |
+| `app/exteraless/components/ProfileMusicCard.java` | 338 | stock + `AppearanceConfig.sectionRadius()` (stub has it); drawables `nocover_big` etc. all stock |
+| `app/exteraless/components/QRCodeSheet.java` | 326 | stock only (`TelegramQRCodeWriter` exists in 13.2.2) |
+| `app/exteraless/components/VerticalImageSpan.java` | 78 | stock only |
+
+Each ported class got a matching facade at
+`com/exteragram.messenger.components.<Name>` (new overlay files,
+thin `extends` subclass mirroring the real class's constructor —
+Java does not inherit constructors). Porting ProfileMusicCard also
+closes a latent gap: the alias table already rewrote NowPlayingCard
+→ ProfileMusicCard, but the class itself had never been ported, so
+the rewrite pointed at nothing.
+
+### Left out (known gaps — dep tree not chased)
+
+| File | Missing dep(s) |
+| --- | --- |
+| `ChatActivityEnterViewStaticIconView.java` | `app.exteraless.icons.BaseIconPacks`, `app.exteraless.icons.IconPackManager` (icons package never ported) |
+| `MessageDetailsPopupWrapper.java` | `app.exteraless.chats.UserLookup`, `app.exteraless.utils.MediaUtils`, `tw.nekomimi.nekogram.DatacenterActivity` (only `MessageHelper` of its exteraless/Neko deps exists here) |
+| `ReceiveContentEditText.java` | `app.exteraless.math.InlineMathController` (math package never ported) |
+| `TranslateBeforeSendWrapper.java` | `tw.nekomimi.nekogram.NekoConfig`, `tw.nekomimi.nekogram.translate.Translator`, `TranslatorKt` (NekoConfig deliberately never ported — see Fix 10) |
+
+### Verification
+
+Patch replay clean on a fresh tree from the faithful pristine
+tarball + overlay; JDK 17 ParseCheck clean; CPython engine-port
+suite 20/20; secret scan zero; `git diff --check` clean; zero
+`org.mozilla.javascript` / `amingram_plugins` references in the
+overlaid tree (JS removal intact). Artifact DEX check: both
+`app.exteraless.components.ActionRow` and
+`com.exteragram.messenger.components.ActionRow` present (plus the
+other three ported classes + facades); earlier fixes still hold.
