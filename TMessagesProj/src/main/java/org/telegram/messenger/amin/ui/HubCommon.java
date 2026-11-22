@@ -46,10 +46,6 @@ import org.telegram.messenger.amin.core.MessagePipeline;
 import org.telegram.messenger.amin.core.SendWhenOnlineStore;
 import org.telegram.messenger.amin.core.VaultStore;
 import org.telegram.messenger.amin.core.WallpaperLibraryStore;
-import org.telegram.messenger.amin.dns.AminDnsController;
-import org.telegram.messenger.amin.dns.DnsProfile;
-import org.telegram.messenger.amin.dns.DnsProfiles;
-import org.telegram.messenger.amin.google.GoogleAuthManager;
 import org.telegram.messenger.amin.AminHooks;
 import org.telegram.messenger.amin.modules.AyuForwardModule;
 import org.telegram.messenger.amin.modules.FolderChatQolModule;
@@ -259,9 +255,7 @@ public final class HubCommon {
                     "Wallpaper · icon · font · saver", "4 MODULES · 3 GROUPS · ALL ON-DEVICE"),
             new Category("tools", "04", "Tools & Automation",
                     "Premium · filters · gestures · speed · QoL", "9 MODULES · 1 GROUP · ALL ON-DEVICE"),
-            new Category("network", "05", "Network & Accounts",
-                    "DNS profiles · Google account", "2 SERVICES · 1 GROUP · ALL ON-DEVICE"),
-            new Category("system", "06", "System & Data",
+            new Category("system", "05", "System & Data",
                     "Backup · restore · developer", "3 ACTIONS · 1 GROUP · ALL ON-DEVICE"),
     };
 
@@ -277,7 +271,7 @@ public final class HubCommon {
     /** Old ModModule sections are gone from the UI; membership is by
      *  module id into the v2 taxonomy. Returns {categoryId, group} —
      *  group: privacy 0=Ghost 1=Records 2=Locked; appearance
-     *  0=Appearance 1=Chat list 2=Media; tools/network n/a (-1). */
+     *  0=Appearance 1=Chat list 2=Media; tools n/a (-1). */
     private static String moduleCategory(String moduleId) {
         switch (moduleId) {
             case "ghost_mode":
@@ -343,8 +337,6 @@ public final class HubCommon {
     private String searchQuery = "";
     private List<SearchEntry> searchIndex;
     private boolean buildingSearchIndex;
-    private String cachedDnsProfile = "NONE";
-
     // Search-arrival highlight (page mode).
     private String highlightKey;
     private String flashingKey;
@@ -407,7 +399,6 @@ public final class HubCommon {
         }
         rows.clear();
         blockCounter = 0;
-        refreshCachedDnsProfile(context);
         if (mode == MODE_HOME) {
             buildHomeRows(context);
         } else {
@@ -426,19 +417,6 @@ public final class HubCommon {
      *  else stays uncarded. (The pre-v3 machinery inferred groups
      *  from row kinds and section boundaries; the runs it produced
      *  are the same shape, now explicit.) */
-    private void refreshCachedDnsProfile(Context context) {
-        String profile = "NONE";
-        try {
-            DnsProfile activeProfile = DnsProfiles.activeProfile(context);
-            if (activeProfile != null && activeProfile.name != null
-                    && !activeProfile.name.isEmpty()) {
-                profile = activeProfile.name.toUpperCase(Locale.US);
-            }
-        } catch (Throwable ignored) {
-        }
-        cachedDnsProfile = profile;
-    }
-
     private void assignSegments() {
         for (Row row : rows) {
             row.seg = SEG_NONE;
@@ -527,10 +505,6 @@ public final class HubCommon {
         ghost.block = quickBlock;
         ghost.quickId = "ghost";
         ghost.title = "Ghost Mode";
-        Row dns = addRow(KIND_QUICK);
-        dns.block = quickBlock;
-        dns.quickId = "dns";
-        dns.title = "DNS Tunnel";
 
         labelRow("INDEX // CATEGORIES");
         int categoryBlock = nextBlock();
@@ -566,27 +540,6 @@ public final class HubCommon {
                 return "06";
             case "tools":
                 return "09";
-            case "network": {
-                String state = "OFF";
-                try {
-                    switch (AminDnsController.get(context).state()) {
-                        case CONNECTED:
-                            state = "ON";
-                            break;
-                        case STARTING:
-                            state = "…";
-                            break;
-                        case ERROR:
-                            state = "ERROR";
-                            break;
-                        default:
-                            state = "OFF";
-                            break;
-                    }
-                } catch (Throwable ignored) {
-                }
-                return "DNS " + state;
-            }
             case "system":
                 return "03";
             default:
@@ -618,9 +571,6 @@ public final class HubCommon {
                 break;
             case "tools":
                 buildGroupedModulesPage(context, "tools", null);
-                break;
-            case "network":
-                buildNetworkPage(context);
                 break;
             case "system":
                 buildSystemPage(context);
@@ -670,34 +620,6 @@ public final class HubCommon {
                 actionRow(block, "app_font", "App font", AminFonts.familyTitle());
             }
         }
-    }
-
-    private void buildNetworkPage(Context context) {
-        int block = nextBlock();
-        String googleValue = "Not connected";
-        try {
-            if (GoogleAuthManager.isSignedIn(context)) {
-                String email = GoogleAuthManager.connectedEmail(context);
-                googleValue = email != null ? email : "Connected";
-            }
-        } catch (Throwable ignored) {
-        }
-        actionRow(block, "google_account", "Google Account", googleValue);
-        // DNS Tunnel: quick toggle on the ACTIVE profile (the full
-        // profiles page lives behind the second row and in Telegram's
-        // Proxy settings).
-        String dnsValue = "Off";
-        String dnsProfileName = "";
-        try {
-            dnsValue = AminDnsController.proxyRowValue(context);
-            DnsProfile dnsActive = DnsProfiles.activeProfile(context);
-            if (dnsActive != null) {
-                dnsProfileName = dnsActive.name;
-            }
-        } catch (Throwable ignored) {
-        }
-        actionRow(block, "dns_toggle", "DNS Tunnel", dnsValue);
-        actionRow(block, "dns_open", "DNS Tunnel profiles", dnsProfileName);
     }
 
     private void buildSystemPage(Context context) {
@@ -1153,8 +1075,8 @@ public final class HubCommon {
     }
 
     /** Quick-access pins run the very same operations as their
-     *  in-page rows (engine toggle, Ghost Mode module toggle, DNS
-     *  toggle) — no parallel implementations. */
+     *  in-page rows (engine toggle, Ghost Mode module toggle)
+     *  — no parallel implementations. */
     private void onQuickClick(Context context, Row row) {
         switch (row.quickId) {
             case "ghost": {
@@ -1168,10 +1090,6 @@ public final class HubCommon {
                 rebuild();
                 break;
             }
-            case "dns":
-                AminDnsController.get(context).toggle(context);
-                rebuild();
-                break;
             default:
                 break;
         }
@@ -1268,16 +1186,6 @@ public final class HubCommon {
                 break;
             case "manage_hidden_chats":
                 host.present(new AminHiddenChatsActivity());
-                break;
-            case "google_account":
-                host.present(new AminGoogleActivity());
-                break;
-            case "dns_toggle":
-                AminDnsController.get(context).toggle(context);
-                rebuild();
-                break;
-            case "dns_open":
-                host.present(new AminDnsTunnelActivity());
                 break;
             case "swo_new":
                 host.present(new AminDialogPickerActivity("Send when online — pick a person", true,
@@ -1952,6 +1860,14 @@ public final class HubCommon {
             wordParams.leftMargin = AndroidUtilities.dp(13);
             top.addView(wordView, wordParams);
 
+            TextView creditView = hubText(context, 9, HubSkin.GRAY, HubSkin.mono(context));
+            creditView.setText("MADE BY AMIN");
+            creditView.setLetterSpacing(0.14f);
+            LinearLayout.LayoutParams creditParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            creditParams.topMargin = AndroidUtilities.dp(11);
+            addView(creditView, creditParams);
+
             TextView kickerView = hubText(context, 9, HubSkin.GRAY, HubSkin.mono(context));
             kickerView.setText("PLUGINS & MODULES · THE FULL INDEX");
             kickerView.setLetterSpacing(0.14f);
@@ -1975,12 +1891,12 @@ public final class HubCommon {
         }
     }
 
-    /** 2×2 live stat grid — read at bind time from the same stores
+    /** 3-cell live stat grid — read at bind time from the same stores
      *  the rows use; no polling, no timers. */
     private static class StatsView extends LinearLayout {
-        private final TextView[] values = new TextView[4];
-        private final TextView[] labels = new TextView[4];
-        private final TextView[] subs = new TextView[4];
+        private final TextView[] values = new TextView[3];
+        private final TextView[] labels = new TextView[3];
+        private final TextView[] subs = new TextView[3];
 
         StatsView(Context context) {
             super(context);
@@ -1994,13 +1910,18 @@ public final class HubCommon {
                         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
                 for (int c = 0; c < 2; c++) {
                     int i = r * 2 + c;
+                    if (i >= 3) {
+                        break;
+                    }
+                    // Cell 2 (APP FONT) spans the whole second row.
+                    float weight = (i == 2) ? 2f : 1f;
                     LinearLayout cell = new LinearLayout(context);
                     cell.setOrientation(VERTICAL);
                     cell.setBackground(HubSkin.blockDrawable(SEG_ONLY, HubSkin.SURFACE));
                     cell.setPadding(AndroidUtilities.dp(13), AndroidUtilities.dp(11),
                             AndroidUtilities.dp(13), AndroidUtilities.dp(11));
                     rowLayout.addView(cell, new LinearLayout.LayoutParams(
-                            0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                            0, ViewGroup.LayoutParams.WRAP_CONTENT, weight));
                     // Mockup cell: mono label on top, then the
                     // Fraunces value with the mono sub on its
                     // baseline.
@@ -2042,7 +1963,7 @@ public final class HubCommon {
             return n < 10 ? "0" + n : String.valueOf(n);
         }
 
-        void bind(Context context, String profile) {
+        void bind(Context context) {
             int total = 0;
             int active = 0;
             boolean engineOn = false;
@@ -2065,28 +1986,6 @@ public final class HubCommon {
             setCell(0, pad2(total), "PLUGINS",
                     active + " ACTIVE" + (engineOn ? "" : " · ENGINE OFF"));
 
-            String dnsValue = "OFF";
-            boolean dnsOn = false;
-            try {
-                switch (AminDnsController.get(context).state()) {
-                    case CONNECTED:
-                        dnsValue = "ON";
-                        dnsOn = true;
-                        break;
-                    case STARTING:
-                        dnsValue = "STARTING";
-                        break;
-                    case ERROR:
-                        dnsValue = "ERROR";
-                        break;
-                    default:
-                        break;
-                }
-            } catch (Throwable ignored) {
-            }
-            setCell(1, dnsValue, "DNS TUNNEL", "PROFILE · " + profile);
-            subs[1].setTextColor(dnsOn ? HubSkin.ACCENT_LIGHT : HubSkin.FAINT);
-
             List<ModModule> modules = PluginRegistry.modules();
             int enabled = 0;
             for (ModModule module : modules) {
@@ -2094,7 +1993,7 @@ public final class HubCommon {
                     enabled++;
                 }
             }
-            setCell(2, enabled + "/" + modules.size(), "MODULES", "ENABLED");
+            setCell(1, enabled + "/" + modules.size(), "MODULES", "ENABLED");
 
             String fontSub = "CUSTOM FACE";
             try {
@@ -2103,7 +2002,7 @@ public final class HubCommon {
                 }
             } catch (Throwable ignored) {
             }
-            setCell(3, AminFonts.familyTitle().toUpperCase(Locale.US), "APP FONT", fontSub);
+            setCell(2, AminFonts.familyTitle().toUpperCase(Locale.US), "APP FONT", fontSub);
         }
     }
 
@@ -2712,8 +2611,8 @@ public final class HubCommon {
                 } catch (Throwable ignored) {
                 }
                 line = (version == null || version.isEmpty())
-                        ? "AMINGRAM · HUB DOSSIER V3"
-                        : "AMINGRAM · VERSION " + version + " · HUB DOSSIER V3";
+                        ? "AMINGRAM · HUB DOSSIER V3 · MADE BY AMIN"
+                        : "AMINGRAM · VERSION " + version + " · HUB DOSSIER V3 · MADE BY AMIN";
                 cachedVersionLine = line;
             }
             versionView.setText(line);
@@ -2870,7 +2769,7 @@ public final class HubCommon {
                 case KIND_MASTHEAD:
                     break;
                 case KIND_STATS:
-                    ((StatsView) holder.itemView).bind(context, cachedDnsProfile);
+                    ((StatsView) holder.itemView).bind(context);
                     break;
                 case KIND_SEARCH:
                     lp.leftMargin = AndroidUtilities.dp(24);
@@ -2895,28 +2794,6 @@ public final class HubCommon {
                     if ("ghost".equals(row.quickId)) {
                         boolean on = PluginRegistry.isEnabledById(context, "ghost_mode");
                         toggle.bind(row.title, on, on ? "ON" : "OFF", row.seg);
-                    } else {
-                        String stateText = "OFF";
-                        boolean on = false;
-                        try {
-                            switch (AminDnsController.get(context).state()) {
-                                case CONNECTED:
-                                    stateText = "ON";
-                                    on = true;
-                                    break;
-                                case STARTING:
-                                    stateText = "…";
-                                    on = true;
-                                    break;
-                                case ERROR:
-                                    stateText = "ERR";
-                                    break;
-                                default:
-                                    break;
-                            }
-                        } catch (Throwable ignored) {
-                        }
-                        toggle.bind(row.title, on, stateText, row.seg);
                     }
                     break;
                 }

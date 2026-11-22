@@ -488,8 +488,7 @@ public class AminHistoryDetailActivity extends BaseFragment {
 
     // ------------------------------------------------------------------
     // Presentation helpers (the hub's extera language, kept local so
-    // this page stands on its own — same pattern as the Google and
-    // Hidden Chats pages)
+    // this page stands on its own — same pattern as the Hidden Chats page)
     // ------------------------------------------------------------------
 
     private static GradientDrawable segmentDrawable(int seg, int fillColor) {

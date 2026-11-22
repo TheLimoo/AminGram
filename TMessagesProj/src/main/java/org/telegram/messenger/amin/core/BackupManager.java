@@ -5,7 +5,6 @@ import android.content.SharedPreferences;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
-import org.telegram.messenger.amin.dns.DnsProfiles;
 import org.telegram.messenger.amin.modules.LocalPremiumModule;
 import org.telegram.messenger.amin.modules.MessageFiltersModule;
 import org.telegram.messenger.amin.plugins.PluginRegistry;
@@ -30,15 +29,12 @@ import java.util.Map;
  * - Anti-Delete snapshots / deleted / edit-history stores
  * - Auto-Saver v2 entries + legacy log
  * - the wallpaper library metadata (Stage 1, audit D1)
- * - DNS Tunnel profiles + settings (prefs "amingram_dns"), the app
- *   font choice (prefs "amingram_fonts") and the Local Premium
+ * - the app font choice (prefs "amingram_fonts") and the Local Premium
  *   toggles (prefs "amingram_local_premium") — added at bundle
  *   version 2 (pillar-4 audit §4); version-1 bundles simply lack
  *   these sections and import with them untouched.
- *
- * Deliberately NOT exported: the Google auth token cache
- * (GoogleAuthManager) — credential material never enters a backup
- * file; a restored app simply re-runs the account sign-in flow.
+ *   (DNS Tunnel profiles were removed in v3.0.20; a legacy bundle's
+ *   "dns" section is ignored on import.)
  *
  * The hub owns the file picker (SAF); this class is pure
  * build/apply over a JSON string. Import is overwrite-per-section:
@@ -51,7 +47,7 @@ import java.util.Map;
 public final class BackupManager {
 
     /** Current bundle format version (see the class doc): v1 was
-     *  the original section set; v2 adds dns/fonts/local_premium/filters. */
+     *  the original section set; v2 adds fonts/local_premium/filters. */
     private static final int BACKUP_VERSION = 2;
 
     private BackupManager() {
@@ -67,9 +63,8 @@ public final class BackupManager {
             // Module states + sub-settings (Boolean / Integer / String).
             root.put("plugin_prefs", prefsToJson(context, "amingram_plugins"));
 
-            // DNS Tunnel profiles + settings, app font choice,
-            // Local Premium toggles, and Message Filters rules.
-            root.put("dns", prefsToJson(context, DnsProfiles.PREFS));
+            // App font choice, Local Premium toggles, and Message
+            // Filters rules.
             root.put("fonts", prefsToJson(context, "amingram_fonts"));
             root.put("local_premium", prefsToJson(context, LocalPremiumModule.PREFS));
             root.put("filters", prefsToJson(context, MessageFiltersModule.PREFS));
@@ -172,8 +167,8 @@ public final class BackupManager {
             applyPrefsJson(context, "amingram_plugins", root.optJSONObject("plugin_prefs"));
 
             // Bundle v2 sections (absent in v1 bundles = no-op):
-            // DNS profiles/settings, app font, Local Premium, Message Filters.
-            applyPrefsJson(context, DnsProfiles.PREFS, root.optJSONObject("dns"));
+            // app font, Local Premium, Message Filters.
+            // (A legacy "dns" section is ignored.)
             JSONObject fonts = root.optJSONObject("fonts");
             if (fonts != null) {
                 applyPrefsJson(context, "amingram_fonts", fonts);
@@ -306,7 +301,7 @@ public final class BackupManager {
                     edit.putString(key, (String) value);
                 } else if (value instanceof Integer) {
                     // Width matters: several of these prefs are read
-                    // back with getInt (premium colors, DNS ports) —
+                    // back with getInt (premium colors) —
                     // a Long in their place would throw on read.
                     edit.putInt(key, (Integer) value);
                 } else if (value instanceof Long) {

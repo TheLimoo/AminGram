@@ -1,5 +1,35 @@
 # AminGram — Mod Ledger
 
+## v3.0.20 (2026-11-22) — DNS, Google sign-in + AI DELETED; Ryoku frame icon; Made by Amin
+Amin's order, tester-ready build: AminGram is now for multiple people,
+not just him.
+- **DNS DELETED completely (useless):** `amin/dns/` (7 files),
+  `AminDnsTunnelActivity`, `assets/amingram_dns`
+  (`slipstream-default-cert.pem`), patch `0021-dns-tunnel`, `dns-native/`
+  (Go soarbridge source), `.github/workflows/dns-artifacts.yml`, the
+  soarbridge build steps in both CI files, the DNS backup section, and
+  all hub/settings rows (the whole "Network & Accounts" category is
+  gone; the stats grid is now 3 cells). Standalone AminDns app untouched.
+- **Google sign-in + Google things + AI DELETED completely:** `amin/google/`
+  (`GoogleAuthManager`, `GoogleAuthActivity`), `AminGoogleActivity`,
+  patch `0016-google-auth` (play-services-auth dep + manifest activity),
+  the `google` plugin capability + `amin.google` bridge docs, the
+  gemini-chat plugin + all Gemini/generativelanguage/Vertex AI code and
+  docs, and the Google Account hub rows. `google-services.json` handling
+  stays: it is app-level Firebase config the Gradle google-services task
+  needs to build at all — deleting it would break CI, so it was kept.
+- **FreeTranslate KEPT (flagged, not ordered out):** it calls a keyless
+  public Google translate endpoint with no sign-in and no account. If
+  Amin wants it gone too, that is a separate order.
+- **Ryoku frame is now the MAIN launcher icon** (`ic_launcher.xml` /
+  `ic_launcher_round.xml` repointed to the Ryoku frame triple); blue
+  shield / mono / plain Ryoku / plane / monogram stay as alternates in
+  the App Icon picker.
+- **"Made by Amin" credit** added: hub masthead micro-label + the footer
+  version line ("AMINGRAM · VERSION … · HUB DOSSIER V3 · MADE BY AMIN").
+- Old v75 backups containing a `"dns"` section import cleanly with DNS
+  ignored; Google state was never in backups.
+
 ## Signing (v1.1)
 - Releases are signed with AminGram's OWN keystore (alias `amingram`,
   RSA 2048, generated 2026-10-19) — no longer upstream's in-tree key.
@@ -30,6 +60,9 @@ is needed. No headroom math anymore.**)
 - `TMessagesProj/src/main/res/mipmap-anydpi-v26/ic_launcher.xml` +
   `ic_launcher_round.xml` — adaptive icons now point at the AminGram
   assets below (foreground/monochrome), backgrounds unchanged in name.
+  v3.0.20: the default is now the Ryoku frame triple (background
+  `amingram_icon_ryoku_frame_background`, foreground
+  `amingram_foreground_ryoku_frame`, mono `amingram_ryoku_frame_mono`);
 - `TMessagesProj/src/main/res/drawable/icon_background.xml` +
   `icon_background_round.xml` — replaced the layer-list chain with a
   solid deep-navy (#01030F) shape.

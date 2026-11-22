@@ -18,9 +18,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * File-picker trampoline — the same pattern as GoogleAuthActivity:
- * code that runs with no Activity of its own needs a transparent
- * Activity to host the system document picker (SAF,
+ * File-picker trampoline: code that runs with no Activity of its own
+ * needs a transparent Activity to host the system document picker (SAF,
  * ACTION_OPEN_DOCUMENT — no broad storage permission is ever
  * requested) and hand the result back through a static
  * pending-callback registry.
@@ -30,8 +29,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * is staged under the cache dir and the returned path is valid
  * for this session. Cancellation or any failure delivers null.
  * Process death while the picker is open loses the pending
- * callback — the documented bound, identical to Google sign-in's:
- * the user simply retries.
+ * callback — the documented bound: the user simply retries.
  */
 public class PluginFilePickerActivity extends Activity {
 
