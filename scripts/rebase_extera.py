@@ -1,0 +1,1321 @@
+#!/usr/bin/env python3
+"""AminGram rebase onto real exteraGram v13.2.2.
+
+Runs on the GitHub Actions runner. Working directory must be the AminGram
+checkout root (branch extera-base), which holds patches/, TMessagesProj/
+(the overlay) and this script.
+
+Steps:
+  1. Clone exteraGram tag v13.2.2 (recursive, shallow submodules) into extera/.
+  2. Rebrand gradle.properties: APP_PACKAGE -> org.telegram.amingram,
+     APP_VERSION_CODE 7303 -> 7304 (so the APK installs over .76, code 73039).
+  3. Copy the selective AminGram overlay into extera/TMessagesProj.
+  4. Apply the keeper patches HUNK BY HUNK (a patch whose TranslateController
+     hunks fail still lands its MessagesController/UserConfig/... hunks).
+     A hunk that would re-add a method exteraGram already has is skipped.
+  5. Rewire the hub (HubCommon.java) from the dead exteraless engine to the
+     real com.exteragram.messenger.plugins API; gate the icon picker off
+     (LauncherIconController does not exist in exteraGram); gate the font row
+     off if patch 0023 did not apply fully; add the "Based on exteraGram"
+     credit + link to the hub footer (ADDITIONAL_TERMS.md).
+  6. FULL-delete the AI package (com.exteragram.messenger.ai) and every
+     reference to it (imports, fields, if/else fallbacks, settings rows,
+     backup entries).
+  7. Re-derive the FreeTranslate hooks against exteraGram's real
+     TranslateController (patch 0003's TranslateController hunks do not apply
+     cleanly; the two small gates + the translate loop are re-applied here).
+  8. Best-effort speed-boost hooks in FileLoadOperation/FileUploadOperation.
+  9. Rebrand strings (exteraAppName -> AminGram, Preferences -> AminGram
+     Preferences; AppName -> AminGram if still Telegram).
+ 10. Register the org.telegram.amingram (+ .beta) clients in exteraGram's own
+     google-services.json (base client com.exteragram.messenger).
+ 11. Auto-extract any R.string.* the amin code needs that exteraGram does not
+     define, from the overlay strings_oe_plugins.xml, into
+     res/values/amingram_strings.xml. Fail if a needed string exists nowhere.
+ 12. Fail-fast verification greps (no exteraless / ai-package / LauncherIcon
+     references left). Exit non-zero on any FAIL so the workflow stops
+     BEFORE the multi-hour build.
+
+No secrets are read or written by this script. API keys, keystore and
+signing are the workflow's job (GitHub secrets -> API_KEYS file).
+"""
+
+import copy
+import glob
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from xml.etree import ElementTree as ET
+
+ROOT = Path.cwd()
+EXTERA = ROOT / "extera"
+TM = EXTERA / "TMessagesProj"
+SRC = TM / "src" / "main"
+OVERLAY = ROOT / "TMessagesProj"
+PATCHES_DIR = ROOT / "patches"
+
+FAILURES = []
+WARNINGS = []
+PATCH_STATS = {}  # patch stem -> (applied_hunks, skipped_hunks, [skip reasons])
+
+
+def log(level, msg):
+    print(f"[{level}] {msg}", flush=True)
+
+
+def info(msg):
+    log("INFO", msg)
+
+
+def warn(msg):
+    log("WARN", msg)
+    WARNINGS.append(msg)
+
+
+def fail(msg):
+    log("FAIL", msg)
+    FAILURES.append(msg)
+
+
+def run(cmd, cwd=None, check=True):
+    info("run: " + " ".join(str(c) for c in cmd))
+    r = subprocess.run(cmd, cwd=str(cwd) if cwd else None,
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        log("CMD-OUT", (r.stdout or "").strip()[-2000:])
+        log("CMD-ERR", (r.stderr or "").strip()[-2000:])
+        if check:
+            raise RuntimeError(f"command failed ({r.returncode}): {' '.join(map(str, cmd))}")
+    return r
+
+
+def read(p):
+    return Path(p).read_text(encoding="utf-8")
+
+
+def write(p, s):
+    Path(p).write_text(s, encoding="utf-8")
+
+
+# --------------------------------------------------------------------------
+# Java source helpers (brace-aware, string/comment-aware)
+# --------------------------------------------------------------------------
+
+def brace_span(text, open_idx):
+    """Index just past the '}' matching the '{' at open_idx, or None."""
+    depth = 0
+    i = open_idx
+    n = len(text)
+    in_str = in_chr = False
+    esc = False
+    line_c = block_c = False
+    while i < n:
+        c = text[i]
+        nxt = text[i + 1] if i + 1 < n else ""
+        if line_c:
+            if c == "\n":
+                line_c = False
+        elif block_c:
+            if c == "*" and nxt == "/":
+                block_c = False
+                i += 1
+        elif in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+        elif in_chr:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == "'":
+                in_chr = False
+        else:
+            if c == "/" and nxt == "/":
+                line_c = True
+            elif c == "/" and nxt == "*":
+                block_c = True
+            elif c == '"':
+                in_str = True
+            elif c == "'":
+                in_chr = True
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    return i + 1
+        i += 1
+    return None
+
+
+def line_start(text, idx):
+    return text.rfind("\n", 0, idx) + 1
+
+
+def line_end(text, idx):
+    j = text.find("\n", idx)
+    return len(text) if j == -1 else j
+
+
+def delete_if_block(text, cond_substr):
+    """Delete the first `if (...cond_substr...) { ... }` statement. No else.
+
+    Returns (new_text, found)."""
+    for m in re.finditer(r'\bif\s*\(', text):
+        paren = text.find("(", m.start())
+        # find matching close paren (parens only; strings are rare in conditions)
+        depth = 0
+        j = paren
+        cond = None
+        while j < len(text):
+            if text[j] == "(":
+                depth += 1
+            elif text[j] == ")":
+                depth -= 1
+                if depth == 0:
+                    cond = text[paren:j + 1]
+                    break
+            j += 1
+        if cond is None or cond_substr not in cond:
+            continue
+        brace = text.find("{", j)
+        if brace == -1:
+            continue
+        end = brace_span(text, brace)
+        if end is None:
+            continue
+        start = line_start(text, m.start())
+        # include the trailing newline of the close-brace line
+        end = line_end(text, end - 1) + 1
+        return text[:start] + text[end:], True
+    return text, False
+
+
+def replace_if_else_with_else(text, cond_substr):
+    """Replace the first `if (...cond_substr...) { A } else { B }` with B's body.
+
+    Returns (new_text, found)."""
+    for m in re.finditer(r'\bif\s*\(', text):
+        paren = text.find("(", m.start())
+        depth = 0
+        j = paren
+        cond = None
+        while j < len(text):
+            if text[j] == "(":
+                depth += 1
+            elif text[j] == ")":
+                depth -= 1
+                if depth == 0:
+                    cond = text[paren:j + 1]
+                    break
+            j += 1
+        if cond is None or cond_substr not in cond:
+            continue
+        brace = text.find("{", j)
+        if brace == -1:
+            continue
+        if_end = brace_span(text, brace)
+        if if_end is None:
+            continue
+        k = if_end
+        while k < len(text) and text[k] in " \t\r\n":
+            k += 1
+        if not text.startswith("else", k):
+            continue
+        ebrace = text.find("{", k)
+        if ebrace == -1:
+            continue
+        else_end = brace_span(text, ebrace)
+        if else_end is None:
+            continue
+        else_body = text[ebrace + 1:else_end - 1]
+        start = line_start(text, m.start())
+        end = line_end(text, else_end - 1) + 1
+        return text[:start] + else_body.strip("\n") + "\n" + text[end:], True
+    return text, False
+
+
+def delete_import_lines(text, markers):
+    """Delete import lines containing any marker. Returns (new_text, count)."""
+    lines = text.split("\n")
+    out = []
+    n = 0
+    for ln in lines:
+        if ln.strip().startswith("import ") and any(s in ln for s in markers):
+            n += 1
+            continue
+        out.append(ln)
+    return "\n".join(out), n
+
+
+def delete_lines_with(text, substr):
+    """Delete every line containing substr. Returns (new_text, count)."""
+    lines = text.split("\n")
+    out = [ln for ln in lines if substr not in ln]
+    return "\n".join(out), len(lines) - len(out)
+
+
+def delete_statement(text, marker_re):
+    """Delete statement(s) whose first line matches marker_re, balancing
+    parens/braces. Used for Kotlin one-or-multi-line .addIf()/uButton()/case
+    lines. marker_re is a regex (so ChatsItem.AI does not match
+    ChatsItem.AI_FEATURES). Returns (new_text, count)."""
+    rx = re.compile(marker_re)
+    lines = text.split("\n")
+    out = []
+    i = 0
+    n = 0
+    while i < len(lines):
+        if rx.search(lines[i]):
+            depth = 0
+            j = i
+            while j < len(lines):
+                depth += lines[j].count("(") - lines[j].count(")")
+                depth += lines[j].count("{") - lines[j].count("}")
+                j += 1
+                if depth <= 0:
+                    break
+            n += j - i
+            i = j
+            continue
+        out.append(lines[i])
+        i += 1
+    return "\n".join(out), n
+
+
+def delete_method(text, signature_regex):
+    """Delete a whole method whose signature line matches signature_regex.
+
+    Returns (new_text, found)."""
+    m = re.search(signature_regex, text, re.M)
+    if not m:
+        return text, False
+    brace = text.find("{", m.start())
+    if brace == -1:
+        return text, False
+    end = brace_span(text, brace)
+    if end is None:
+        return text, False
+    start = line_start(text, m.start())
+    end = line_end(text, end - 1) + 1
+    return text[:start] + text[end:], True
+
+
+def delete_case_block(text, case_substr, max_lines=15):
+    """Delete `case <case_substr>:` through its break;/return line (inclusive)."""
+    lines = text.split("\n")
+    for i, ln in enumerate(lines):
+        if ln.strip().startswith("case ") and case_substr in ln:
+            j = i
+            while j < len(lines) and j - i < max_lines:
+                s = lines[j].strip()
+                if s == "break;" or s.startswith("return "):
+                    return "\n".join(lines[:i] + lines[j + 1:]), True
+                j += 1
+            return text, False
+    return text, False
+
+
+METHOD_RE = re.compile(
+    r'^\s*(?:public|private|protected)\s+(?:static\s+)?(?:final\s+)?'
+    r'[\w<>\[\].,? ]+?\s+(\w+)\s*\(([^)]*)\)\s*'
+    r'(?:throws\s+[\w,\s]+)?\{\s*$')
+
+
+def method_sig(line):
+    """(name, param-type tuple) for a single-line method declaration, or None."""
+    m = METHOD_RE.match(line)
+    if not m:
+        return None
+    name = m.group(1)
+    params = m.group(2).strip()
+    types = []
+    if params:
+        for p in params.split(","):
+            toks = [t for t in p.strip().split() if not t.startswith("@")]
+            if len(toks) >= 2:
+                types.append(" ".join(toks[:-1]))
+            elif toks:
+                types.append(toks[0])
+    return (name, tuple(types))
+
+
+def file_method_sigs(path):
+    sigs = set()
+    try:
+        for ln in read(path).split("\n"):
+            s = method_sig(ln)
+            if s:
+                sigs.add(s)
+    except FileNotFoundError:
+        pass
+    return sigs
+
+
+def grep_count(root, pattern, suffixes=(".java", ".kt")):
+    """List of (path, lineno, line) matching pattern under root."""
+    hits = []
+    rx = re.compile(pattern)
+    for dirpath, _dirs, files in os.walk(root):
+        for f in files:
+            if not any(f.endswith(s) for s in suffixes):
+                continue
+            p = Path(dirpath) / f
+            try:
+                for i, ln in enumerate(read(p).split("\n"), 1):
+                    if rx.search(ln):
+                        hits.append((str(p), i, ln.strip()))
+            except Exception:
+                pass
+    return hits
+
+# --------------------------------------------------------------------------
+# Step 1: clone exteraGram
+# --------------------------------------------------------------------------
+
+def step_clone():
+    info("== step 1: clone exteraGram v13.2.2 ==")
+    if EXTERA.exists():
+        shutil.rmtree(EXTERA)
+    run(["git", "clone", "--depth", "1", "--branch", "v13.2.2",
+         "--recursive", "--shallow-submodules",
+         "https://github.com/exteraSquad/exteraGram.git", "extera"], cwd=ROOT)
+    for sub in ("TMessagesProj/lib/jlatexmath/jlatexmath",
+                "TMessagesProj_Modules/media"):
+        if not (EXTERA / sub).exists():
+            warn(f"submodule {sub} missing after clone; running submodule update")
+            run(["git", "submodule", "update", "--init", "--recursive",
+                 "--depth", "1"], cwd=EXTERA)
+            break
+    for sub in ("TMessagesProj/lib/jlatexmath/jlatexmath",
+                "TMessagesProj_Modules/media"):
+        if not (EXTERA / sub).exists():
+            fail(f"submodule {sub} still missing after update")
+    pc = EXTERA / ("TMessagesProj/src/full/java/com/exteragram/messenger"
+                   "/plugins/PluginsController.kt")
+    if not pc.exists():
+        fail("PluginsController.kt not found in the clone")
+    else:
+        info("clone OK; PluginsController.kt present")
+
+
+# --------------------------------------------------------------------------
+# Step 2: gradle.properties rebrand + version bump
+# --------------------------------------------------------------------------
+
+def step_gradle_properties():
+    info("== step 2: gradle.properties ==")
+    p = EXTERA / "gradle.properties"
+    t = read(p)
+    if "APP_PACKAGE=com.exteragram.messenger" not in t:
+        fail("gradle.properties: APP_PACKAGE=com.exteragram.messenger not found")
+        return
+    t = t.replace("APP_PACKAGE=com.exteragram.messenger",
+                  "APP_PACKAGE=org.telegram.amingram", 1)
+    if "APP_VERSION_CODE=7303" not in t:
+        fail("gradle.properties: APP_VERSION_CODE=7303 not found")
+        return
+    t = t.replace("APP_VERSION_CODE=7303", "APP_VERSION_CODE=7304", 1)
+    write(p, t)
+    info("APP_PACKAGE=org.telegram.amingram, APP_VERSION_CODE=7304 "
+         "(versionCode 7304*10+9 = 73049)")
+
+
+# --------------------------------------------------------------------------
+# Step 3: selective overlay copy
+# --------------------------------------------------------------------------
+
+# (kind, overlay-relative source, extera-relative destination)
+OVERLAY_COPY = [
+    ("tree", "src/main/java/org/telegram/messenger/amin",
+     "src/main/java/org/telegram/messenger/amin"),
+    ("file", "src/main/java/org/telegram/ui/Wallet/WalletPluginFreeze.java",
+     "src/main/java/org/telegram/ui/Wallet/WalletPluginFreeze.java"),
+    ("tree", "src/main/java/tw/nekomimi",
+     "src/main/java/tw/nekomimi"),
+    ("glob", "src/main/res/drawable/amingram_*",
+     "src/main/res"),
+    ("glob", "src/main/res/drawable-*/msg_plugins.png",
+     "src/main/res"),
+    ("tree", "src/main/res/mipmap-anydpi-v26",
+     "src/main/res/mipmap-anydpi-v26"),
+    ("file", "src/main/assets/amingram/hub_marble.webp",
+     "src/main/assets/amingram/hub_marble.webp"),
+    ("glob", "src/main/assets/amingram_pyplugins/*.plugin",
+     "src/main/assets/amingram_pyplugins"),
+    ("tree", "src/main/assets/fonts/ryoku",
+     "src/main/assets/fonts/ryoku"),
+]
+
+
+def step_overlay():
+    info("== step 3: copy selective overlay ==")
+    copied = 0
+    for kind, src_rel, dst_rel in OVERLAY_COPY:
+        src = OVERLAY / src_rel
+        if kind == "tree":
+            if not src.is_dir():
+                fail(f"overlay tree missing: {src_rel}")
+                continue
+            dst = TM / dst_rel
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+            n = sum(1 for _ in src.rglob("*") if _.is_file())
+            copied += n
+            info(f"tree {src_rel}: {n} files")
+        elif kind == "file":
+            if not src.is_file():
+                fail(f"overlay file missing: {src_rel}")
+                continue
+            dst = TM / dst_rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+            copied += 1
+            info(f"file {src_rel}")
+        elif kind == "glob":
+            matches = sorted(glob.glob(str(src)))
+            if not matches:
+                fail(f"overlay glob matched nothing: {src_rel}")
+                continue
+            for m in matches:
+                mp = Path(m)
+                if not mp.is_file():
+                    continue
+                rel = mp.relative_to(OVERLAY)
+                dst = TM / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(mp, dst)
+                copied += 1
+            info(f"glob {src_rel}: {len(matches)} files")
+    # Exclusions (must NOT have been copied): the exteraless engine, the
+    # python runtime, the CodeHighlighting facade, any AndroidManifest.
+    bad = []
+    amin_tree = TM / "src/main/java/org/telegram/messenger/amin"
+    for p in amin_tree.rglob("*"):
+        if not p.is_file():
+            continue
+        if "exteraless" in p.name or p.suffix == ".py":
+            bad.append(str(p.relative_to(TM)))
+        if p.name == "AndroidManifest.xml":
+            bad.append(str(p.relative_to(TM)))
+    if bad:
+        fail(f"excluded overlay content present: {bad}")
+    info(f"overlay copied: {copied} files")
+
+
+# --------------------------------------------------------------------------
+# Step 4: hunk-level patch application
+# --------------------------------------------------------------------------
+
+KEEPER_PATCHES = ["0001", "0003", "0004", "0006", "0011", "0012", "0013",
+                  "0014", "0017", "0018", "0019", "0020", "0023", "0024",
+                  "0028", "0059"]
+# 0002 is NOT applied: gradle.properties is rebranded by step 2 (its context
+# APP_PACKAGE=org.telegram.messenger does not match exteraGram's
+# APP_PACKAGE=com.exteragram.messenger).
+# Dropped: 0007 (icon picker, deferred), 0008/0009 (native in exteraGram),
+# 0025, 0029, 0030, 0031-0034, 0036-0050, 0051-0057 (exteraless engine),
+# 0058 (minify-off; exteraGram stays R8-on).
+
+
+def split_patch(text):
+    """Split a unified diff into (path, hunk_header, hunk_body_lines) hunks."""
+    hunks = []
+    cur_path = None
+    cur_header = None
+    cur_body = []
+    for ln in text.split("\n"):
+        if ln.startswith("diff --git "):
+            if cur_path and cur_header:
+                hunks.append((cur_path, cur_header, cur_body))
+            cur_path = None
+            cur_header = None
+            cur_body = []
+        elif ln.startswith("+++ b/"):
+            cur_path = ln[len("+++ b/"):]
+        elif ln.startswith("@@ "):
+            if cur_path and cur_header:
+                hunks.append((cur_path, cur_header, cur_body))
+            cur_header = ln
+            cur_body = []
+        elif cur_header is not None:
+            cur_body.append(ln)
+    if cur_path and cur_header:
+        hunks.append((cur_path, cur_header, cur_body))
+    return hunks
+
+
+def hunk_adds_duplicate_method(hunk_body, target_path):
+    """True if the hunk adds a method exteraGram's target file already has."""
+    sigs = file_method_sigs(target_path)
+    if not sigs:
+        return None
+    for ln in hunk_body:
+        if not ln.startswith("+") or ln.startswith("+++"):
+            continue
+        s = method_sig(ln[1:])
+        if s and s in sigs:
+            return s
+    return None
+
+
+def apply_patch_hunks(patch_path):
+    """Apply one patch file hunk by hunk. Returns (applied, skipped, reasons)."""
+    text = read(patch_path)
+    hunks = split_patch(text)
+    applied = 0
+    skipped = 0
+    reasons = []
+    for path, header, body in hunks:
+        target = EXTERA / path
+        dup = hunk_adds_duplicate_method(body, target)
+        if dup:
+            skipped += 1
+            reasons.append(f"{path} {header[:40]}: DUPLICATE_METHOD {dup}")
+            continue
+        mini = (f"diff --git a/{path} b/{path}\n"
+                f"--- a/{path}\n"
+                f"+++ b/{path}\n"
+                f"{header}\n" + "\n".join(body) + "\n")
+        with tempfile.NamedTemporaryFile("w", suffix=".patch",
+                                        delete=False) as tf:
+            tf.write(mini)
+            tmp = tf.name
+        try:
+            chk = run(["git", "apply", "--check", tmp], cwd=EXTERA,
+                      check=False)
+            if chk.returncode != 0:
+                skipped += 1
+                reasons.append(f"{path} {header[:40]}: APPLY_CHECK_FAILED")
+                continue
+            run(["git", "apply", tmp], cwd=EXTERA)
+            applied += 1
+        finally:
+            os.unlink(tmp)
+    return applied, skipped, reasons
+
+
+def step_patches():
+    info("== step 4: apply keeper patches (hunk level) ==")
+    for patch in sorted(PATCHES_DIR.glob("*.patch")):
+        stem = patch.name.split("-")[0]
+        if stem not in KEEPER_PATCHES:
+            continue
+        applied, skipped, reasons = apply_patch_hunks(patch)
+        PATCH_STATS[patch.name] = (applied, skipped, reasons)
+        info(f"{patch.name}: applied={applied} skipped={skipped}")
+        for r in reasons:
+            warn(f"  skip {patch.name}: {r}")
+    total_a = sum(v[0] for v in PATCH_STATS.values())
+    total_s = sum(v[1] for v in PATCH_STATS.values())
+    info(f"patches total: applied={total_a} hunks, skipped={total_s} hunks")
+
+# --------------------------------------------------------------------------
+# Step 5: hub rewire (HubCommon.java) + gating + credit
+# --------------------------------------------------------------------------
+
+def step_hub():
+    info("== step 5: hub rewire ==")
+    hub = SRC / ("java/org/telegram/messenger/amin/ui/HubCommon.java")
+    if not hub.is_file():
+        fail("HubCommon.java not found in overlay copy")
+        return
+    t = read(hub)
+
+    # 5a. exteraless package -> real exteraGram plugin package (all amin files).
+    amin_java = list((SRC / "java/org/telegram/messenger/amin").rglob("*.java"))
+    total_rewired = 0
+    for jf in amin_java:
+        s = read(jf)
+        n = s.count("app.exteraless.plugins.")
+        if n:
+            s = s.replace("app.exteraless.plugins.",
+                          "com.exteragram.messenger.plugins.")
+            write(jf, s)
+            total_rewired += n
+            info(f"  rewired {jf.name}: {n} exteraless refs")
+    if total_rewired == 0:
+        warn("no app.exteraless.plugins. refs found in amin tree")
+    t = read(hub)
+
+    # 5b. controller.isEngineEnabled() -> ExteraConfig.getPluginsEngine().
+    # The real PluginsController has no isEngineEnabled(); the pref lives on
+    # ExteraConfig (top-level var, @file:JvmName("ExteraConfig")).
+    t, n_eng = re.subn(r'[\w.()]+\.isEngineEnabled\(\)',
+                       'com.exteragram.messenger.ExteraConfig.getPluginsEngine()',
+                       t)
+    info(f"  isEngineEnabled rewired: {n_eng} sites (expected 2)")
+    if n_eng != 2:
+        warn(f"isEngineEnabled sites = {n_eng}, expected 2")
+
+    # 5c. Gate the icon picker OFF: org.telegram.ui.LauncherIconController
+    # does not exist in exteraGram (verified 404 on the raw file).
+    t, n = delete_lines_with(t, 'actionRow(block, "app_icon"')
+    info(f"  app_icon row deleted: {n}")
+    if n != 1:
+        warn("app_icon row line not found (expected 1)")
+    t2, ok = delete_case_block_helper(t, '"app_icon"')
+    t = t2
+    info(f"  app_icon case deleted: {ok}")
+    if not ok:
+        warn('case "app_icon": block not found')
+    t, ok = delete_method(t, r'^\s*private void pickAppIcon\(\)')
+    info(f"  pickAppIcon() deleted: {ok}")
+    if not ok:
+        warn("pickAppIcon() method not found")
+    t, ok = delete_method(t, r'^\s*private static String currentIconTitle\(\)')
+    info(f"  currentIconTitle() deleted: {ok}")
+    if not ok:
+        warn("currentIconTitle() method not found")
+
+    # 5d. Gate the font row off if patch 0023 did not apply fully
+    # (without its AndroidUtilities/ApplicationLoader hooks the picker is dead).
+    p23 = PATCH_STATS.get("0023-font-selector.patch", (0, 0, []))
+    if p23[0] == 0 or p23[1] > 0:
+        t, n = delete_lines_with(t, 'actionRow(block, "app_font"')
+        info(f"  app_font row gated off (0023 applied={p23[0]} "
+             f"skipped={p23[1]}): deleted {n}")
+    else:
+        info("  0023 applied fully; app_font row kept")
+
+    # 5e. "Based on exteraGram" credit + link in the hub footer
+    # (ADDITIONAL_TERMS.md: modified versions must keep the notice + link).
+    old1 = '"AMINGRAM · HUB DOSSIER V3 · MADE BY AMIN"'
+    new1 = '"AMINGRAM · HUB DOSSIER V3 · MADE BY AMIN · BASED ON EXTERAGRAM"'
+    if old1 in t:
+        t = t.replace(old1, new1, 1)
+        info("  footer credit (no-version) added")
+    else:
+        warn("footer no-version string not found")
+    old2 = ('"AMINGRAM · VERSION " + version + '
+            '" · HUB DOSSIER V3 · MADE BY AMIN"')
+    new2 = ('"AMINGRAM · VERSION " + version + '
+            '" · HUB DOSSIER V3 · MADE BY AMIN · BASED ON EXTERAGRAM"')
+    if old2 in t:
+        t = t.replace(old2, new2, 1)
+        info("  footer credit (version) added")
+    else:
+        warn("footer version string not found")
+    anchor = "            versionView.setText(line);"
+    if t.count(anchor) == 1:
+        listener = (
+            anchor + "\n"
+            "            versionView.setOnClickListener(v -> {\n"
+            "                try {\n"
+            "                    android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(\"https://github.com/exteraSquad/exteraGram\"));\n"
+            "                    getContext().startActivity(intent);\n"
+            "                } catch (Exception ignored) {\n"
+            "                }\n"
+            "            });"
+        )
+        t = t.replace(anchor, listener, 1)
+        info("  footer tap -> exteraGram repo link added")
+    else:
+        warn(f"versionView.setText anchor count = {t.count(anchor)} (expected 1)")
+
+    write(hub, t)
+
+    # 5f. verify: no exteraless / LauncherIconController left in the amin tree.
+    for pat in (r"exteraless", r"LauncherIconController"):
+        hits = grep_count(SRC / "java/org/telegram/messenger/amin", pat)
+        if hits:
+            fail(f"hub rewire left {pat}: {hits[:5]}")
+        else:
+            info(f"  verified: no {pat} in amin tree")
+
+
+def delete_case_block_helper(text, case_label):
+    """Delete `case <label>:` through its break; (inclusive)."""
+    lines = text.split("\n")
+    for i, ln in enumerate(lines):
+        if ln.strip() == f"case {case_label}:":
+            j = i
+            while j < len(lines):
+                if lines[j].strip() == "break;":
+                    return "\n".join(lines[:i] + lines[j + 1:]), True
+                j += 1
+            return text, False
+    return text, False
+
+
+# --------------------------------------------------------------------------
+# Step 6: FULL AI delete
+# --------------------------------------------------------------------------
+
+AI_PKG = "com.exteragram.messenger.ai."
+
+def step_ai_delete():
+    info("== step 6: FULL AI delete ==")
+    ai_dir = SRC / "java/com/exteragram/messenger/ai"
+    if not ai_dir.is_dir():
+        fail("ai package dir not found (expected to delete it)")
+    else:
+        shutil.rmtree(ai_dir)
+        info("  deleted com/exteragram/messenger/ai/")
+
+    # -- TranslateController.java
+    p = SRC / "java/org/telegram/messenger/TranslateController.java"
+    t = read(p)
+    t, n = delete_import_lines(t, [AI_PKG])
+    info(f"  TranslateController: removed {n} ai imports")
+    t, ok = delete_if_block(t, "TelegramAiReplacement.replacesSummaries")
+    info(f"  TranslateController: summarize fallback block deleted: {ok}")
+    if not ok:
+        fail("TranslateController: TelegramAiReplacement.replacesSummaries "
+             "block not found")
+    write(p, t)
+
+    # -- TranslateAlert2.java
+    p = SRC / "java/org/telegram/ui/Components/TranslateAlert2.java"
+    t = read(p)
+    t, n = delete_import_lines(t, [AI_PKG])
+    info(f"  TranslateAlert2: removed {n} ai imports")
+    t, ok = replace_if_else_with_else(t, "TelegramAiReplacement")
+    info(f"  TranslateAlert2: AI if/else -> server else-body: {ok}")
+    if not ok:
+        fail("TranslateAlert2: TelegramAiReplacement if/else not found")
+    while True:
+        t, ok = delete_if_block(t, "aiReplacementCancel")
+        if not ok:
+            break
+        info("  TranslateAlert2: aiReplacementCancel block deleted")
+    # field declaration: a line with aiReplacementCancel, no parens, ends with ;
+    lines = t.split("\n")
+    kept = []
+    n_field = 0
+    for ln in lines:
+        if ("aiReplacementCancel" in ln and "(" not in ln
+                and ln.strip().endswith(";")):
+            n_field += 1
+            continue
+        kept.append(ln)
+    t = "\n".join(kept)
+    info(f"  TranslateAlert2: aiReplacementCancel field deleted: {n_field}")
+    write(p, t)
+
+    # -- AIEditorAlert.java (all anchors verified by direct read)
+    p = SRC / "java/org/telegram/ui/Components/AIEditorAlert.java"
+    t = read(p)
+    t, n = delete_import_lines(t, [AI_PKG])
+    info(f"  AIEditorAlert: removed {n} ai imports")
+    t, ok = replace_if_else_with_else(t, "TelegramAiReplacement.replacesEditor")
+    info(f"  AIEditorAlert: editor if/else -> server request: {ok}")
+    if not ok:
+        fail("AIEditorAlert: replacesEditor if/else not found")
+    old_btn = (
+        "        if (errored && aiFallbackFailed) {\n"
+        "            button.setText(getString(R.string.TryAgain));\n"
+        "            button.setOnClickListener(v -> {\n"
+        "                aiFallbackFailed = false;\n"
+        "                errored = false;\n"
+        "                updateButton();\n"
+        "                request();\n"
+        "            });\n"
+        "        } else if (errored) {"
+    )
+    if old_btn in t:
+        t = t.replace(old_btn, "        if (errored) {", 1)
+        info("  AIEditorAlert: TryAgain/aiFallbackFailed branch collapsed")
+    else:
+        fail("AIEditorAlert: updateButton TryAgain block not found")
+    while True:
+        t, ok = delete_if_block(t, "aiFallbackCancel")
+        if not ok:
+            break
+        info("  AIEditorAlert: aiFallbackCancel block deleted")
+    t, n = delete_lines_with(t, "private boolean aiFallbackFailed;")
+    info(f"  AIEditorAlert: aiFallbackFailed field deleted: {n}")
+    t, n = delete_lines_with(t, "private Runnable aiFallbackCancel;")
+    info(f"  AIEditorAlert: aiFallbackCancel field deleted: {n}")
+    t, n = delete_lines_with(t, "aiFallbackCancel = null;")
+    info(f"  AIEditorAlert: aiFallbackCancel = null lines deleted: {n}")
+    write(p, t)
+
+    # -- VoiceRecognitionController.java
+    p = SRC / "java/org/telegram/messenger/VoiceRecognitionController.java"
+    t = read(p)
+    t, n = delete_import_lines(t, [AI_PKG])
+    info(f"  VoiceRecognitionController: removed {n} ai imports")
+    lines = t.split("\n")
+    kept = []
+    n_field = 0
+    for ln in lines:
+        if re.search(r'\bClient\s+client\s*;', ln):
+            n_field += 1
+            continue
+        kept.append(ln)
+    t = "\n".join(kept)
+    info(f"  VoiceRecognitionController: Client field deleted: {n_field}")
+    # construction block: `client = new Client.Builder()` ... `.build();`
+    lines = t.split("\n")
+    out = []
+    i = 0
+    n_ctor = 0
+    while i < len(lines):
+        if "new Client.Builder()" in lines[i]:
+            j = i
+            while j < len(lines) and ".build();" not in lines[j]:
+                j += 1
+            if j < len(lines):
+                n_ctor += 1
+                i = j + 1
+                continue
+            warn("VoiceRecognitionController: Client.Builder block unterminated")
+        out.append(lines[i])
+        i += 1
+    t = "\n".join(out)
+    info(f"  VoiceRecognitionController: Client.Builder block deleted: {n_ctor}")
+    t, ok = replace_if_else_with_else(t, "AiController")
+    if not ok:
+        t, ok = replace_if_else_with_else(t, "postprocessingWithAi")
+    if not ok:
+        t, ok = replace_if_else_with_else(t, "AiConfig")
+    if not ok:
+        t, ok = replace_if_else_with_else(t, "getTelegramAi")
+    info(f"  VoiceRecognitionController: AI if/else -> saveResult: {ok}")
+    if not ok:
+        fail("VoiceRecognitionController: AI post-processing if/else not found")
+    write(p, t)
+
+    # -- ChatsPreferencesActivity.kt
+    p = SRC / ("java/com/exteragram/messenger/preferences"
+               "/ChatsPreferencesActivity.kt")
+    if not p.is_file():
+        # fallback: find it under src
+        found = list(TM.rglob("ChatsPreferencesActivity.kt"))
+        p = found[0] if found else p
+    t = read(p)
+    t, n = delete_import_lines(t, [AI_PKG])
+    info(f"  ChatsPreferencesActivity: removed {n} ai imports")
+    # Regexes with a negative lookahead so ChatsItem.AI does NOT match the
+    # aiFeatures group (ChatsItem.AI_FEATURES), which we KEEP.
+    for pattern in (r"ChatsItem\.AI(?![\w])",
+                    r"ChatsItem\.GENERATE(?![\w])",
+                    r"POST_PROCESSING_WITH_AI"):
+        t, n = delete_statement(t, pattern)
+        info(f"  ChatsPreferencesActivity: deleted {n} lines for {pattern}")
+    write(p, t)
+
+    # -- SettingsRegistry.java
+    p = SRC / "java/com/exteragram/messenger/preferences/SettingsRegistry.java"
+    if not p.is_file():
+        found = list(TM.rglob("SettingsRegistry.java"))
+        p = found[0] if found else p
+    t = read(p)
+    t, n = delete_import_lines(t, [AI_PKG])
+    info(f"  SettingsRegistry: removed {n} ai imports")
+    t, n = delete_lines_with(t, "AiPreferencesActivity.class")
+    info(f"  SettingsRegistry: AiPreferencesActivity map entry deleted: {n}")
+    for s in ('"aiTemperature"', '"AI-Service-Reasoning"'):
+        t, n = delete_lines_with(t, s)
+        info(f"  SettingsRegistry: {s} deleted: {n}")
+    write(p, t)
+
+    # -- PreferencesUtils.java
+    p = SRC / "java/com/exteragram/messenger/preferences/PreferencesUtils.java"
+    if not p.is_file():
+        found = list(TM.rglob("PreferencesUtils.java"))
+        p = found[0] if found else p
+    t = read(p)
+    t, n = delete_import_lines(t, [AI_PKG, "AiConfig", "OnDeviceAvailability"])
+    info(f"  PreferencesUtils: removed {n} ai imports")
+    # aiConfigKeys array: delete from its declaration through the matching }.
+    m = re.search(r'\baiConfigKeys\b', t)
+    if m:
+        brace = t.find("{", m.start())
+        end = brace_span(t, brace) if brace != -1 else None
+        if end is not None:
+            start = line_start(t, m.start())
+            end = line_end(t, end - 1) + 1
+            t = t[:start] + t[end:]
+            info("  PreferencesUtils: aiConfigKeys array deleted")
+        else:
+            fail("PreferencesUtils: aiConfigKeys brace match failed")
+    else:
+        warn("PreferencesUtils: aiConfigKeys not found")
+    # AiConfig.CONFIG_NAME element of the configs array (substring removal,
+    # so sibling elements on the same line survive).
+    if "AiConfig.CONFIG_NAME, " in t:
+        t = t.replace("AiConfig.CONFIG_NAME, ", "", 1)
+        info("  PreferencesUtils: AiConfig.CONFIG_NAME element removed")
+    elif ", AiConfig.CONFIG_NAME" in t:
+        t = t.replace(", AiConfig.CONFIG_NAME", "", 1)
+        info("  PreferencesUtils: AiConfig.CONFIG_NAME element removed")
+    else:
+        t, n = delete_lines_with(t, "AiConfig.CONFIG_NAME")
+        info(f"  PreferencesUtils: AiConfig.CONFIG_NAME lines deleted: {n}")
+    t, n = delete_lines_with(t, "AiConfig.getEditor()")
+    info(f"  PreferencesUtils: AiConfig.getEditor() line deleted: {n}")
+    t, ok = delete_case_block(t, "AiConfig.CONFIG_NAME")
+    info(f"  PreferencesUtils: findBackupItem AiConfig case deleted: {ok}")
+    if not ok:
+        warn("PreferencesUtils: AiConfig case block not found")
+    write(p, t)
+    # NOTE: the AI keys left in extraExteraKeys (responseStreaming,
+    # temperature, ...) are plain strings in an exclusion list; leaving them
+    # is harmless and safer than editing the array.
+
+    # -- verification: no ai-package reference may survive anywhere in src.
+    for pat in (r"com\.exteragram\.messenger\.ai\.",
+                r"\bAiController\b",
+                r"TelegramAiReplacement",
+                r"AiPreferencesActivity",
+                r"\bAiConfig\b"):
+        hits = grep_count(TM / "src", pat)
+        if hits:
+            fail(f"AI delete left {pat}: {hits[:5]}")
+        else:
+            info(f"  verified: no {pat} in src")
+    for f, pat in (
+            (SRC / "java/org/telegram/ui/Components/TranslateAlert2.java",
+             r"aiReplacementCancel"),
+            (SRC / "java/org/telegram/ui/Components/AIEditorAlert.java",
+             r"aiFallbackCancel|aiFallbackFailed")):
+        txt = read(f)
+        found = [ln.strip() for ln in txt.split("\n")
+                 if re.search(pat, ln)]
+        if found:
+            fail(f"AI delete left {pat} in {f.name}: {found[:3]}")
+        else:
+            info(f"  verified: no {pat} in {f.name}")
+
+# --------------------------------------------------------------------------
+# Step 7: FreeTranslate re-derivation (exteraGram's TranslateController)
+# --------------------------------------------------------------------------
+
+FREETRANSLATE_LOOP = """                if (org.telegram.messenger.amin.AminHooks.freeTranslate()) {
+                    for (int i = 0; i < pendingTranslation1.messageIds.size(); ++i) {
+                        final int id = pendingTranslation1.messageIds.get(i);
+                        final Utilities.Callback4<Boolean, Integer, TLRPC.TL_textWithEntities, String> _callback = pendingTranslation1.callbacks.get(i);
+                        final String _text = pendingTranslation1.messageTexts.get(i).text;
+                        final String toLanguage = pendingTranslation1.language;
+                        TranslateAlert2.alternativeTranslate(_text, null, toLanguage, (result, rateLimit) -> {
+                            if (result != null) {
+                                final TLRPC.TL_textWithEntities resultWithEntities = new TLRPC.TL_textWithEntities();
+                                resultWithEntities.text = result;
+                                _callback.run(isTranscription, id, resultWithEntities, toLanguage);
+                            } else {
+                                toggleTranslatingDialog(dialogId, false);
+                                NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.showBulletin, Bulletin.TYPE_ERROR, getString(rateLimit ? R.string.TranslationFailedAlert1 : R.string.TranslationFailedAlert2));
+                            }
+                        });
+                    }
+                    return;
+                }
+
+"""
+
+
+def step_freetranslate():
+    info("== step 7: FreeTranslate re-derivation ==")
+    p = SRC / "java/org/telegram/messenger/TranslateController.java"
+    t = read(p)
+    # 7a. isFeatureAvailable(): free translate bypasses the premium unlock.
+    anchor = ("    public boolean isFeatureAvailable() {\n"
+              "        return TranslationProviders.isChatTranslationUnlocked"
+              "(currentAccount) && isChatTranslateEnabled();")
+    hook = ("    public boolean isFeatureAvailable() {\n"
+            "        if (org.telegram.messenger.amin.AminHooks.freeTranslate()) {\n"
+            "            return isChatTranslateEnabled();\n"
+            "        }\n"
+            "        return TranslationProviders.isChatTranslationUnlocked"
+            "(currentAccount) && isChatTranslateEnabled();")
+    if "AminHooks.freeTranslate()" in t and "return isChatTranslateEnabled();" in t:
+        info("  isFeatureAvailable: hook already present (patch 0003 landed it)")
+    elif anchor in t:
+        t = t.replace(anchor, hook, 1)
+        info("  isFeatureAvailable: freeTranslate early-return added")
+    else:
+        warn("  isFeatureAvailable: anchor not found; hook NOT added")
+
+    # 7b. isChatTranslateEnabled(): skip the auto-enabled/alternative guard.
+    guard_old = ("        if (!getMessagesController().isTranslationsAutoEnabled() "
+                 "&& !TranslatorUtils.isAlternativeProvider()) {")
+    guard_new = ("        if (!org.telegram.messenger.amin.AminHooks.freeTranslate() "
+                 "&& !getMessagesController().isTranslationsAutoEnabled() "
+                 "&& !TranslatorUtils.isAlternativeProvider()) {")
+    if guard_new in t:
+        info("  isChatTranslateEnabled: guard already has freeTranslate")
+    elif guard_old in t:
+        t = t.replace(guard_old, guard_new, 1)
+        info("  isChatTranslateEnabled: freeTranslate added to guard")
+    else:
+        warn("  isChatTranslateEnabled: guard anchor not found; hook NOT added")
+
+    # 7c. The translate loop, right before the Telegram-server request that
+    # follows the commented-out system branch (the `}*/` close). The loop body
+    # is copied verbatim from exteraGram's own "alternative" branch in the
+    # same method, so it provably compiles in this file.
+    if "if (org.telegram.messenger.amin.AminHooks.freeTranslate()) {" in t:
+        info("  translate loop: freeTranslate block already present")
+    else:
+        req = ("                final TLRPC.TL_messages_translateText req = "
+               "new TLRPC.TL_messages_translateText();")
+        idxs = [m.start() for m in re.finditer(re.escape(req), t)]
+        target = None
+        for idx in idxs:
+            before = t[max(0, idx - 400):idx]
+            if "}*/" in before:
+                target = idx
+                break
+        if target is None:
+            fail("translate loop: no TL_messages_translateText after a }*/ "
+                 "comment close found")
+        else:
+            ls = line_start(t, target)
+            t = t[:ls] + FREETRANSLATE_LOOP + t[ls:]
+            info("  translate loop: freeTranslate block inserted before the "
+                 "server request")
+    write(p, t)
+    t = read(p)
+    n = t.count("AminHooks.freeTranslate()")
+    info(f"  freeTranslate sites in TranslateController: {n} (expected 3)")
+
+
+# --------------------------------------------------------------------------
+# Step 8: speed-boost hooks (best-effort, from the old CI)
+# --------------------------------------------------------------------------
+
+def step_speedboost():
+    info("== step 8: speed-boost hooks (best-effort) ==")
+    flo = SRC / "java/org/telegram/messenger/FileLoadOperation.java"
+    t = read(flo)
+    target = "maxDownloadRequestsBig = 8;"
+    hook = ("maxDownloadRequestsBig = org.telegram.messenger.amin.AminHooks"
+            ".downloadBoostMaxRequests(forceSmallChunk) > 0 ? "
+            "org.telegram.messenger.amin.AminHooks"
+            ".downloadBoostMaxRequests(forceSmallChunk) : 8; "
+            "if (org.telegram.messenger.amin.AminHooks"
+            ".downloadBoostBigChunkBytes(forceSmallChunk) > 0) { "
+            "downloadChunkSizeBig = org.telegram.messenger.amin.AminHooks"
+            ".downloadBoostBigChunkBytes(forceSmallChunk); }")
+    if "downloadBoostMaxRequests" in t:
+        info("  FileLoadOperation: hook already present")
+    elif target in t:
+        t = t.replace(target, hook, 1)
+        write(flo, t)
+        info("  FileLoadOperation: download-boost hook added")
+    else:
+        warn("  FileLoadOperation: anchor 'maxDownloadRequestsBig = 8;' "
+             "not found; hub speed-boost picker will not affect downloads")
+
+    fuo = SRC / "java/org/telegram/messenger/FileUploadOperation.java"
+    t = read(fuo)
+    utarget = "uploadChunkSize = 64 * 1024;"
+    uhook = ("uploadChunkSize = org.telegram.messenger.amin.AminHooks"
+             ".uploadSpeedBoostEnabled() ? 512 * 1024 : 64 * 1024;")
+    if "uploadSpeedBoostEnabled" in t:
+        info("  FileUploadOperation: hook already present")
+    elif utarget in t:
+        t = t.replace(utarget, uhook, 1)
+        write(fuo, t)
+        info("  FileUploadOperation: upload-boost hook added")
+    else:
+        warn("  FileUploadOperation: anchor 'uploadChunkSize = 64 * 1024;' "
+             "not found; hub upload-boost toggle will not affect uploads")
+
+
+# --------------------------------------------------------------------------
+# Step 9: rebrand strings
+# --------------------------------------------------------------------------
+
+def step_rebrand_strings():
+    info("== step 9: rebrand strings ==")
+    extera_xml = SRC / "res/values/extera.xml"
+    if not extera_xml.is_file():
+        fail("res/values/extera.xml not found")
+    else:
+        t = read(extera_xml)
+        old = ('<string name="exteraAppName" translatable="false">'
+               'exteraGram</string>')
+        if old in t:
+            t = t.replace(old, old.replace(">exteraGram<", ">AminGram<"), 1)
+            info("  exteraAppName -> AminGram")
+        else:
+            fail("extera.xml: exteraAppName string not found")
+        old = ('<string name="Preferences">exteraGram Preferences</string>')
+        if old in t:
+            t = t.replace(old, old.replace(">exteraGram Preferences<",
+                                          ">AminGram Preferences<"), 1)
+            info("  Preferences -> AminGram Preferences")
+        else:
+            fail("extera.xml: Preferences string not found")
+        write(extera_xml, t)
+    strings_xml = SRC / "res/values/strings.xml"
+    t = read(strings_xml)
+    if '<string name="AppName">Telegram</string>' in t:
+        t = t.replace('<string name="AppName">Telegram</string>',
+                      '<string name="AppName">AminGram</string>', 1)
+        write(strings_xml, t)
+        info("  AppName Telegram -> AminGram")
+    else:
+        info("  AppName is not 'Telegram' (patch 0004 may have handled it)")
+
+
+# --------------------------------------------------------------------------
+# Step 10: google-services.json fork package
+# --------------------------------------------------------------------------
+
+def step_google_services():
+    info("== step 10: google-services.json fork package ==")
+    p = TM / "google-services.json"
+    if not p.is_file():
+        fail("exteraGram's TMessagesProj/google-services.json not found")
+        return
+    data = json.loads(read(p))
+    clients = data.get("client", [])
+    base = None
+    for c in clients:
+        pkg = c.get("client_info", {}).get("android_client_info", {}).get(
+            "package_name")
+        if pkg == "com.exteragram.messenger":
+            base = c
+            break
+    if base is None:
+        fail("google-services.json: com.exteragram.messenger client not found")
+        return
+    have = {c.get("client_info", {}).get("android_client_info", {}).get(
+        "package_name") for c in clients}
+    for pkg in ("org.telegram.amingram", "org.telegram.amingram.beta"):
+        if pkg in have:
+            continue
+        clone = copy.deepcopy(base)
+        clone["client_info"]["android_client_info"]["package_name"] = pkg
+        clients.append(clone)
+        info(f"  added google-services client {pkg}")
+    data["client"] = clients
+    write(p, json.dumps(data, indent=2))
+    info("  google-services.json clients: " + ", ".join(sorted(
+        c["client_info"]["android_client_info"]["package_name"]
+        for c in clients)))
+
+
+# --------------------------------------------------------------------------
+# Step 11: missing-strings auto-extract
+# --------------------------------------------------------------------------
+
+def step_missing_strings():
+    info("== step 11: missing-strings auto-extract ==")
+    # Names exteraGram already defines.
+    defined = set()
+    for xml in (SRC / "res").rglob("*.xml"):
+        if "values" not in str(xml):
+            continue
+        try:
+            for m in re.finditer(r'name="([^"]+)"', read(xml)):
+                defined.add(m.group(1))
+        except Exception:
+            pass
+    # Names the amin code references.
+    needed = set()
+    amin_dir = SRC / "java/org/telegram/messenger/amin"
+    for jf in amin_dir.rglob("*.java"):
+        for m in re.finditer(r'R\.string\.(\w+)', read(jf)):
+            needed.add(m.group(1))
+    missing = sorted(needed - defined)
+    if not missing:
+        info(f"  all {len(needed)} R.string names used by amin code exist")
+        return
+    info(f"  {len(missing)} R.string names missing from exteraGram: {missing}")
+    overlay_strings = OVERLAY / "src/main/res/values/strings_oe_plugins.xml"
+    if not overlay_strings.is_file():
+        fail("strings_oe_plugins.xml not found in overlay")
+        return
+    tree = ET.parse(str(overlay_strings))
+    by_name = {}
+    for elem in tree.getroot():
+        if elem.tag == "string" and "name" in elem.attrib:
+            by_name[elem.attrib["name"]] = elem
+    not_found = [n for n in missing if n not in by_name]
+    if not_found:
+        fail(f"strings needed by amin code exist NOWHERE: {not_found}")
+        return
+    out = ['<?xml version="1.0" encoding="utf-8"?>', '<resources>',
+           '    <!-- AminGram: strings referenced by the amin hub/modules '
+           'that exteraGram does not define. -->']
+    for n in missing:
+        out.append("    " + ET.tostring(by_name[n], encoding="unicode").strip())
+    out.append('</resources>')
+    write(SRC / "res/values/amingram_strings.xml", "\n".join(out) + "\n")
+    info(f"  wrote res/values/amingram_strings.xml with {len(missing)} strings")
+
+
+# --------------------------------------------------------------------------
+# Step 12: final verification + summary
+# --------------------------------------------------------------------------
+
+def step_verify():
+    info("== step 12: final verification ==")
+    checks = [
+        ("exteraless in src", TM / "src", r"exteraless"),
+        ("ai package refs in src", TM / "src",
+         r"com\.exteragram\.messenger\.ai\."),
+        ("AiController in src", TM / "src", r"\bAiController\b"),
+        ("TelegramAiReplacement in src", TM / "src",
+         r"TelegramAiReplacement"),
+        ("AiPreferencesActivity in src", TM / "src",
+         r"AiPreferencesActivity"),
+        ("LauncherIconController in amin tree",
+         SRC / "java/org/telegram/messenger/amin", r"LauncherIconController"),
+    ]
+    for label, root, pat in checks:
+        hits = grep_count(root, pat)
+        if hits:
+            fail(f"{label}: {len(hits)} hits, e.g. {hits[:3]}")
+        else:
+            info(f"  verified: {label}: 0")
+    gp = read(EXTERA / "gradle.properties")
+    if "APP_PACKAGE=org.telegram.amingram" not in gp:
+        fail("gradle.properties: APP_PACKAGE is not org.telegram.amingram")
+    if "APP_VERSION_CODE=7304" not in gp:
+        fail("gradle.properties: APP_VERSION_CODE is not 7304")
+    gs = json.loads(read(TM / "google-services.json"))
+    pkgs = {c.get("client_info", {}).get("android_client_info", {}).get(
+        "package_name") for c in gs.get("client", [])}
+    if "org.telegram.amingram" not in pkgs:
+        fail("google-services.json: org.telegram.amingram client missing")
+    else:
+        info("  verified: gradle.properties + google-services.json")
+
+
+def main():
+    steps = [step_clone, step_gradle_properties, step_overlay, step_patches,
+             step_hub, step_ai_delete, step_freetranslate, step_speedboost,
+             step_rebrand_strings, step_google_services, step_missing_strings,
+             step_verify]
+    for fn in steps:
+        try:
+            fn()
+        except Exception as e:
+            fail(f"{fn.__name__} raised: {e}")
+            break
+    print("=" * 70)
+    print("PATCH SUMMARY")
+    for name, (a, s, reasons) in sorted(PATCH_STATS.items()):
+        print(f"  {name}: applied={a} skipped={s}")
+        for r in reasons:
+            print(f"      skip: {r}")
+    print(f"WARNINGS: {len(WARNINGS)}")
+    for w in WARNINGS:
+        print(f"  warn: {w}")
+    print(f"FAILURES: {len(FAILURES)}")
+    for f in FAILURES:
+        print(f"  FAIL: {f}")
+    if FAILURES:
+        print("REBASE FAILED — fix the failures above and re-run.")
+        sys.exit(1)
+    print("REBASE OK — extera/ is ready to build.")
+    print("  package org.telegram.amingram, versionCode 73049, "
+          "task :TMessagesProj:assembleFullAfatRelease")
+
+
+if __name__ == "__main__":
+    main()
