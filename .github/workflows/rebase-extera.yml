@@ -122,6 +122,12 @@ jobs:
 
       - name: Build full afat release APK
         working-directory: extera
+        # The exteraGram plugin-analyzer downloader (Tools/download_analyzer.py)
+        # fetches a prebuilt analyzer from api.github.com; unauthenticated
+        # requests hit GitHub's 60/hour rate limit on shared runner IPs
+        # (run 10 failed on exactly this). GH_TOKEN authenticates it.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./gradlew :TMessagesProj:assembleFullAfatRelease --stacktrace
 
       - name: Upload APK artifact
