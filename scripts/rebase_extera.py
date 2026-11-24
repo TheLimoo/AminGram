@@ -173,9 +173,12 @@ def line_end(text, idx):
     return len(text) if j == -1 else j
 
 
-def delete_if_chain(text, cond_substr):
+def delete_if_chain(text, cond_substr, exact=False):
     """Delete an `if (...cond_substr...) { ... }` plus any chained
-    `else if (...) { ... }` / final `else { ... }`. Returns (new_text, found)."""
+    `else if (...) { ... }` / final `else { ... }`. With exact=True the
+    condition must equal cond_substr exactly (so a gapView if whose
+    condition merely CONTAINS the chain's condition is not matched).
+    Returns (new_text, found)."""
     for m in re.finditer(r'\bif\s*\(', text):
         paren = text.find("(", m.start())
         depth = 0
@@ -190,7 +193,12 @@ def delete_if_chain(text, cond_substr):
                     cond = text[paren:j + 1]
                     break
             j += 1
-        if cond is None or cond_substr not in cond:
+        if cond is None:
+            continue
+        if exact:
+            if cond.strip() != "(" + cond_substr + ")":
+                continue
+        elif cond_substr not in cond:
             continue
         brace = text.find("{", j)
         if brace == -1:
@@ -363,21 +371,36 @@ def delete_method(text, signature_regex):
 
 
 def delete_case_block(text, case_substr, max_lines=60):
-    """Delete `case <case_substr>:` through its break;/return line (inclusive).
-    For a braced case (`case X: { ... break; }`) the closing `}` is deleted
-    too."""
+    """Delete a `case <case_substr>:` block.
+
+    Braced / arrow cases (`case X: { ... }`, `case X -> { ... }`) are
+    deleted by brace matching from the `{` on the case line — this is
+    required because the body may contain `return` inside lambdas, which
+    a naive break/return scan would stop at early (that bug left the
+    OPTION_GENERATE body half-deleted in run 5).
+    Unbraced cases fall back to a brace-depth-aware scan for break;/return
+    at the case's top level. Returns (new_text, found)."""
     lines = text.split("\n")
     for i, ln in enumerate(lines):
         if ln.strip().startswith("case ") and case_substr in ln:
-            braced = ln.strip().endswith("{")
+            brace = ln.find("{")
+            if brace != -1:
+                # offset of the `{` in the full text
+                off = sum(len(x) + 1 for x in lines[:i]) + brace
+                end = brace_span(text, off)
+                if end is None:
+                    return text, False
+                start = line_start(text, sum(len(x) + 1 for x in lines[:i]))
+                end = line_end(text, end - 1) + 1
+                return text[:start] + text[end:], True
+            # unbraced: scan for break;/return at depth 0
+            depth = 0
             j = i
             while j < len(lines) and j - i < max_lines:
+                depth += lines[j].count("{") - lines[j].count("}")
                 s = lines[j].strip()
-                if s == "break;" or s.startswith("return "):
-                    end = j + 1
-                    if braced and end < len(lines) and lines[end].strip() == "}":
-                        end += 1
-                    return "\n".join(lines[:i] + lines[end:]), True
+                if depth == 0 and (s == "break;" or s.startswith("return ")):
+                    return "\n".join(lines[:i] + lines[j + 1:]), True
                 j += 1
             return text, False
     return text, False
@@ -1096,6 +1119,20 @@ def step_ai_delete():
     info(f"  ChatActivity: case OPTION_GENERATE deleted: {ok}")
     if not ok:
         fail("ChatActivity: case OPTION_GENERATE not found")
+    t, ok = delete_if_block(t, "visibleDialog instanceof AiResponseAlert")
+    info(f"  ChatActivity: visibleDialog AiResponseAlert check deleted: {ok}")
+    if not ok:
+        fail("ChatActivity: visibleDialog instanceof AiResponseAlert not found")
+    # dismissDialogOnPause: drop the AiResponseAlert conjunct (with AI gone
+    # the dialog can never be one, so the conjunct is always true).
+    if "!(dialog instanceof AiResponseAlert) && " in t:
+        t = t.replace("!(dialog instanceof AiResponseAlert) && ", "", 1)
+        info("  ChatActivity: dismissDialogOnPause AiResponseAlert conjunct removed")
+    elif " && !(dialog instanceof AiResponseAlert)" in t:
+        t = t.replace(" && !(dialog instanceof AiResponseAlert)", "", 1)
+        info("  ChatActivity: dismissDialogOnPause AiResponseAlert conjunct removed")
+    else:
+        fail("ChatActivity: dismissDialogOnPause AiResponseAlert conjunct not found")
     write(p, t)
 
     # -- ChatActivityEnterView.java (send-popup AI hint + ActionRow, both
@@ -1110,7 +1147,8 @@ def step_ai_delete():
     info(f"  ChatActivityEnterView: removed {n} ai imports")
     n_chains = 0
     while True:
-        t, ok = delete_if_chain(t, "!AiController.canUseAI() && !hidden")
+        t, ok = delete_if_chain(t, "!AiController.canUseAI() && !hidden",
+                                exact=True)
         if not ok:
             break
         n_chains += 1
@@ -1212,17 +1250,17 @@ def step_ai_delete():
             fail("PreferencesUtils: aiConfigKeys brace match failed")
     else:
         warn("PreferencesUtils: aiConfigKeys not found")
-    # AiConfig.CONFIG_NAME element of the configs array (substring removal,
-    # so sibling elements on the same line survive).
-    if "AiConfig.CONFIG_NAME, " in t:
-        t = t.replace("AiConfig.CONFIG_NAME, ", "", 1)
-        info("  PreferencesUtils: AiConfig.CONFIG_NAME element removed")
-    elif ", AiConfig.CONFIG_NAME" in t:
-        t = t.replace(", AiConfig.CONFIG_NAME", "", 1)
-        info("  PreferencesUtils: AiConfig.CONFIG_NAME element removed")
-    else:
-        t, n = delete_lines_with(t, "AiConfig.CONFIG_NAME")
-        info(f"  PreferencesUtils: AiConfig.CONFIG_NAME lines deleted: {n}")
+    # AiConfig.CONFIG_NAME element of the configs array: it sits alone on
+    # its own line (`AiConfig.CONFIG_NAME,`). Drop exactly that line — a
+    # substring delete would also eat the if/case lines that mention the
+    # same name (that bug orphaned their bodies in run 5).
+    lines = t.split("\n")
+    kept = [ln for ln in lines if ln.strip() != "AiConfig.CONFIG_NAME,"]
+    n_elem = len(lines) - len(kept)
+    t = "\n".join(kept)
+    info(f"  PreferencesUtils: AiConfig.CONFIG_NAME array element deleted: {n_elem}")
+    if n_elem != 1:
+        fail(f"PreferencesUtils: expected 1 CONFIG_NAME array element, deleted {n_elem}")
     t, n = delete_lines_with(t, "AiConfig.getEditor()")
     info(f"  PreferencesUtils: AiConfig.getEditor() line deleted: {n}")
     t, n = delete_lines_with(t, "AiConfig.ensureConfigMigrated();")
@@ -1240,7 +1278,7 @@ def step_ai_delete():
     t, ok = delete_case_block(t, "AiConfig.CONFIG_NAME")
     info(f"  PreferencesUtils: findBackupItem AiConfig case deleted: {ok}")
     if not ok:
-        warn("PreferencesUtils: AiConfig case block not found")
+        fail("PreferencesUtils: AiConfig case block not found")
     write(p, t)
     # NOTE: the AI keys left in extraExteraKeys (responseStreaming,
     # temperature, ...) are plain strings in an exclusion list; leaving them
