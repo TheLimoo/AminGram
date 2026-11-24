@@ -527,7 +527,15 @@ OVERLAY_COPY = [
      "src/main/res"),
     ("glob", "src/main/res/drawable-*/msg_plugins.png",
      "src/main/res"),
-    ("tree", "src/main/res/mipmap-anydpi-v26",
+    # Launcher icons: exteraGram's default icon lives in res-appicons
+    # (build.gradle sourceSets: res.srcDirs includes both res and
+    # res-appicons, and the same resource in both is a Gradle duplicate
+    # error — run 6 failed on exactly this). The two default files
+    # overwrite exteraGram's defaults in res-appicons; the 12 amingram
+    # variants have unique names and go to res/.
+    ("glob_to", "src/main/res/mipmap-anydpi-v26/ic_launcher*.xml",
+     "src/main/res-appicons/mipmap-anydpi-v26"),
+    ("glob_to", "src/main/res/mipmap-anydpi-v26/amingram_icon_*",
      "src/main/res/mipmap-anydpi-v26"),
     ("file", "src/main/assets/amingram/hub_marble.webp",
      "src/main/assets/amingram/hub_marble.webp"),
@@ -561,6 +569,21 @@ def step_overlay():
             shutil.copy2(src, dst)
             copied += 1
             info(f"file {src_rel}")
+        elif kind == "glob_to":
+            # glob matches copied by basename into an explicit dst dir
+            matches = sorted(glob.glob(str(src)))
+            if not matches:
+                fail(f"overlay glob matched nothing: {src_rel}")
+                continue
+            for m in matches:
+                mp = Path(m)
+                if not mp.is_file():
+                    continue
+                dst = TM / dst_rel / mp.name
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(mp, dst)
+                copied += 1
+            info(f"glob_to {src_rel} -> {dst_rel}: {len(matches)} files")
         elif kind == "glob":
             matches = sorted(glob.glob(str(src)))
             if not matches:
@@ -1623,6 +1646,32 @@ def step_verify():
             fail(f"{label}: {len(hits)} hits, e.g. {hits[:3]}")
         else:
             info(f"  verified: {label}: 0")
+    # Duplicate resources across the merged res dirs: build.gradle sets
+    # res.srcDirs = [res, res-appicons, res-solar, res-remix, res-tabs] and
+    # Gradle fails the build on the same non-values resource in two of
+    # them (run 6: ic_launcher_round in res/ vs res-appicons/). Catch it
+    # here instead of after a 17-minute build.
+    res_dirs = ["res", "res-appicons", "res-solar", "res-remix", "res-tabs"]
+    seen = {}
+    dups = []
+    for d in res_dirs:
+        rd = TM / "src/main" / d
+        if not rd.is_dir():
+            continue
+        for f in rd.rglob("*"):
+            if not f.is_file():
+                continue
+            rel = str(f.relative_to(rd))
+            if rel.split("/")[0].startswith("values"):
+                continue  # values XMLs merge by name; same file OK
+            if rel in seen:
+                dups.append(f"{rel}: {seen[rel]} vs {d}")
+            else:
+                seen[rel] = d
+    if dups:
+        fail(f"duplicate resources across res dirs: {dups[:5]}")
+    else:
+        info("  verified: no duplicate resources across res dirs")
     gp = read(EXTERA / "gradle.properties")
     if "APP_PACKAGE=org.telegram.amingram" not in gp:
         fail("gradle.properties: APP_PACKAGE is not org.telegram.amingram")
