@@ -1249,6 +1249,16 @@ def step_ai_delete():
     for s in ('"aiTemperature"', '"AI-Service-Reasoning"'):
         t, n = delete_lines_with(t, s)
         info(f"  SettingsRegistry: {s} deleted: {n}")
+    # newFeatures is List.of(...) — a METHOD call, where a trailing comma
+    # is illegal (unlike an array initializer). Deleting the last two
+    # entries leaves "feedBottomTab", as the last element with a comma,
+    # which is exactly the run-7 javac error (illegal start of expression
+    # at the closing `);`). Strip it.
+    if '"feedBottomTab",' in t:
+        t = t.replace('"feedBottomTab",', '"feedBottomTab"', 1)
+        info("  SettingsRegistry: newFeatures trailing comma removed")
+    else:
+        fail('SettingsRegistry: "feedBottomTab", not found for comma fix')
     write(p, t)
 
     # -- PreferencesUtils.java
