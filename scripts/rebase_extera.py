@@ -12,7 +12,14 @@ Steps:
   3. Copy the selective AminGram overlay into extera/TMessagesProj.
   4. Apply the keeper patches HUNK BY HUNK (a patch whose TranslateController
      hunks fail still lands its MessagesController/UserConfig/... hunks).
-     A hunk that would re-add a method exteraGram already has is skipped.
+     Full context first, -C1 fuzz as a fallback (git still requires a unique
+     match). A hunk that would re-add a method exteraGram already has is
+     skipped. Patch 0028's proguard hunk is intentionally not chased: its
+     three member keeps are native in exteraGram, and its Xposed keep is for
+     the dead DEX bridge.
+  4b. Re-derive the SettingsActivity rows (patches 0001 + 0059) against
+     exteraGram's real anchors: the Plugins row (id 90) and Resource Usage
+     row (id 91) under an "AminGram" header, plus their switch cases.
   5. Rewire the hub (HubCommon.java) from the dead exteraless engine to the
      real com.exteragram.messenger.plugins API; gate the icon picker off
      (LauncherIconController does not exist in exteraGram); gate the font row
@@ -568,7 +575,11 @@ def hunk_adds_duplicate_method(hunk_body, target_path):
 
 
 def apply_patch_hunks(patch_path):
-    """Apply one patch file hunk by hunk. Returns (applied, skipped, reasons)."""
+    """Apply one patch file hunk by hunk. Returns (applied, skipped, reasons).
+
+    Full context first; if that fails, retry with -C1 (one line of context
+    — git still requires a unique match, so a rescued hunk lands at the
+    right place)."""
     text = read(patch_path)
     hunks = split_patch(text)
     applied = 0
@@ -592,12 +603,20 @@ def apply_patch_hunks(patch_path):
         try:
             chk = run(["git", "apply", "--check", tmp], cwd=EXTERA,
                       check=False)
+            fuzzed = False
             if chk.returncode != 0:
-                skipped += 1
-                reasons.append(f"{path} {header[:40]}: APPLY_CHECK_FAILED")
-                continue
-            run(["git", "apply", tmp], cwd=EXTERA)
+                chk1 = run(["git", "apply", "--check", "-C1", tmp],
+                           cwd=EXTERA, check=False)
+                if chk1.returncode != 0:
+                    skipped += 1
+                    reasons.append(f"{path} {header[:40]}: APPLY_CHECK_FAILED")
+                    continue
+                fuzzed = True
+            run(["git", "apply", "-C1", tmp] if fuzzed
+                else ["git", "apply", tmp], cwd=EXTERA)
             applied += 1
+            if fuzzed:
+                info(f"  {path} {header[:40]}: applied with -C1 fuzz")
         finally:
             os.unlink(tmp)
     return applied, skipped, reasons
@@ -617,6 +636,92 @@ def step_patches():
     total_a = sum(v[0] for v in PATCH_STATS.values())
     total_s = sum(v[1] for v in PATCH_STATS.values())
     info(f"patches total: applied={total_a} hunks, skipped={total_s} hunks")
+
+
+# --------------------------------------------------------------------------
+# Step 4b: SettingsActivity rows (patches 0001 + 0059, re-derived)
+# --------------------------------------------------------------------------
+# exteraGram's SettingsActivity differs from stock 13.2.2 enough that the
+# patch hunks fail even with -C1 fuzz: extra imports between TextHelper and
+# UItem, a `case -1:` (exteraGram Preferences) before `case 1:`, and a
+# 7-arg language row. The rows are re-derived here against exteraGram's
+# real anchors (verified by direct read of v13.2.2):
+#   imports  -> before `import org.telegram.ui.Components.UItem;`
+#   rows     -> after the language row
+#              `getString(R.string.SettingsLanguage), null,
+#               LocaleController.getCurrentLanguageName()));`
+#   cases    -> right after `        switch (item.id) {`
+# The 6-arg SettingCell.Factory.of(id, top, bottom, icon, title, subtitle)
+# overload exists in exteraGram (SettingsActivity L2971), and
+# R.drawable.settings_features / settings_data both exist there.
+# Every insertion is idempotent: if a patch hunk did land, it is skipped.
+
+def step_settings_rows():
+    info("== step 4b: SettingsActivity rows (0001 + 0059, re-derived) ==")
+    p = SRC / "java/org/telegram/ui/SettingsActivity.java"
+    t = read(p)
+
+    # Imports.
+    for cls in ("AminPluginsActivity", "AminResourcesActivity"):
+        imp = (f"import org.telegram.messenger.amin.ui.{cls};")
+        if imp in t:
+            info(f"  import {cls} already present")
+            continue
+        anchor = "import org.telegram.ui.Components.UItem;"
+        if anchor not in t:
+            fail("SettingsActivity: UItem import anchor not found")
+            return
+        t = t.replace(anchor, imp + "\n" + anchor, 1)
+        info(f"  import {cls} added")
+
+    # Rows (header + 90 Plugins, 91 Resource Usage) after the language row.
+    lang = ("getString(R.string.SettingsLanguage), null, "
+            "LocaleController.getCurrentLanguageName()));")
+    if lang not in t:
+        fail("SettingsActivity: language-row anchor not found")
+        return
+    row90 = ("        items.add(SettingCell.Factory.of(90, "
+             "IconBackgroundColors.PURPLE.top, "
+             "IconBackgroundColors.PURPLE.bottom, "
+             "R.drawable.settings_features, \"Plugins\", "
+             "\"AminGram feature modules\"));")
+    row91 = ("        items.add(SettingCell.Factory.of(91, "
+             "IconBackgroundColors.BLUE_ALT.top, "
+             "IconBackgroundColors.BLUE_ALT.bottom, "
+             "R.drawable.settings_data, \"Resource Usage\", "
+             "\"RAM, CPU and uptime\"));")
+    header = '        items.add(UItem.asHeader("AminGram"));'
+    if "Factory.of(90," in t:
+        info("  row 90 (Plugins) already present")
+    else:
+        t = t.replace(lang, lang + "\n" + header + "\n" + row90, 1)
+        info("  AminGram header + row 90 (Plugins) added")
+    if "Factory.of(91," in t:
+        info("  row 91 (Resource Usage) already present")
+    else:
+        if row90 in t:
+            t = t.replace(row90, row90 + "\n" + row91, 1)
+        else:
+            t = t.replace(lang, lang + "\n" + row91, 1)
+        info("  row 91 (Resource Usage) added")
+
+    # Cases right after `switch (item.id) {`.
+    switch = "        switch (item.id) {"
+    if switch not in t:
+        fail("SettingsActivity: switch (item.id) anchor not found")
+        return
+    cases = ("            case 90:\n"
+             "                presentSettingFragment(new AminPluginsActivity());\n"
+             "                break;\n"
+             "            case 91:\n"
+             "                presentSettingFragment(new AminResourcesActivity());\n"
+             "                break;")
+    if "case 90:" in t and "case 91:" in t:
+        info("  cases 90/91 already present")
+    else:
+        t = t.replace(switch, switch + "\n" + cases, 1)
+        info("  cases 90/91 added")
+    write(p, t)
 
 # --------------------------------------------------------------------------
 # Step 5: hub rewire (HubCommon.java) + gating + credit
@@ -723,8 +828,9 @@ def step_hub():
 
     write(hub, t)
 
-    # 5f. verify: no exteraless / LauncherIconController left in the amin tree.
-    for pat in (r"exteraless", r"LauncherIconController"):
+    # 5f. verify: no exteraless package refs / LauncherIconController left
+    # in the amin tree. (Bare "exteraless" in comments is harmless.)
+    for pat in (r"app\.exteraless\.", r"LauncherIconController"):
         hits = grep_count(SRC / "java/org/telegram/messenger/amin", pat)
         if hits:
             fail(f"hub rewire left {pat}: {hits[:5]}")
@@ -839,8 +945,9 @@ def step_ai_delete():
     info(f"  AIEditorAlert: aiFallbackCancel = null lines deleted: {n}")
     write(p, t)
 
-    # -- VoiceRecognitionController.java
-    p = SRC / "java/org/telegram/messenger/VoiceRecognitionController.java"
+    # -- VoiceRecognitionController.java (exteraGram moved it to
+    # com.exteragram.messenger.speech)
+    p = SRC / "java/com/exteragram/messenger/speech/VoiceRecognitionController.java"
     t = read(p)
     t, n = delete_import_lines(t, [AI_PKG])
     info(f"  VoiceRecognitionController: removed {n} ai imports")
@@ -1255,7 +1362,7 @@ def step_missing_strings():
 def step_verify():
     info("== step 12: final verification ==")
     checks = [
-        ("exteraless in src", TM / "src", r"exteraless"),
+        ("exteraless package refs in src", TM / "src", r"app\.exteraless\."),
         ("ai package refs in src", TM / "src",
          r"com\.exteragram\.messenger\.ai\."),
         ("AiController in src", TM / "src", r"\bAiController\b"),
@@ -1288,9 +1395,9 @@ def step_verify():
 
 def main():
     steps = [step_clone, step_gradle_properties, step_overlay, step_patches,
-             step_hub, step_ai_delete, step_freetranslate, step_speedboost,
-             step_rebrand_strings, step_google_services, step_missing_strings,
-             step_verify]
+             step_settings_rows, step_hub, step_ai_delete, step_freetranslate,
+             step_speedboost, step_rebrand_strings, step_google_services,
+             step_missing_strings, step_verify]
     for fn in steps:
         try:
             fn()
