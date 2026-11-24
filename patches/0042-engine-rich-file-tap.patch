@@ -1,0 +1,18 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/RichMessageLayout.java b/TMessagesProj/src/main/java/org/telegram/messenger/RichMessageLayout.java
+index e641f29..b166b4f 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/RichMessageLayout.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/RichMessageLayout.java
+@@ -8131,7 +8131,12 @@ public class RichMessageLayout {
+             if (buttonState == 0) {
+                 final Activity activity = findActivity(view == null ? null : view.getContext());
+                 final File file = path();
+-                if (activity != null && file != null) AndroidUtilities.openForView(file, FileLoader.getDocumentFileName(document), document.mime_type, activity, root.resourcesProvider, false);
++                if (activity != null && file != null) {
++                    final String fileName = FileLoader.getDocumentFileName(document);
++                    if (!app.exteraless.plugins.PluginInstallHelper.handleFileTap(activity, fileName, file)) {
++                        AndroidUtilities.openForView(file, fileName, document.mime_type, activity, root.resourcesProvider, false);
++                    }
++                }
+             } else if (buttonState == 1 && document != null) {
+                 FileLoader.getInstance(root.currentAccount).loadFile(document, root.messageObject, 1, 1);
+                 buttonState = 2;

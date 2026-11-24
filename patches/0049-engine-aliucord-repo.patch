@@ -1,0 +1,16 @@
+diff --git a/settings.gradle b/settings.gradle
+index 7d4f1ab..ae8f06f 100644
+--- a/settings.gradle
++++ b/settings.gradle
+@@ -11,6 +11,11 @@ dependencyResolutionManagement {
+     repositories {
+         google()
+         mavenCentral()
++        // AminGram (v3.0.0 engine port): AliuHook lives only on
++        // Aliucord's own Maven repo, not Maven Central — without
++        // this, Gradle fails resolving com.aliucord:Aliuhook:1.1.4
++        // (CI run 43814128194). Same repo exteraless declares.
++        maven { url "https://maven.aliucord.com/releases" }
+     }
+ }
+ 

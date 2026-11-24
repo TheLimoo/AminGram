@@ -1,0 +1,22 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBar.java b/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBar.java
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBar.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBar.java
+@@ -33,6 +33,7 @@
+ import android.graphics.drawable.BitmapDrawable;
+ import android.graphics.drawable.Drawable;
+ import android.graphics.drawable.VectorDrawable;
++import android.text.Layout;
+ import android.text.SpannableString;
+ import android.text.StaticLayout;
+ import android.text.TextPaint;
+diff --git a/TMessagesProj/src/main/java/org/telegram/tgnet/TLRPC.java b/TMessagesProj/src/main/java/org/telegram/tgnet/TLRPC.java
+--- a/TMessagesProj/src/main/java/org/telegram/tgnet/TLRPC.java
++++ b/TMessagesProj/src/main/java/org/telegram/tgnet/TLRPC.java
+@@ -63763,6 +63763,7 @@
+ 
+         public long document_id;
+         public TLRPC.Document document; //custom
++        public boolean local;
+ 
+         public void readParams(InputSerializedData stream, boolean exception) {
+             offset = stream.readInt32(exception);

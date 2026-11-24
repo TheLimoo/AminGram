@@ -9,44 +9,19 @@ import java.util.Map;
 /**
  * AminCleanup — the Ryoku removal migration (build #34).
  *
- * The Ryoku UI system (master toggle, bundled "Ryoku" theme, override
- * wallpapers) is deleted, but installs that ran builds #31–#33 may
- * still carry its persisted state, and one piece of it — the current
- * theme selection — is live ammunition: Theme's static initializer
- * reads the selection from "mainconfig" ("theme"/"nighttheme") and
- * the per-theme override wallpapers from "themeconfig" ("*_owp") on
- * the very first Theme reference in the process, and a poisoned
- * combination of those is what crash-looped the app on icon launch.
- *
- * This migration runs unconditionally from
- * ApplicationLoader.attachBaseContext (patch 0023) — before onCreate
- * and before any component can trigger Theme's static init — and
- * scrubs exactly that state:
- *  - "mainconfig": "theme"/"nighttheme" values equal to "Ryoku" are
- *    removed (Telegram falls back to its default theme); the plain
- *    int "bubbleRadius" key is removed too (Ryoku forced it to 3
- *    while on; SharedConfig reads it from mainconfig with a pristine
- *    default of 17, so removal restores stock bubbles);
- *  - "themeconfig": every key starting with "Ryoku" and ending with
- *    "_owp" (including the plain "Ryoku_owp"), and every key whose
- *    value equals "Ryoku", is removed;
- *  - Ryoku's own prefs file "amingram_ryoku" is cleared;
- *  - filesDir: "ryoku_wallpaper.jpg" and the random-named
- *    "Ryoku_*_wp*.jpg" files the old applyWallpaper() generated are
- *    deleted.
- *
- * Nothing else is touched: no chats/account data, no wallpaper
- * library, no video files. The migration is idempotent (each block
- * commits only when it actually changed something), uses ONLY raw
- * SharedPreferences / java.io APIs addressed by literal names — no
- * Theme, no ApplicationLoader statics — and every block is
- * Throwable-guarded, so it can never break startup itself.
+ * Phase A optimization (A-26):
+ * - Keeps synchronous mainconfig/themeconfig scrub intact before Theme
+ *   static init, and uses a versioned completion marker in
+ *   "amingram_ryoku" so steady-state cold starts skip the expensive
+ *   themeconfig.getAll() and filesDir.listFiles() scans once the
+ *   one-time scrub has completed.
  */
 public final class AminCleanup {
 
     private static final String PREFS_MAIN = "mainconfig";
     private static final String PREFS_THEME = "themeconfig";
     private static final String PREFS_RYOKU = "amingram_ryoku";
+    private static final String KEY_MIGRATED_V1 = "_ryoku_scrubbed_v1";
 
     private static final String KEY_THEME = "theme";
     private static final String KEY_NIGHT_THEME = "nighttheme";
@@ -65,17 +40,20 @@ public final class AminCleanup {
                 return;
             }
             scrubMainConfig(base);
+            SharedPreferences ryoku = prefs(base, PREFS_RYOKU);
+            if (ryoku != null && ryoku.getBoolean(KEY_MIGRATED_V1, false)) {
+                return;
+            }
             scrubThemeConfig(base);
-            scrubRyokuPrefs(base);
             deleteRyokuWallpaperFiles(base);
+            if (ryoku != null) {
+                ryoku.edit().clear().putBoolean(KEY_MIGRATED_V1, true).commit();
+            }
         } catch (Throwable t) {
             // The migration must never break startup itself.
         }
     }
 
-    /** "mainconfig": drop a "Ryoku" day/night theme selection and the
-     *  bubble radius Ryoku forced — all Ryoku-owned display state in
-     *  the file Theme + SharedConfig actually read at startup. */
     private static void scrubMainConfig(Context ctx) {
         try {
             SharedPreferences main = prefs(ctx, PREFS_MAIN);
@@ -112,8 +90,6 @@ public final class AminCleanup {
         }
     }
 
-    /** "themeconfig": drop every Ryoku override-wallpaper entry and
-     *  every key whose value selects the Ryoku theme. */
     private static void scrubThemeConfig(Context ctx) {
         try {
             SharedPreferences themeConfig = prefs(ctx, PREFS_THEME);
@@ -139,20 +115,6 @@ public final class AminCleanup {
         }
     }
 
-    /** Ryoku's own prefs file (toggle, bootstrap flag, previous-theme
-     *  bookkeeping, crash probe): dead state once the class is gone. */
-    private static void scrubRyokuPrefs(Context ctx) {
-        try {
-            SharedPreferences ryoku = prefs(ctx, PREFS_RYOKU);
-            if (ryoku != null && !ryoku.getAll().isEmpty()) {
-                ryoku.edit().clear().commit();
-            }
-        } catch (Throwable ignore) {
-        }
-    }
-
-    /** Delete the fixed wallpaper file + every random-named file the
-     *  old applyWallpaper() generated (Ryoku_<accent>_wp<rand>.jpg). */
     private static void deleteRyokuWallpaperFiles(Context ctx) {
         try {
             File dir = ctx.getFilesDir();

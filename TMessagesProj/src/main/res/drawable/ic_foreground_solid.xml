@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AminGram (Fix 4 / v2.5.6): stand-in for exteraGram's
+     R.drawable.ic_foreground_solid, which the MaterialSettingsList
+     DEX reads (SettingsCellHookManager.onBindViewAfter, for id == -1
+     rows) but upstream Telegram does not define anywhere in res/.
+     Without this field the DEX class fails to link when PluginCore
+     initialises, so the plugin can never load its DEX. A plain
+     solid oval: the DEX tints it with the palette icon colour
+     (setColorFilter SRC_IN in applyColors), so the base colour only
+     matters before tinting. Clean-room shape, no exteraGram asset
+     copied. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <solid android:color="#FFFFFF" />
+</shape>

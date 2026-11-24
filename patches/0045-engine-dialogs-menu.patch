@@ -1,0 +1,14 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+index dcd0adb..f3394c0 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+@@ -13454,6 +13454,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+             }
+         }
+ 
++        // exteraless plugins: пункты плагинов (MAIN_MENU) в конце меню «⋮».
++        app.exteraless.plugins.menus.MenuInjector.appendMainMenuItems(io, currentAccount, this);
++
+         io.show();
+         io.setTranslationY(-dp(64));
+     }

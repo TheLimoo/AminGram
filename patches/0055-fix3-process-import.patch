@@ -1,0 +1,12 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
+index e670590..fcf440e 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
+@@ -26,6 +26,7 @@ import android.net.NetworkInfo;
+ import android.os.Build;
+ import android.os.Handler;
+ import android.os.PowerManager;
++import android.os.Process;
+ import android.os.SystemClock;
+ import android.telephony.TelephonyManager;
+ import android.view.ViewGroup;

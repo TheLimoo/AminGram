@@ -1,0 +1,23 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/NotificationCenter.java b/TMessagesProj/src/main/java/org/telegram/messenger/NotificationCenter.java
+index 4f18f46..98b2c06 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/NotificationCenter.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/NotificationCenter.java
+@@ -388,6 +388,18 @@ public class NotificationCenter {
+ 
+     public static boolean alreadyLogged;
+ 
++    // exteraless plugins
++    /** Плагин завис или отвис: слушатели перерисовывают его строку. */
++    public static final int pluginIsNotResponding = totalEvents++;
++    /** Реестр пунктов меню плагинов изменился: пересобрать подменю. */
++    public static final int pluginMenuItemsUpdated = totalEvents++;
++    /** Состав плагинов изменился; имя из exteraGram — на него ссылаются dex-модули. */
++    public static final int pluginsUpdated = totalEvents++;
++
++    public static final int pluginSettingsRegistered = totalEvents++;
++
++    public static final int pluginSettingsUnregistered = totalEvents++;
++
+     private final SparseArray<ArrayList<NotificationCenterDelegate>> observers = new SparseArray<>();
+     private final SparseArray<ArrayList<NotificationCenterDelegate>> removeAfterBroadcast = new SparseArray<>();
+     private final SparseArray<ArrayList<NotificationCenterDelegate>> addAfterBroadcast = new SparseArray<>();

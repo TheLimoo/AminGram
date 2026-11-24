@@ -23,7 +23,7 @@ stages:
   - release
 
 variables:
-  UPSTREAM_SHA: "f32ffeec763f0bdbf4bec25b52d654f77bff733d"  # DrKLO/Telegram 13.0.2 (7175)
+  UPSTREAM_SHA: "21f7d109da6ab3506c9e9577f98c6a38771ab335"  # DrKLO/Telegram 13.2.2 (7303)
   NDK_VERSION: "27.2.12479018"
   # Keep SDK + Gradle home INSIDE the project dir: GitLab cache only
   # supports paths relative to $CI_PROJECT_DIR (GitHub cached an absolute
@@ -55,10 +55,6 @@ build:
       - android-sdk/platforms
       - android-sdk/build-tools
       - android-sdk/ndk/27.2.12479018
-      # Soar toolchain (mirrors actions/setup-go in build.yml).
-      - .goroot
-      - .gopath
-      - .gomodcache
   before_script:
     # Tool bootstrap (GitHub runners preinstall all of this).
     - |
@@ -98,7 +94,7 @@ build:
       echo "All required CI/CD variables are present."
     # --- Mirror: "Fetch upstream Telegram source (pinned)" ----------------
     # GitHub cloned HEAD with --depth 1 --recurse-submodules; the pin only
-    # held because HEAD was f32ffee. Here the commit is pinned explicitly:
+    # held because HEAD was 21f7d10. Here the commit is pinned explicitly:
     # fetch by full SHA, detach, then init submodules shallowly.
     - |
       set -e
@@ -128,12 +124,32 @@ build:
       git apply ../patches/0012-ghost-stories.patch
       git apply ../patches/0013-outgoing-command-hook.patch
       git apply ../patches/0014-attach-menu-plugins.patch
-      git apply ../patches/0016-google-auth.patch
       git apply ../patches/0017-hide-sponsored.patch
       git apply ../patches/0018-message-details.patch
       git apply ../patches/0019-screenshot-unlock.patch
       git apply ../patches/0020-context-menu-items.patch
-      git apply ../patches/0021-dns-tunnel.patch
+      git apply ../patches/0023-font-selector.patch
+      git apply ../patches/0024-stage2-native-features.patch
+      python3 - <<'SPEEDEOF'
+      flo_path = "TMessagesProj/src/main/java/org/telegram/messenger/FileLoadOperation.java"
+      with open(flo_path, "r", encoding="utf-8") as f:
+          flo = f.read()
+      target = "maxDownloadRequestsBig = 8;"
+      hook = "maxDownloadRequestsBig = org.telegram.messenger.amin.AminHooks.downloadBoostMaxRequests(forceSmallChunk) > 0 ? org.telegram.messenger.amin.AminHooks.downloadBoostMaxRequests(forceSmallChunk) : 8; if (org.telegram.messenger.amin.AminHooks.downloadBoostBigChunkBytes(forceSmallChunk) > 0) { downloadChunkSizeBig = org.telegram.messenger.amin.AminHooks.downloadBoostBigChunkBytes(forceSmallChunk); }"
+      if target in flo and "downloadBoostMaxRequests" not in flo:
+          flo = flo.replace(target, hook, 1)
+          with open(flo_path, "w", encoding="utf-8") as f:
+              f.write(flo)
+      fuo_path = "TMessagesProj/src/main/java/org/telegram/messenger/FileUploadOperation.java"
+      with open(fuo_path, "r", encoding="utf-8") as f:
+          fuo = f.read()
+      utarget = "uploadChunkSize = 64 * 1024;"
+      uhook = "uploadChunkSize = org.telegram.messenger.amin.AminHooks.uploadSpeedBoostEnabled() ? 512 * 1024 : 64 * 1024;"
+      if utarget in fuo and "uploadSpeedBoostEnabled" not in fuo:
+          fuo = fuo.replace(utarget, uhook, 1)
+          with open(fuo_path, "w", encoding="utf-8") as f:
+              f.write(fuo)
+      SPEEDEOF
       cd ..
     # --- Mirror: "Register fork package in google-services.json" ----------
     - |
@@ -195,35 +211,6 @@ build:
         done
         test "$ok" = 1 && test -f "$ANDROID_SDK_ROOT/ndk/$NDK_VERSION/source.properties"
       fi
-    # --- Mirror: "Set up Go 1.25 (Soar)" + "Build Soar bridge .aar" ------
-    # build.yml uses actions/setup-go; here the official Go 1.25 tarball
-    # is fetched into the project dir and cached (.goroot/.gopath/
-    # .gomodcache in the cache block above). Keep the Go version in
-    # step with build.yml.
-    - |
-      set -e
-      export GOROOT="$CI_PROJECT_DIR/.goroot"
-      export GOPATH="$CI_PROJECT_DIR/.gopath"
-      export GOMODCACHE="$CI_PROJECT_DIR/.gomodcache"
-      export PATH="$GOROOT/bin:$GOPATH/bin:$PATH"
-      if [ ! -x "$GOROOT/bin/go" ]; then
-        curl -sSL -o /tmp/go.tgz "https://go.dev/dl/go1.25.0.linux-amd64.tar.gz"
-        rm -rf /tmp/gotree "$GOROOT"
-        mkdir -p /tmp/gotree
-        tar -C /tmp/gotree -xzf /tmp/go.tgz
-        mv /tmp/gotree/go "$GOROOT"
-        rm -f /tmp/go.tgz
-      fi
-      go version
-      export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/$NDK_VERSION"
-      go install golang.org/x/mobile/cmd/gomobile@latest
-      cd dns-native/soarbridge
-      go get -tool golang.org/x/mobile/cmd/gobind@latest
-      gomobile init
-      gomobile bind -target=android -androidapi 23 -javapkg org.telegram.amingram -o soarbridge.aar .
-      mkdir -p ../../upstream/TMessagesProj/libs
-      cp soarbridge.aar ../../upstream/TMessagesProj/libs/
-      cd "$CI_PROJECT_DIR"
     # --- Mirror: "Build release APK (afat)" -------------------------------
     - |
       set -e
@@ -262,16 +249,16 @@ release:
   rules:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   script:
-    - echo "Creating release v13.0.2-amingram.${CI_PIPELINE_IID}"
+    - echo "Creating release v13.2.2-amingram.${CI_PIPELINE_IID}"
   release:
-    tag_name: "v13.0.2-amingram.$CI_PIPELINE_IID"
+    tag_name: "v13.2.2-amingram.$CI_PIPELINE_IID"
     name: "AminGram $CI_PIPELINE_IID"
     description: |
-      Automated AminGram build (Telegram 13.0.2 overlay, upstream f32ffee).
+      Automated AminGram build (Telegram 13.2.2 overlay, upstream 21f7d10).
       Signed with the AminGram keystore. Pipeline: $CI_PIPELINE_URL
     assets:
       links:
         - name: "AminGram.apk"
-          url: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/amingram/13.0.2-amingram.$CI_PIPELINE_IID/AminGram.apk"
+          url: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/amingram/13.2.2-amingram.$CI_PIPELINE_IID/AminGram.apk"
         - name: "Build job artifacts"
           url: "$CI_PROJECT_URL/-/pipelines/$CI_PIPELINE_ID"

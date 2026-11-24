@@ -1,0 +1,26 @@
+diff --git a/TMessagesProj_App/build.gradle b/TMessagesProj_App/build.gradle
+index 5df3866..b0d3c1b 100644
+--- a/TMessagesProj_App/build.gradle
++++ b/TMessagesProj_App/build.gradle
+@@ -103,8 +103,19 @@ android {
+             debuggable false
+             jniDebuggable false
+             signingConfig signingConfigs.release
+-            minifyEnabled true
+-            shrinkResources true
++            // AminGram (Fix 15): R8 OFF for the release build. Plugins look
++            // Telegram classes up by NAME (Python from-imports, jclass,
++            // embedded-DEX reflection), and every fix round so far (Fix 8,
++            // 11, 12, 13, 14) was another class R8 had renamed or stripped.
++            // minifyEnabled false skips shrinking, obfuscation and
++            // optimization entirely, so every class keeps its real name and
++            // this whack-a-mole ends. Cost: a bigger APK (measured in the
++            // Fix 15 release notes). shrinkResources must be false too — it
++            // requires minifyEnabled. The -keep rules in proguard-rules.pro
++            // stay in place as no-ops; removing them risks breaking the
++            // patch replay.
++            minifyEnabled false
++            shrinkResources false
+             multiDexEnabled true
+             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), '../TMessagesProj/proguard-rules.pro'
+             ndk.debugSymbolLevel = 'FULL'

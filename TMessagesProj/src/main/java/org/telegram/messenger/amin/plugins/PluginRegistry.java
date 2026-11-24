@@ -5,17 +5,23 @@ import android.content.SharedPreferences;
 
 import org.telegram.messenger.amin.modules.AntiDeleteModule;
 import org.telegram.messenger.amin.modules.AutoSaverModule;
+import org.telegram.messenger.amin.modules.AyuForwardModule;
 import org.telegram.messenger.amin.modules.EditHistoryModule;
+import org.telegram.messenger.amin.modules.FolderChatQolModule;
+import org.telegram.messenger.amin.modules.ForwardAsCopyModule;
+import org.telegram.messenger.amin.modules.FreeTranslateModule;
+import org.telegram.messenger.amin.modules.GestureActionsModule;
+import org.telegram.messenger.amin.modules.GhostModeModule;
 import org.telegram.messenger.amin.modules.GhostStoriesModule;
+import org.telegram.messenger.amin.modules.HiddenChatsModule;
 import org.telegram.messenger.amin.modules.HideSponsoredModule;
 import org.telegram.messenger.amin.modules.HideStoriesModule;
-import org.telegram.messenger.amin.modules.FreeTranslateModule;
-import org.telegram.messenger.amin.modules.GhostModeModule;
-import org.telegram.messenger.amin.modules.HiddenChatsModule;
 import org.telegram.messenger.amin.modules.KeywordRadarModule;
 import org.telegram.messenger.amin.modules.LocalPremiumModule;
+import org.telegram.messenger.amin.modules.MessageFiltersModule;
 import org.telegram.messenger.amin.modules.ScreenshotUnlockModule;
 import org.telegram.messenger.amin.modules.SendWhenOnlineModule;
+import org.telegram.messenger.amin.modules.SpeedBoostModule;
 import org.telegram.messenger.amin.modules.VideoBackgroundModule;
 
 import java.util.ArrayList;
@@ -48,13 +54,19 @@ public final class PluginRegistry {
         MODULES.add(new GhostStoriesModule());
         MODULES.add(new AntiDeleteModule());
         MODULES.add(new FreeTranslateModule());
+        MODULES.add(new ForwardAsCopyModule());
         MODULES.add(new VideoBackgroundModule());
         MODULES.add(new KeywordRadarModule());
+        MODULES.add(new MessageFiltersModule());
+        MODULES.add(new FolderChatQolModule());
+        MODULES.add(new GestureActionsModule());
+        MODULES.add(new SpeedBoostModule());
         MODULES.add(new AutoSaverModule());
         MODULES.add(new EditHistoryModule());
         MODULES.add(new HideStoriesModule());
         MODULES.add(new HideSponsoredModule());
         MODULES.add(new ScreenshotUnlockModule());
+        MODULES.add(new AyuForwardModule());
         MODULES.add(new HiddenChatsModule());
         MODULES.add(new SendWhenOnlineModule());
         for (ModModule module : MODULES) {

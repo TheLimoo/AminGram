@@ -1,0 +1,137 @@
+diff --git a/TMessagesProj/build.gradle b/TMessagesProj/build.gradle
+index 6fd1c85..2554895 100644
+--- a/TMessagesProj/build.gradle
++++ b/TMessagesProj/build.gradle
+@@ -3,6 +3,7 @@ import org.gradle.nativeplatform.platform.internal.DefaultNativePlatform
+ apply plugin: 'com.android.library'
+ apply plugin: 'org.telegram.build-plugin'
+ apply plugin: 'idea'
++apply plugin: 'com.chaquo.python'
+ 
+ idea {
+     module {
+@@ -146,9 +147,23 @@ android {
+     }
+ 
+     defaultConfig {
+-        minSdkVersion 23
++        // AminGram (M0): Chaquopy 17 requires minSdk >= 24. This drops
++        // Android 6.0 (API 23) only; Android 7.0+ is unaffected.
++        minSdkVersion 24
+         targetSdkVersion 36
+ 
++        // AminGram (M4 fix, CI runs 43751207829 / 43752502295):
++        // Chaquopy requires ndk.abiFilters in the module it is
++        // applied to ("Variant 'debug': Chaquopy requires
++        // ndk.abiFilters", PythonPlugin.getAbis, Gradle configure
++        // time, ~1m26s in). Upstream has no abiFilters in this
++        // library module at all; the four ABIs match the app
++        // module's product flavors, and Python 3.11 keeps the
++        // 32-bit slices (3.12+ would be 64-bit only).
++        ndk {
++            abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
++        }
++
+         vectorDrawables.generatedDensities = ['mdpi', 'hdpi', 'xhdpi', 'xxhdpi']
+ 
+         multiDexEnabled true
+@@ -246,6 +261,56 @@ android {
+ }
+ 
+ 
++// AminGram (M0): Chaquopy Python runtime for the .plugin engine.
++// Plugin on the library module (exactly one module per app):
++// Python source lives in TMessagesProj/src/main/python/ and is
++// delivered by the overlay copy. Python 3.11 is pinned: it is the
++// last version with 32-bit ABI support (3.12+ is 64-bit only), so
++// the afat flavor's armeabi-v7a slice still builds. buildPython
++// must match the runtime version on the build machine (CI installs
++// Python 3.11 via actions/setup-python).
++chaquopy {
++    defaultConfig {
++        version "3.11"
++        buildPython "python3.11"
++        // AminGram (Fix 8 / v3.0.8): elyx_runtime imports PyYAML at
++        // top level (archive/assets/localization/metadata/namespace),
++        // and pip_controller lazily imports requests +
++        // packaging.version (plugin_loader disables mini-pip when
++        // they are absent). Without a pip block the requirements
++        // .imy files ship empty (22 bytes) and installing any .elyx
++        // fails with "elyx_runtime unavailable". debugpy is NOT
++        // installed: dev_server imports it inside try/except and
++        // degrades cleanly. No beautifulsoup4/lxml/pillow: no
++        // unguarded SDK import needs them.
++        // AminGram (Fix 9 / v3.0.9): ZwyLib 3.1.0 imports
++        // typing_extensions in utils/java_utils.py, autoupdate/
++        // updater.py and commands/manager.py (unguarded, top level).
++        // Without it ZwyLib fails to import, MSL's guarded zwylib
++        // import falls to its RecursiveMock branch (which never
++        // defines SettingEntry) and the plugin dies at line 119 with
++        // NameError: name 'SettingEntry' is not defined. A plugin
++        // dependency's own imports are part of the pip surface —
++        // sweep plugin deps, not just the SDK.
++        pip {
++            install "PyYAML"
++            install "requests"
++            install "packaging"
++            install "typing_extensions"
++        }
++        // AminGram (M4): bytecode compilation is Chaquopy's
++        // default, but only as a best-effort warning — when it
++        // fails, the app still builds and compiles on the phone
++        // (slower startup, more storage). src = true makes it a
++        // REQUIRED build step: the build fails instead of shipping
++        // uncompiled sources. stdlib ships pre-compiled already
++        // (stdlib-pyc.zip), so this only covers our own sources.
++        pyc {
++            src = true
++        }
++    }
++}
++
+ def getProps(String propName) {
+     def propsFile = rootProject.file('local.properties')
+     if (propsFile.exists()) {
+diff --git a/TMessagesProj/proguard-rules.pro b/TMessagesProj/proguard-rules.pro
+index a76770e..2f0fb4e 100644
+--- a/TMessagesProj/proguard-rules.pro
++++ b/TMessagesProj/proguard-rules.pro
+@@ -85,3 +85,23 @@
+ # Use -keep to explicitly keep any other classes shrinking would remove
+ #-dontoptimize
+-#-dontobfuscate
+\ No newline at end of file
++#-dontobfuscate
++
++# AminGram (M0): Chaquopy Python engine. Python reaches these by
++# name (jclass / module imports), and R8 DOES run on the release
++# build (TMessagesProj_App release: minifyEnabled true), so without
++# these keeps the engine's entry points are renamed and Python
++# cannot start or load plugins.
++-keep class com.chaquo.python.** { *; }
++-dontwarn com.chaquo.python.**
++-keep class org.telegram.messenger.amin.pyplugins.** { *; }
++-keep class com.exteragram.messenger.plugins.PluginsController { *; }
++-keep class com.exteragram.messenger.plugins.PluginsController$Plugin { *; }
++-keep class com.exteragram.messenger.utils.AppUtils { *; }
++# AminGram (M0): class names plugins and DEX code resolve by string
++# (keepnames only - members are audited per target in M3).
++-keepnames class org.telegram.ui.SettingsActivity
++-keepnames class org.telegram.ui.Components.UItem
++-keepnames class org.telegram.ui.Components.UniversalAdapter
++-keepnames class org.telegram.ui.Components.UniversalRecyclerView
++-keepnames class org.telegram.messenger.LocaleController
++-keepnames class org.telegram.messenger.ApplicationLoader
+diff --git a/build.gradle b/build.gradle
+index e04698a..684d3f5 100644
+--- a/build.gradle
++++ b/build.gradle
+@@ -11,6 +11,8 @@ buildscript {
+         classpath 'com.huawei.agconnect:agcp:1.9.1.301'
+         classpath 'com.google.firebase:firebase-crashlytics-gradle:3.0.8'
+         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.0"
++        // AminGram (M0): Chaquopy Gradle plugin for the Python engine.
++        classpath 'com.chaquo.python:gradle:17.2.0'
+     }
+ }
+ repositories {

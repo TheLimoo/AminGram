@@ -1,0 +1,146 @@
+# Rebase AminGram onto real exteraGram v13.2.2 and build the APK.
+#
+# The runner does everything: it checks out branch extera-base (AminGram
+# overlay + keeper patches + scripts/rebase_extera.py), clones exteraGram
+# tag v13.2.2, runs the rebase script (overlay copy, hunk-level patches,
+# hub rewire, FULL AI delete, FreeTranslate re-derivation, rebrand), then
+# builds :TMessagesProj:assembleFullAfatRelease with AminGram's signing
+# key and API keys from repo secrets, and publishes the release.
+#
+# Secrets (repo secrets on TheLimoo/AminGram, verified to exist):
+#   AMINGRAM_KEYSTORE_B64, AMINGRAM_KEYSTORE_PASSWORD, AMINGRAM_KEY_ALIAS,
+#   AMINGRAM_KEY_PASSWORD, API_ID, API_HASH
+# No secret value is ever printed: API_KEYS is written by Python from env
+# and the keystore is decoded straight to disk.
+
+name: Rebase AminGram onto exteraGram
+
+on:
+  push:
+    branches:
+      - extera-base
+    paths:
+      - .github/workflows/rebase-extera.yml
+      - scripts/rebase_extera.py
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rebase-extera
+  cancel-in-progress: true
+
+jobs:
+  rebase-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out extera-base
+        uses: actions/checkout@v4
+        with:
+          ref: extera-base
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Android SDK 37.0 + build-tools 36.0.0
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$ANDROID_HOME/cmdline-tools/16.0/bin/sdkmanager"
+          fi
+          yes | "$SDKMANAGER" --licenses > /dev/null
+          # The API 37 platform ships as the minor version "android-37.0"
+          # ("platforms;android-37" does not exist).
+          "$SDKMANAGER" "platforms;android-37.0" "build-tools;36.0.0"
+
+      - name: Restore NDK 29.0.14206865 cache
+        id: ndk-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.ANDROID_HOME }}/ndk/29.0.14206865
+          key: ndk-29.0.14206865
+
+      - name: Install NDK 29.0.14206865
+        if: steps.ndk-cache.outputs.cache-hit != 'true'
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$ANDROID_HOME/cmdline-tools/16.0/bin/sdkmanager"
+          fi
+          "$SDKMANAGER" "ndk;29.0.14206865"
+
+      - name: Rebase onto exteraGram v13.2.2
+        run: python3 scripts/rebase_extera.py
+
+      - name: Write local.properties (SDK + Python for Chaquopy)
+        run: |
+          {
+            echo "sdk.dir=$ANDROID_HOME"
+            echo "python.build=$(which python3.11)"
+          } > extera/local.properties
+
+      - name: Decode signing keystore
+        run: |
+          mkdir -p extera/TMessagesProj/config
+          printf '%s' "${{ secrets.AMINGRAM_KEYSTORE_B64 }}" \
+            | base64 -d > extera/TMessagesProj/config/exteraGram.jks
+          ls -l extera/TMessagesProj/config/exteraGram.jks
+
+      - name: Write API_KEYS (from secrets, never printed)
+        env:
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
+          AMINGRAM_KEYSTORE_PASSWORD: ${{ secrets.AMINGRAM_KEYSTORE_PASSWORD }}
+          AMINGRAM_KEY_ALIAS: ${{ secrets.AMINGRAM_KEY_ALIAS }}
+          AMINGRAM_KEY_PASSWORD: ${{ secrets.AMINGRAM_KEY_PASSWORD }}
+        run: |
+          python3 - <<'EOF'
+          import os
+          lines = [
+              f"APP_ID = {os.environ['API_ID']}",
+              f"APP_HASH = \"{os.environ['API_HASH']}\"",
+              "MAPS_V2_API = ",
+              f"SIGNING_KEY_STORE_PASSWORD = {os.environ['AMINGRAM_KEYSTORE_PASSWORD']}",
+              f"SIGNING_KEY_ALIAS = {os.environ['AMINGRAM_KEY_ALIAS']}",
+              f"SIGNING_KEY_PASSWORD = {os.environ['AMINGRAM_KEY_PASSWORD']}",
+          ]
+          with open("extera/API_KEYS", "w") as f:
+              f.write("\n".join(lines) + "\n")
+          print("API_KEYS written (contents not shown)")
+          EOF
+
+      - name: Build full afat release APK
+        working-directory: extera
+        run: ./gradlew :TMessagesProj:assembleFullAfatRelease --stacktrace
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AminGram-apk-extera
+          path: extera/TMessagesProj/build/outputs/apk/fullAfat/release/*.apk
+          if-no-files-found: error
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v13.2.2-amingram.${{ github.run_number }}
+          name: AminGram v13.2.2-amingram.${{ github.run_number }} (exteraGram base)
+          body: |
+            AminGram rebased onto real exteraGram v13.2.2 (GPL-3.0).
+            Same package (org.telegram.amingram) and signing key as before,
+            versionCode 73049 — installs over v13.2.2-amingram.76.
+            Based on exteraGram: https://github.com/exteraSquad/exteraGram
+          files: extera/TMessagesProj/build/outputs/apk/fullAfat/release/*.apk
+          draft: false
+          prerelease: false

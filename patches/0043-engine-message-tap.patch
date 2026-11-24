@@ -1,0 +1,45 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/SearchDownloadsContainer.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/SearchDownloadsContainer.java
+index 05fff22..5802c54 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/SearchDownloadsContainer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/SearchDownloadsContainer.java
+@@ -164,6 +164,10 @@ public class SearchDownloadsContainer extends FrameLayout implements Notificatio
+                         PhotoViewer.getInstance().openPhoto(documents, 0, 0, 0, 0, new PhotoViewer.EmptyPhotoViewerProvider());
+                         return;
+                     }
++                    // exteraless plugins: установить плагин, а не открывать его в просмотрщике.
++                    if (app.exteraless.plugins.PluginInstallHelper.handleMessageTap(parentActivity, message)) {
++                        return;
++                    }
+                     AndroidUtilities.openDocument(message, parentActivity, parentFragment);
+                 } else if (!cell.isLoading()) {
+                     messageObject.putInDownloadsStore = true;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/SharedMediaLayout.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/SharedMediaLayout.java
+index aba7308..ee75059 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/SharedMediaLayout.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/SharedMediaLayout.java
+@@ -7675,6 +7675,10 @@ public class SharedMediaLayout extends FrameLayout implements Theme.Colorable, N
+                             }
+                             return;
+                         }
++                        // exteraless plugins: установить плагин, а не открывать его в просмотрщике.
++                        if (app.exteraless.plugins.PluginInstallHelper.handleMessageTap(profileActivity.getParentActivity(), message)) {
++                            return;
++                        }
+                         AndroidUtilities.openDocument(message, profileActivity.getParentActivity(), profileActivity);
+                     } else if (!cell.isLoading()) {
+                         MessageObject messageObject = cell.getMessage();
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/FilteredSearchView.java b/TMessagesProj/src/main/java/org/telegram/ui/FilteredSearchView.java
+index fd0f49c..214f5cc 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/FilteredSearchView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/FilteredSearchView.java
+@@ -1159,6 +1159,10 @@ public class FilteredSearchView extends FrameLayout implements Theme.Colorable,
+                         }
+                         return;
+                     }
++                    // exteraless plugins: установить плагин, а не открывать его в просмотрщике.
++                    if (app.exteraless.plugins.PluginInstallHelper.handleMessageTap(parentActivity, message)) {
++                        return;
++                    }
+                     AndroidUtilities.openDocument(message, parentActivity, parentFragment);
+                 } else if (!cell.isLoading()) {
+                     MessageObject messageObject = cell.getMessage();

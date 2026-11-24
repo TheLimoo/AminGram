@@ -18,33 +18,45 @@ jobs:
 
       - name: Fetch upstream Telegram source (pinned)
         run: |
+          # Submodules are cloned at HEAD's pins; checkout alone leaves them
+          # behind 21f7d10 (e.g. tgcalls lost MtProtoIceTransport.cpp upstream,
+          # which broke CMake). Re-pin them explicitly after checkout.
           git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/DrKLO/Telegram.git upstream
-          cd upstream && git fetch --depth 1 origin f32ffeec763f0bdbf4bec25b52d654f77bff733d && git checkout FETCH_HEAD && git log --oneline -1
+          cd upstream && git fetch --depth 1 origin 21f7d109da6ab3506c9e9577f98c6a38771ab335 && git checkout FETCH_HEAD && git submodule update --init --recursive --depth 1 && git log --oneline -1
 
       - name: Apply AminGram overlay
         run: |
           cp -r TMessagesProj upstream/
           cd upstream
-          git apply ../patches/0001-settings-plugins-entry.patch
-          git apply ../patches/0002-rebrand-package.patch
-          git apply ../patches/0003-phase2-hooks.patch
-          git apply ../patches/0004-videobg-rebrand.patch
-          git apply ../patches/0006-message-pipeline-hook.patch
-          git apply ../patches/0007-icon-changer.patch
-          git apply ../patches/0008-hide-stories.patch
-          git apply ../patches/0009-profile-user-id.patch
-          git apply ../patches/0010-js-runtime-gradle.patch
-          git apply ../patches/0011-hidden-chats-dialogs-filter.patch
-          git apply ../patches/0012-ghost-stories.patch
-          git apply ../patches/0013-outgoing-command-hook.patch
-          git apply ../patches/0014-attach-menu-plugins.patch
-          git apply ../patches/0016-google-auth.patch
-          git apply ../patches/0017-hide-sponsored.patch
-          git apply ../patches/0018-message-details.patch
-          git apply ../patches/0019-screenshot-unlock.patch
-          git apply ../patches/0020-context-menu-items.patch
-          git apply ../patches/0021-dns-tunnel.patch
-          git apply ../patches/0023-font-selector.patch
+          # Apply every patch in patches/ in filename order.
+          # (A hardcoded list silently dropped 0029 in Fix 1:
+          # the patch existed in the repo but the workflow
+          # never applied it, so the minSdk fix never reached
+          # the build. A loop cannot drift from the directory.)
+          for p in ../patches/*.patch; do
+            echo "git apply $p"
+            git apply "$p"
+          done
+          python3 - <<'SPEEDEOF'
+          flo_path = "TMessagesProj/src/main/java/org/telegram/messenger/FileLoadOperation.java"
+          with open(flo_path, "r", encoding="utf-8") as f:
+              flo = f.read()
+          target = "maxDownloadRequestsBig = 8;"
+          hook = "maxDownloadRequestsBig = org.telegram.messenger.amin.AminHooks.downloadBoostMaxRequests(forceSmallChunk) > 0 ? org.telegram.messenger.amin.AminHooks.downloadBoostMaxRequests(forceSmallChunk) : 8; if (org.telegram.messenger.amin.AminHooks.downloadBoostBigChunkBytes(forceSmallChunk) > 0) { downloadChunkSizeBig = org.telegram.messenger.amin.AminHooks.downloadBoostBigChunkBytes(forceSmallChunk); }"
+          if target in flo and "downloadBoostMaxRequests" not in flo:
+              flo = flo.replace(target, hook, 1)
+              with open(flo_path, "w", encoding="utf-8") as f:
+                  f.write(flo)
+          fuo_path = "TMessagesProj/src/main/java/org/telegram/messenger/FileUploadOperation.java"
+          with open(fuo_path, "r", encoding="utf-8") as f:
+              fuo = f.read()
+          utarget = "uploadChunkSize = 64 * 1024;"
+          uhook = "uploadChunkSize = org.telegram.messenger.amin.AminHooks.uploadSpeedBoostEnabled() ? 512 * 1024 : 64 * 1024;"
+          if utarget in fuo and "uploadSpeedBoostEnabled" not in fuo:
+              fuo = fuo.replace(utarget, uhook, 1)
+              with open(fuo_path, "w", encoding="utf-8") as f:
+                  f.write(fuo)
+          SPEEDEOF
 
       - name: Register fork package in google-services.json
         run: |
@@ -97,6 +109,14 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      - name: Set up Python 3.11 (Chaquopy build requirement)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          # Chaquopy requires the build-machine Python to match the
+          # app's pinned Python version (3.11, patch 0025); the
+          # ubuntu runner's default Python is not 3.11.
+
       - name: Restore cached NDK
         id: ndk-cache
         uses: actions/cache/restore@v4
@@ -127,23 +147,6 @@ jobs:
           path: /usr/local/lib/android/sdk/ndk/27.2.12479018
           key: ndk-27.2.12479018
 
-      - name: Set up Go 1.25 (Soar)
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.25'
-
-      - name: Build Soar bridge .aar (gomobile)
-        env:
-          ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/27.2.12479018
-        run: |
-          go install golang.org/x/mobile/cmd/gomobile@latest
-          cd dns-native/soarbridge
-          go get -tool golang.org/x/mobile/cmd/gobind@latest
-          gomobile init
-          gomobile bind -target=android -androidapi 23 -javapkg org.telegram.amingram -o soarbridge.aar .
-          mkdir -p ../../upstream/TMessagesProj/libs
-          cp soarbridge.aar ../../upstream/TMessagesProj/libs/
-
       - name: Build release APK (afat)
         env:
           AMINGRAM_KEYSTORE_PASSWORD: ${{ secrets.AMINGRAM_KEYSTORE_PASSWORD }}
@@ -164,7 +167,7 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v13.0.2-amingram.${{ github.run_number }}
+          tag_name: v13.2.2-amingram.${{ github.run_number }}
           name: AminGram ${{ github.run_number }}
           files: upstream/TMessagesProj_App/build/outputs/apk/afat/release/*.apk
           fail_on_unmatched_files: true

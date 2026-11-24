@@ -7,6 +7,7 @@ import android.media.MediaMetadataRetriever;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.telegram.messenger.FileLog;
+import org.telegram.messenger.Utilities;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -53,6 +54,13 @@ public final class WallpaperLibraryStore {
 
     private static final String LEGACY_PREFS = "amingram_videobg";
     private static final String LEGACY_KEY_PATH = "path";
+
+    /** True while the legacy-file copy queued by ensureMigrated()
+     *  is still queued/running on stageQueue (audit P1-4). Guarded
+     *  by the class lock — every entry point of this store is
+     *  synchronized; the queued runnable clears it under the same
+     *  lock when it finishes. */
+    private static boolean migrationInFlight;
 
     private WallpaperLibraryStore() {
     }
@@ -282,6 +290,12 @@ public final class WallpaperLibraryStore {
      * {@link #save}). On copy failure nothing is marked or changed,
      * so the next call retries. With no usable legacy file the
      * library simply starts empty.
+     *
+     * The copy itself is queued on Utilities.stageQueue (audit
+     * P1-4): it can be tens of MB and this method is reachable from
+     * the main thread (getActivePath via ChatActivity attach), so
+     * it must never run inline on the caller. While the copy is
+     * pending, getActivePath() serves the legacy file directly.
      */
     public static synchronized void ensureMigrated(Context context) {
         if (context == null) {
@@ -310,6 +324,55 @@ public final class WallpaperLibraryStore {
                 syncLegacy(context, items, loadActiveId(context));
                 return;
             }
+            if (migrationInFlight) {
+                // A copy is already queued; the legacy file keeps
+                // serving via getActivePath() until it lands.
+                return;
+            }
+            migrationInFlight = true;
+            final Context appContext = context.getApplicationContext();
+            final String path = legacyPath;
+            Utilities.stageQueue.postRunnable(() -> {
+                try {
+                    completeLegacyMigration(appContext, path);
+                } catch (Throwable ignored) {
+                } finally {
+                    synchronized (WallpaperLibraryStore.class) {
+                        migrationInFlight = false;
+                    }
+                }
+            });
+        } catch (Throwable t) {
+            FileLog.e("AminGram wallpapers: migration failed, will retry", t);
+        }
+    }
+
+    /** Second half of the legacy migration, run on stageQueue (see
+     *  {@link #ensureMigrated}). Same semantics as the original
+     *  inline copy: success imports the file as item #1 ("Current",
+     *  active) and marks the migration done; failure marks nothing,
+     *  so the next ensureMigrated() call retries. */
+    private static synchronized void completeLegacyMigration(Context context, String legacyPath) {
+        try {
+            if (prefs(context).getBoolean(KEY_MIGRATED, false)) {
+                return;
+            }
+            List<Entry> items = loadItems(context);
+            if (!items.isEmpty()) {
+                // The user picked/adopted something while the copy
+                // was queued — trust the library, just mark done.
+                prefs(context).edit().putBoolean(KEY_MIGRATED, true).apply();
+                syncLegacy(context, items, loadActiveId(context));
+                return;
+            }
+            File legacyFile = legacyPath == null ? null : new File(legacyPath);
+            if (!fileUsable(legacyFile)) {
+                // Vanished between queueing and running: start
+                // empty, like the no-legacy-file branch.
+                save(context, items, loadActiveId(context));
+                prefs(context).edit().putBoolean(KEY_MIGRATED, true).apply();
+                return;
+            }
             Entry migrated = copyIntoLibrary(context, new FileInputStream(legacyFile),
                     extOf(legacyPath), "Current", items);
             if (migrated == null) {
@@ -333,6 +396,7 @@ public final class WallpaperLibraryStore {
     private static Entry copyIntoLibrary(Context context, InputStream in, String ext,
                                          String displayName, List<Entry> items) {
         File out = null;
+        OutputStream os = null;
         try {
             File dir = wallpapersDir(context);
             if (!dir.exists() && !dir.mkdirs()) {
@@ -341,7 +405,7 @@ public final class WallpaperLibraryStore {
             String id = generateId();
             String fileName = id + "." + sanitizeExt(ext);
             out = new File(dir, fileName);
-            OutputStream os = new FileOutputStream(out);
+            os = new FileOutputStream(out);
             byte[] buffer = new byte[8192];
             int read;
             long total = 0;
@@ -350,6 +414,7 @@ public final class WallpaperLibraryStore {
                 total += read;
             }
             os.close();
+            os = null;
             if (total == 0) {
                 out.delete();
                 return null;
@@ -366,6 +431,16 @@ public final class WallpaperLibraryStore {
             }
             return null;
         } finally {
+            // The output stream joins the input stream in the
+            // finally (audit P1-5): previously it was closed only
+            // on the success path and leaked on any read/write
+            // failure.
+            if (os != null) {
+                try {
+                    os.close();
+                } catch (Throwable ignored) {
+                }
+            }
             if (in != null) {
                 try {
                     in.close();
@@ -429,14 +504,31 @@ public final class WallpaperLibraryStore {
      *  is no (usable) active wallpaper. */
     public static synchronized String getActivePath(Context context) {
         Entry active = getActive(context);
-        if (active == null || context == null) {
-            return null;
+        if (active != null && context != null) {
+            try {
+                return active.file(context).getAbsolutePath();
+            } catch (Throwable t) {
+                return null;
+            }
         }
-        try {
-            return active.file(context).getAbsolutePath();
-        } catch (Throwable t) {
-            return null;
+        // Migration still pending (audit P1-4): the library copy is
+        // being made on stageQueue — serve the legacy file directly
+        // until it lands, so the background never blinks out (and
+        // the main thread never copies) on the first launch.
+        if (context != null) {
+            try {
+                if (!prefs(context).getBoolean(KEY_MIGRATED, false)) {
+                    String legacyPath = context.getSharedPreferences(LEGACY_PREFS,
+                            Context.MODE_PRIVATE).getString(LEGACY_KEY_PATH, null);
+                    File legacyFile = legacyPath == null ? null : new File(legacyPath);
+                    if (fileUsable(legacyFile)) {
+                        return legacyFile.getAbsolutePath();
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
         }
+        return null;
     }
 
     /** Makes an item the active wallpaper (+ legacy sync). False —

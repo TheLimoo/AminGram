@@ -1,0 +1,16 @@
+diff --git a/buildSrc/src/main/kotlin/org/telegram/plugin/TelegramBuildAppPlugin.kt b/buildSrc/src/main/kotlin/org/telegram/plugin/TelegramBuildAppPlugin.kt
+index 5007845..232a8c9 100644
+--- a/buildSrc/src/main/kotlin/org/telegram/plugin/TelegramBuildAppPlugin.kt
++++ b/buildSrc/src/main/kotlin/org/telegram/plugin/TelegramBuildAppPlugin.kt
+@@ -27,6 +27,11 @@ class TelegramBuildAppPlugin : Plugin<Project> {
+                 stringsXml.from(
+                     telegramModule.fileTree("src/main/res/values") {
+                         include("strings.xml")
++                        // AminGram (Fix 6 / v3.0.6): the plugin-engine strings live in
++                        // strings_oe_plugins.xml. Without this line TelegramStringsTask
++                        // never sees them, so localization_en.bin has no Plugins* entries
++                        // and every engine string renders as LOC_ERR:null on device.
++                        include("strings_oe_plugins.xml")
+                     },
+                     project.fileTree("src/main/res/values") {
+                         include("strings.xml")

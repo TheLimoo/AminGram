@@ -1,0 +1,55 @@
+diff --git a/TMessagesProj_App/build.gradle b/TMessagesProj_App/build.gradle
+index daff205..27b61d9 100644
+--- a/TMessagesProj_App/build.gradle
++++ b/TMessagesProj_App/build.gradle
+@@ -166,7 +166,7 @@ android {
+     }
+ 
+     defaultConfig {
+-        minSdkVersion 23
++        minSdkVersion 24
+         targetSdkVersion 36
+         versionName APP_VERSION_NAME
+         ndkVersion "27.2.12479018"
+diff --git a/TMessagesProj_AppHockeyApp/build.gradle b/TMessagesProj_AppHockeyApp/build.gradle
+index 4f34a33..0b35363 100644
+--- a/TMessagesProj_AppHockeyApp/build.gradle
++++ b/TMessagesProj_AppHockeyApp/build.gradle
+@@ -163,7 +163,7 @@ android {
+     }
+ 
+     defaultConfig {
+-        minSdkVersion 23
++        minSdkVersion 24
+         targetSdkVersion 36
+         versionName APP_VERSION_NAME
+         ndkVersion "27.2.12479018"
+diff --git a/TMessagesProj_AppHuawei/build.gradle b/TMessagesProj_AppHuawei/build.gradle
+index d9319f3..b900977 100644
+--- a/TMessagesProj_AppHuawei/build.gradle
++++ b/TMessagesProj_AppHuawei/build.gradle
+@@ -143,7 +143,7 @@ android {
+     }
+ 
+     defaultConfig {
+-        minSdkVersion 23
++        minSdkVersion 24
+         targetSdkVersion 36
+         versionName APP_VERSION_NAME
+         ndkVersion "27.2.12479018"
+diff --git a/TMessagesProj_AppStandalone/build.gradle b/TMessagesProj_AppStandalone/build.gradle
+index 1551269..0b8044b 100644
+--- a/TMessagesProj_AppStandalone/build.gradle
++++ b/TMessagesProj_AppStandalone/build.gradle
+@@ -135,7 +135,7 @@ android {
+     }
+ 
+     defaultConfig {
+-        minSdkVersion 23
++        minSdkVersion 24
+         targetSdkVersion 36
+         versionName APP_VERSION_NAME
+         ndkVersion "27.2.12479018"
+-- 
+2.43.0
+

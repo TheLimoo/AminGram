@@ -1,0 +1,214 @@
+diff --git a/TMessagesProj/proguard-rules.pro b/TMessagesProj/proguard-rules.pro
+index 8e5e8a3..948d8e6 100644
+--- a/TMessagesProj/proguard-rules.pro
++++ b/TMessagesProj/proguard-rules.pro
+@@ -93,10 +93,205 @@
+ # cannot start or load plugins.
+ -keep class com.chaquo.python.** { *; }
+ -dontwarn com.chaquo.python.**
+--keep class org.telegram.messenger.amin.pyplugins.** { *; }
+--keep class com.exteragram.messenger.plugins.PluginsController { *; }
+--keep class com.exteragram.messenger.plugins.PluginsController$Plugin { *; }
+--keep class com.exteragram.messenger.utils.AppUtils { *; }
++# AminGram (Fix 5 / v3.0.5): MVEL 2.5.2 ships a JSR-223 integration
++# (org.mvel2.jsr223.MvelScriptEngine[Factory]) that references
++# javax.script.* classes, which do not exist on Android — R8 fails
++# the release build with "Missing classes detected". The engine
++# never uses the JSR-223 ScriptEngine API (it calls MVEL.eval
++# directly), so this code path is dead on Android.
++-dontwarn javax.script.**
++# AminGram (Fix 7 / v3.0.7): MVEL resolves its optimizer classes BY NAME
++# STRING at runtime (OptimizerFactory static init does
++# ClassLoader.loadClass("org.mvel2.asm.ClassWriter"); the accessor
++# compiler is then instantiated via newInstance()). R8 renamed
++# org.mvel2.** in v59, so the lookup failed and MenuInjector's static
++# init threw "unable to instantiate accessor compiler" — opening any
++# chat crashed (NoClassDefFoundError: MenuInjector). Same failure
++# class: HookGate loads de.robv.android.xposed.XposedBridge (and
++# $HookInfo / $CopyOnWriteSortedSet) via Class.forName — already kept
++# by the M3 block below, so no duplicate line here — and
++# ClassProxyFactory generates DEX at runtime with com.android.dx
++# DexMaker. Upstream exteraless keeps all three; we port the missing
++# ones (mvel2 + dx).
++-keep class org.mvel2.** { *; }
++-dontwarn org.mvel2.**
++-keep class com.android.dx.** { *; }
++-dontwarn com.android.dx.**
++# AminGram (Fix 8 / v3.0.8): plugin Python code resolves Telegram
++# classes BY NAME STRING (jclass / Class.forName). R8 renamed
++# org.telegram.messenger.* in v60, so MSL's run_on_queue — which
++# does Class.forName("org.telegram.messenger.DispatchQueue") outside
++# any try — threw NoClassDefFoundError at install time. Upstream
++# exteraless keeps messenger.* and ui.ActionBar.* whole (its
++# proguard lines 9 and 40); BulletinFactory is the one
++# string-looked-up class outside both packages (ui/bulletin.py),
++# so it gets its own keep. LaunchActivity is already kept via the
++# manifest (585 refs in the v60 DEX) and Theme is kept by direct
++# Java references (1375 refs); tgnet.** is kept by the base
++# proguard. Every other jclass/forName target was enumerated from
++# the SDK and is covered by these three lines.
++-keep class org.telegram.messenger.* { *; }
++-keep class org.telegram.ui.ActionBar.* { *; }
++-keep class org.telegram.ui.Components.BulletinFactory { *; }
++# AminGram (Fix 11 / v3.0.11): same failure class as Fix 8, one package
++# further out. ZwyLib's ui/navigation.py does
++# `from org.telegram.ui import LaunchActivity, GroupCreateActivity,
++# DialogsActivity` - R8 renamed GroupCreateActivity in v63, so the
++# plugin load died with "cannot import name 'GroupCreateActivity'".
++# The pristine base proguard keeps only ONE org.telegram.ui class by
++# name (Stories.recorder.FfmpegAudioWaveformLoader); Fix 8 added
++# ActionBar.* + BulletinFactory. A fresh enumeration of EVERY
++# `from org.telegram.ui ... import` and jclass("org.telegram.ui...")
++# across the SDK, ZwyLib 3.1.0 and MSL, checked class-by-class
++# against the v63 DEX descriptors, found the classes below missing
++# (descriptor count 0). Targeted keeps, one per class - no
++# package-wide keep, to preserve obfuscation elsewhere. Present in
++# v63 already (no keep needed): LaunchActivity (manifest),
++# AlertDialog/Theme/BottomSheet (ActionBar.* keep), BulletinFactory,
++# UItem, EditTextBoldCursor. The blur3.source names exist only as
++# alias keys in extera_utils/class_aliases.py - the classes do not
++# exist in the 13.2.2 base (verified: no blur3 files in the pristine
++# tree, the overlay, or the patches); the alias rewrites them to
++# org.telegram.utils.glass.source.GlassSource*, which DO exist and
++# are kept below. The blur3 keeps are no-ops today, kept so a future
++# base that gains them still resolves. LayoutHelper was wrongly
++# listed as present in the Fix 11 brief - the v63 DEX has descriptor
++# count 0 for it, so it is kept here too.
++-keep class org.telegram.ui.GroupCreateActivity { *; }
++-keep class org.telegram.ui.DialogsActivity { *; }
++-keep class org.telegram.ui.Cells.CheckBoxCell { *; }
++-keep class org.telegram.ui.Cells.RadioColorCell { *; }
++-keep class org.telegram.ui.Cells.TextCheckCell2 { *; }
++-keep class org.telegram.ui.Components.ItemOptions { *; }
++-keep class org.telegram.ui.Components.BackupImageView { *; }
++-keep class org.telegram.ui.Components.LineProgressView { *; }
++-keep class org.telegram.ui.Components.RLottieDrawable { *; }
++-keep class org.telegram.ui.Components.BulletinFactory$FileType { *; }
++-keep class org.telegram.ui.Components.LayoutHelper { *; }
++-keep class org.telegram.ui.Components.blur3.source.BlurredBackgroundSource { *; }
++-keep class org.telegram.ui.Components.blur3.source.BlurredBackgroundSourceBitmap { *; }
++-keep class org.telegram.ui.Components.blur3.source.BlurredBackgroundSourceColor { *; }
++-keep class org.telegram.ui.Components.blur3.source.BlurredBackgroundSourceRenderNode { *; }
++-keep class org.telegram.ui.Components.blur3.source.BlurredBackgroundSourceWrapped { *; }
++-keep class org.telegram.ui.Gifts.ProfileGiftsContainer$SelectGiftsBottomSheet { *; }
++-keep class org.telegram.ui.Gifts.SelectGiftsBottomSheet { *; }
++-keep class org.telegram.ui.Stars.StarGiftSheet$PageTransition { *; }
++-keep class org.telegram.utils.glass.source.GlassSource { *; }
++-keep class org.telegram.utils.glass.source.GlassSourceBitmap { *; }
++-keep class org.telegram.utils.glass.source.GlassSourceColor { *; }
++-keep class org.telegram.utils.glass.source.GlassSourceRenderNode { *; }
++-keep class org.telegram.utils.glass.source.GlassSourceWrapped { *; }
++# AminGram (Fix 12 / v3.0.12): pre-flight sweep (2026-11-17, report
++# verify-scratch/sweep/SWEEP-REPORT-2026-11-17.md) of the full ZwyLib
++# 3.1.0 + MSL 1.1.1 corpus (232 Java refs, AST-based) found the gaps
++# below against the v63 DEX. P0: ZwyLib's ui/uikit.py:18 does
++# `from org.telegram.messenger.utils import ViewOutlineProviderImpl`
++# (used at uikit.py:394, boundsWithRoundRect) - the class exists in the
++# 13.2.2 base but R8 renamed it (descriptor count 0 in v63), and Fix 8's
++# `-keep class org.telegram.messenger.*` is single-level and does NOT
++# cover the messenger.utils subpackage. Without this keep the next
++# device test fails exactly like Fix 9 (import zwylib fails, MSL falls
++# to RecursiveMock, NameError: SettingEntry at line 119). Single class,
++# not the whole subpackage: the sweep found this as the ONLY gap in
++# messenger.utils, and the class's anonymous inner classes (BOUNDS_OVAL
++# etc.) are referenced only from inside the class itself, so they need
++# no name keep. Lesson: a single-level -keep does not cover
++# subpackages - enumerate subpackages too. P1-1: MSL's embedded DEX
++# reflectively reads three fields to live-refresh open Settings
++# screens (SettingsSyncManager): LaunchActivity.instance (public
++# static, LaunchActivity.java:393), LaunchActivity.actionBarLayout
++# (public, :312), SettingsActivity.listView (private
++# UniversalRecyclerView, SettingsActivity.java:162). All three were
++# renamed in v63; the failure is swallowed (logged, no crash), so the
++# toggle applies but the open screen stays stale until Settings is
++# reopened. P1-2: MSL DEX lambdas return kotlin/Unit; the app DEX has
++# no kotlin.Unit or DefaultConstructorMarker (R8 stripped them as
++# unused). Likely benign (the 8 setters return void) but the keeps cost
++# nothing; on-device toggle testing is still the proof.
++-keep class org.telegram.messenger.utils.ViewOutlineProviderImpl { *; }
++-keepclassmembers class org.telegram.ui.LaunchActivity { public static org.telegram.ui.LaunchActivity instance; public org.telegram.ui.ActionBar.ActionBarLayout actionBarLayout; }
++-keepclassmembers class org.telegram.ui.SettingsActivity { private org.telegram.ui.Components.UniversalRecyclerView listView; }
++-keep class kotlin.Unit { *; }
++-keep class kotlin.jvm.internal.DefaultConstructorMarker { *; }
++# AminGram (Fix 13 / v3.0.13): nested classes are separate classes in R8.
++# A single-class keep (-keep class org.telegram.ui.GroupCreateActivity
++# { *; }, Fix 11) keeps that class and its members but NOT its nested
++# classes, so ZwyLib's ui/navigation.py:100
++# `class _PickerDelegate(dynamic_proxy(GroupCreateActivity.GroupCreateActivityDelegate))`
++# died on device with "AttributeError: type object 'GroupCreateActivity'
++# has no attribute 'GroupCreateActivityDelegate'" - the interface exists
++# in the 13.2.2 base (GroupCreateActivity.java:164) but its v65 DEX
++# descriptor count is 0. Package-wildcard keeps DO cover nested classes
++# (proven: NotificationCenter$NotificationCenterDelegate and
++# AlertDialog$OnButtonClickListener survive via the messenger.*/ActionBar.*
++# wildcards), so these three use the $* wildcard form, scoped to three
++# already-kept parents - it also covers ContactsAddActivityDelegate
++# (GroupCreateActivity.java:168, no current lookup) and any other nested
++# class of these parents. Re-enumeration (AST-based, Parent.Nested
++# attribute access + dynamic_proxy + jclass("...$...") across the SDK,
++# ZwyLib 3.1.0 and MSL, checked by exact descriptor match against the
++# v65 DEX) found FOUR missing nested classes, not three: the brief's
++# three below, PLUS UItem$UItemFactory - ZwyLib's ui/plugin_cells.py:116
++# calls UItem.UItemFactory.setup(...) at import time (api.py:87 imports
++# navigation before api.py:157 imports plugin_cells, so the delegate
++# error surfaced first, but the factory call would have failed next).
++# UItemFactory is `public static abstract class UItemFactory`
++# (UItem.java:845) with `setup(UItemFactory)` (:846); descriptor 0 in
++# v65. All four exist in the 13.2.2 base. Present already, no action:
++# NotificationCenter$NotificationCenterDelegate, R$raw, R$string,
++# AlertDialog$Builder/$OnButtonClickListener, Theme$ThemeInfo,
++# BulletinFactory$FileType, StarGiftSheet$PageTransition,
++# SendMessagesHelper$SendMessageParams, SharedConfig$ProxyInfo,
++# Utilities$Callback/2/3/Return, TLRPC$* (tgnet.** keep),
++# CustomSetting$Factory, PluginsConstants$Xposed,
++# PluginsController$InstallCallback. UItem's reflectively-read fields
++# `factories`/`factoryInstances` (plugin_cells.py:106-107) are present
++# under their real names in v65 - no field keep needed. Lesson: a keep
++# list built from from-imports + jclass strings misses Parent.Nested
++# attribute access - enumerate that pattern too.
++-keep class org.telegram.ui.GroupCreateActivity$* { *; }
++-keep class org.telegram.ui.DialogsActivity$* { *; }
++-keep class org.telegram.ui.Components.UItem$* { *; }
++# AminGram (Fix 14 / v3.0.15): a plugin's embedded DEX resolves
++# kotlin-stdlib classes through the APP class loader. MSL's DexLoader
++# (material_settings_list.py:154) loads its embedded DEX with
++# InMemoryDexClassLoader(buffer, ctx.getClassLoader()) and calls
++# PluginCore.init(ctx); PluginCore.<clinit> touches PaletteManager,
++# whose <clinit> (PaletteManager.kt:103) references [Lkotlin/Pair; -
++# on device v66 it died with "NoClassDefFoundError: Failed resolution
++# of: [Lkotlin/Pair;" caused by "ClassNotFoundException: kotlin.Pair".
++# R8 had stripped kotlin-stdlib from the app DEX as unused (the app's
++# own code barely uses Kotlin), so the parent loader cannot resolve
++# it. The MSL DEX references exactly 20 kotlin.* classes (extracted
++# from DEX_BASE64, base64+LZMA; DEX intact, SHA-256 bbeb7267...;
++# checked by exact descriptor match against the v66 DEX): 4 already
++# present - kotlin.Unit + DefaultConstructorMarker (Fix 12 keeps),
++# kotlin.jvm.functions.Function0/Function1 - and the 16 below absent
++# (descriptor 0). One keep per class, NOT a broad kotlin.** keep
++# (that would keep all of kotlin-stdlib and cost size). No live
++# kotlin jclass lookups exist in ZwyLib 3.1.0 / MSL / SDK Python
++# (grep: zero matches; plugin_loader.py only lists "kotlin" as a
++# namespace root). Lesson: Fix 12's P1-2 kotlin.Unit keep was this
++# same gap, one class early - every kotlin.* class a plugin DEX
++# references must be kept in the app build.
++-keep class kotlin.Pair { *; }
++-keep class kotlin.Function0 { *; }
++-keep class kotlin.Function1 { *; }
++-keep class kotlin.Metadata { *; }
++-keep class kotlin.Result { *; }
++-keep class kotlin.Result$Companion { *; }
++-keep class kotlin.ResultKt { *; }
++-keep class kotlin.TuplesKt { *; }
++-keep class kotlin.collections.ArrayList { *; }
++-keep class kotlin.collections.ArraysKt { *; }
++-keep class kotlin.collections.CollectionsKt { *; }
++-keep class kotlin.collections.HashMap { *; }
++-keep class kotlin.collections.MapsKt { *; }
++-keep class kotlin.jvm.JvmStatic { *; }
++-keep class kotlin.jvm.internal.Intrinsics { *; }
++-keep class kotlin.ranges.RangesKt { *; }
++-keep class app.exteraless.plugins.** { *; }
++-keep class com.exteragram.messenger.** { *; }
+ # AminGram (M0): class names plugins and DEX code resolve by string
+ # (keepnames only - members are audited per target in M3).
+ -keepnames class org.telegram.ui.SettingsActivity

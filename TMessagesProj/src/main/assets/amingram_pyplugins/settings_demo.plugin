@@ -1,0 +1,62 @@
+"""SettingsDemo — M1 fixture plugin for the AminGram Python engine.
+
+Test fixture only: NOT auto-installed, NOT bundled for users.
+Install it from the Python Plugins page (Add plugin from file)
+to prove create_settings() renders, settings persist across
+restart, on_change fires, and the real Bulletin shows.
+
+Expected on the plugin page:
+- a "Demo" header, a switch, a selector, two text inputs, an
+  info text row, a divider and a custom row, plus one dict-style
+  switch (proving dict rows work as well as ui.settings objects).
+- toggling the switch shows a real Bulletin ("Demo on/off").
+- changing any row persists: kill and reopen the app and the
+  values are still there.
+- the selector offers fast / balanced / slow.
+"""
+
+__id__ = "settings_demo"
+__name__ = "SettingsDemo"
+__version__ = "1.0"
+__author__ = "AminGram"
+__app_version__ = ">=12.10.6"
+__category__ = ["tools"]
+
+from base_plugin import BasePlugin
+from ui.settings import (
+    Header, Switch, Selector, Input, EditText, Text, Divider, Custom,
+)
+
+
+class SettingsDemo(BasePlugin):
+    def on_plugin_load(self):
+        self.logger.info("SettingsDemo loaded")
+
+    def on_plugin_unload(self):
+        self.logger.info("SettingsDemo unloaded")
+
+    def create_settings(self):
+        return [
+            Header("Demo"),
+            Switch("demo_enabled", "Enable demo", default=True,
+                   on_change=self._on_toggle),
+            Selector("demo_mode", "Mode",
+                     options=["fast", "balanced", "slow"],
+                     default="balanced"),
+            Input("demo_name", "Display name", default="Demo",
+                  hint="Shown in the log"),
+            EditText("demo_note", "Note", default="",
+                     hint="Anything"),
+            Text("About",
+                 "Fixture plugin for M1 settings UI testing."),
+            Divider(),
+            Custom("Custom row — display only in M1."),
+            # Dict-style row (same contract, no ui.settings import).
+            {"type": "switch", "key": "demo_dict",
+             "text": "Dict-style switch", "default": False},
+        ]
+
+    def _on_toggle(self, value):
+        from ui.bulletin import BulletinHelper
+        BulletinHelper.show_with_button(
+            "Demo " + ("on" if value else "off"), button="OK")

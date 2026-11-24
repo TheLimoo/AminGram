@@ -9,7 +9,6 @@ import android.os.Bundle;
 import android.provider.OpenableColumns;
 
 import org.telegram.messenger.ApplicationLoader;
-import org.telegram.messenger.amin.plugins.js.PluginFiles;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -19,21 +18,18 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * File-picker trampoline for {@code amin.pickFile} (Platform v2
- * Phase B, §1.6) — the same pattern as GoogleAuthActivity: plugin
- * code runs on the plugin thread with no Activity of its own, so
- * this transparent Activity exists only to host the system
- * document picker (SAF, ACTION_OPEN_DOCUMENT — no broad storage
- * permission is ever requested) and hand the result back through
- * a static pending-callback registry.
+ * File-picker trampoline: code that runs with no Activity of its own
+ * needs a transparent Activity to host the system document picker (SAF,
+ * ACTION_OPEN_DOCUMENT — no broad storage permission is ever
+ * requested) and hand the result back through a static
+ * pending-callback registry.
  *
- * With copy:true the picked file is copied into the plugin's
- * durable sandbox (the returned path survives restarts); with
- * copy:false it is staged under the cache dir and the returned
- * path is valid for this session. Cancellation or any failure
- * delivers null. Process death while the picker is open loses
- * the pending callback — the documented bound, identical to
- * Google sign-in's: the user simply retries.
+ * With copy:true the picked file is copied into the app's files
+ * dir (the returned path survives restarts); with copy:false it
+ * is staged under the cache dir and the returned path is valid
+ * for this session. Cancellation or any failure delivers null.
+ * Process death while the picker is open loses the pending
+ * callback — the documented bound: the user simply retries.
  */
 public class PluginFilePickerActivity extends Activity {
 
@@ -138,21 +134,16 @@ public class PluginFilePickerActivity extends Activity {
             context = this;
         }
         String name = "picked-file";
-        long size = -1;
         Cursor cursor = null;
         try {
             cursor = getContentResolver().query(uri, null, null, null, null);
             if (cursor != null && cursor.moveToFirst()) {
                 int nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                int sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE);
                 if (nameIdx >= 0) {
                     String display = cursor.getString(nameIdx);
                     if (display != null && !display.isEmpty()) {
                         name = display.replaceAll("[\\\\/]", "_");
                     }
-                }
-                if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) {
-                    size = cursor.getLong(sizeIdx);
                 }
             }
         } catch (Throwable ignored) {
@@ -170,14 +161,11 @@ public class PluginFilePickerActivity extends Activity {
             if (in == null) {
                 return null;
             }
-            if (pending.copy) {
-                if (!PluginFiles.validName(name)) {
-                    name = "picked-file";
-                }
-                return PluginFiles.copyInto(context, pending.pluginId, name, in, size);
-            }
-            // Session staging under the cache dir.
-            File dir = new File(context.getCacheDir(), "jsplugins-pick/" + pending.pluginId);
+            // Durable copy under the app's files dir, or session
+            // staging under the cache dir when copy is false.
+            File dir = pending.copy
+                    ? new File(context.getFilesDir(), "picked/" + pending.pluginId)
+                    : new File(context.getCacheDir(), "amin-pick/" + pending.pluginId);
             if (!dir.exists()) {
                 dir.mkdirs();
             }

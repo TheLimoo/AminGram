@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Monochrome (themed-icon) layer for the Ryoku Frame icon: kanji mark + frame. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2.13"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M17.05,17.05H90.95V90.95H17.05Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M49.68,31.155C49.68,35.548 49.729,39.746 49.534,43.749L34.548,43.749L34.987,45.116L49.485,45.116C48.753,57.075 45.677,67.375 32.4,76.113L32.888,76.845C50.9,69.23 54.659,58.1 55.635,45.116L67.497,45.116C67.009,58.296 66.13,67.619 64.324,69.181C63.836,69.669 63.299,69.816 62.372,69.816C60.956,69.816 56.612,69.523 53.683,69.279L53.634,69.913C56.416,70.401 58.808,71.329 59.882,72.256C60.858,73.135 61.2,74.648 61.2,76.454C64.91,76.454 67.106,75.673 68.864,73.965C71.793,71.182 72.866,61.908 73.403,46.141C74.526,45.946 75.161,45.653 75.6,45.165L70.182,40.479L66.96,43.749L55.684,43.749C55.928,40.381 55.928,36.866 56.026,33.303C57.197,33.157 57.685,32.668 57.783,31.936Z" />
+</vector>

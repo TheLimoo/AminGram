@@ -1,0 +1,2826 @@
+package org.telegram.messenger.amin.ui;
+
+import android.app.Activity;
+import android.app.Dialog;
+import android.content.Context;
+import android.content.Intent;
+import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffColorFilter;
+import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
+import android.text.Editable;
+import android.text.TextPaint;
+import android.text.TextWatcher;
+import android.text.style.MetricAffectingSpan;
+import android.text.style.RelativeSizeSpan;
+import android.text.SpannableString;
+import android.text.Spanned;
+import android.text.TextUtils;
+import android.text.style.ForegroundColorSpan;
+import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.FrameLayout;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+
+import androidx.core.graphics.ColorUtils;
+import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
+
+import org.telegram.messenger.AndroidUtilities;
+import org.telegram.messenger.FileLog;
+import org.telegram.messenger.MediaController;
+import org.telegram.messenger.MessageObject;
+import org.telegram.messenger.MessagesController;
+import org.telegram.messenger.R;
+import org.telegram.messenger.UserConfig;
+import org.telegram.messenger.amin.core.AutoSaverStore;
+import org.telegram.messenger.amin.core.BackupManager;
+import org.telegram.messenger.amin.core.DeletedStore;
+import org.telegram.messenger.amin.core.HiddenChatsStore;
+import org.telegram.messenger.amin.core.MessagePipeline;
+import org.telegram.messenger.amin.core.SendWhenOnlineStore;
+import org.telegram.messenger.amin.core.VaultStore;
+import org.telegram.messenger.amin.core.WallpaperLibraryStore;
+import org.telegram.messenger.amin.AminHooks;
+import org.telegram.messenger.amin.modules.AyuForwardModule;
+import org.telegram.messenger.amin.modules.FolderChatQolModule;
+import org.telegram.messenger.amin.modules.ForwardAsCopyModule;
+import org.telegram.messenger.amin.modules.GestureActionsModule;
+import org.telegram.messenger.amin.modules.GhostModeModule;
+import org.telegram.messenger.amin.modules.LocalPremiumModule;
+import org.telegram.messenger.amin.modules.MessageFiltersModule;
+import org.telegram.messenger.amin.modules.SpeedBoostModule;
+import org.telegram.messenger.amin.plugins.ModModule;
+import org.telegram.messenger.amin.plugins.PluginRegistry;
+import org.telegram.tgnet.TLRPC;
+import org.telegram.tgnet.tl.TL_stars;
+import org.telegram.ui.ActionBar.AlertDialog;
+import org.telegram.ui.ActionBar.BaseFragment;
+import org.telegram.ui.ActionBar.Theme;
+import org.telegram.ui.Components.BulletinFactory;
+import org.telegram.ui.Components.EditTextBoldCursor;
+import org.telegram.ui.Components.LayoutHelper;
+import org.telegram.ui.Components.RecyclerListView;
+import org.telegram.ui.Components.Switch;
+import org.telegram.ui.SelectAnimatedEmojiDialog;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+
+/**
+ * Hub v3 — the shared hub core behind {@link AminPluginsActivity}
+ * (the dossier home) and {@link AminHubPageActivity} (one category
+ * page). The Row model, the segment machinery, the row builders, the
+ * whole click/dialog layer and the plugin card moved here from the
+ * pre-v3 single-file hub; regrouping changed WHICH rows are built
+ * together, never an action id, a module id or a handler.
+ *
+ * Presentation is the dossier skin (see {@link HubSkin}): hub-local
+ * constants and hub-loaded typefaces on hub views only. Dialogs
+ * opened from here stay stock upstream AlertDialogs, untouched.
+ */
+public final class HubCommon {
+
+    /** Services the hosting fragment lends to the shared layer. */
+    public interface Host {
+        Context context();
+
+        BaseFragment fragment();
+
+        Activity parentActivity();
+
+        int currentAccount();
+
+        void present(BaseFragment fragment);
+
+        void showDialog(Dialog dialog);
+
+        void startActivityForResult(Intent intent, int requestCode);
+
+        /** Plugins page "Search plugins": leave the page and open
+         *  the home search pre-filtered to plugins. */
+        void openHomePluginSearch();
+    }
+
+    public static Host hostFor(BaseFragment fragment) {
+        return new FragmentHost(fragment);
+    }
+
+    private static final class FragmentHost implements Host {
+        private final BaseFragment fragment;
+
+        FragmentHost(BaseFragment fragment) {
+            this.fragment = fragment;
+        }
+
+        @Override
+        public Context context() {
+            return fragment.getContext();
+        }
+
+        @Override
+        public BaseFragment fragment() {
+            return fragment;
+        }
+
+        @Override
+        public Activity parentActivity() {
+            return fragment.getParentActivity();
+        }
+
+        @Override
+        public int currentAccount() {
+            return fragment.getCurrentAccount();
+        }
+
+        @Override
+        public void present(BaseFragment f) {
+            fragment.presentFragment(f);
+        }
+
+        @Override
+        public void showDialog(Dialog dialog) {
+            fragment.showDialog(dialog);
+        }
+
+        @Override
+        public void startActivityForResult(Intent intent, int requestCode) {
+            fragment.startActivityForResult(intent, requestCode);
+        }
+
+        @Override
+        public void openHomePluginSearch() {
+            AminPluginsActivity.requestPluginsSearch();
+            fragment.finishFragment();
+        }
+    }
+
+    private static final int REQUEST_BACKUP_EXPORT = 3919;
+    private static final int REQUEST_BACKUP_IMPORT = 3920;
+
+    public static final int MODE_HOME = 0;
+    public static final int MODE_PAGE = 1;
+
+    private static final int KIND_MASTHEAD = 10;
+    private static final int KIND_STATS = 11;
+    private static final int KIND_SEARCH = 12;
+    private static final int KIND_LABEL = 13;
+    private static final int KIND_CATEGORY = 14;
+    private static final int KIND_QUICK = 15;
+    private static final int KIND_MODULE = 1;
+    private static final int KIND_ACTION = 3;
+    private static final int KIND_FOOTER = 6;
+    private static final int KIND_PAGE_HEADER = 17;
+    private static final int KIND_SUBROW = 16;
+    private static final int KIND_SEARCH_RESULT = 18;
+    private static final int KIND_NOTE = 19;
+    private static final int KIND_PAGE_END = 20;
+
+    private static final int SEG_NONE = HubSkin.SEG_NONE;
+    private static final int SEG_ONLY = HubSkin.SEG_ONLY;
+    private static final int SEG_FIRST = HubSkin.SEG_FIRST;
+    private static final int SEG_MID = HubSkin.SEG_MID;
+    private static final int SEG_LAST = HubSkin.SEG_LAST;
+
+    // Status-tail tones for module cards.
+    private static final int TONE_NONE = 0;
+    private static final int TONE_ACTIVE = 1;
+    private static final int TONE_ATTENTION = 2;
+    private static final int TONE_MUTED = 3;
+
+    // Sub-row flavours: a boolean toggle (switch) or a value pick.
+    private static final int SUB_TOGGLE = 0;
+    private static final int SUB_PICK = 1;
+
+    static final class Row {
+        int kind;
+        String title;
+        String value;
+        String action;
+        ModModule module;
+        SendWhenOnlineStore.Entry swoEntry;
+        // Presentation:
+        int seg = SEG_NONE;
+        int block = -1;
+        String statusText;
+        int statusTone = TONE_NONE;
+        boolean accent;
+        // v3:
+        String quickId;
+        String categoryId;
+        String indexText;
+        String subtitle;
+        String targetKey;
+        int subKind;
+        SearchEntry searchEntry;
+    }
+
+    // ------------------------------------------------------------------
+    // Categories (hub-v2 taxonomy, hub-v3 skin)
+    // ------------------------------------------------------------------
+
+    static final class Category {
+        final String id;
+        final String index;
+        final String name;
+        final String subtitle;
+        final String meta;
+
+        Category(String id, String index, String name, String subtitle, String meta) {
+            this.id = id;
+            this.index = index;
+            this.name = name;
+            this.subtitle = subtitle;
+            this.meta = meta;
+        }
+    }
+
+    static final Category[] CATEGORIES = {
+            new Category("plugins", "01", "Plugins",
+                    "Python (.plugin) engine", null),
+            new Category("privacy", "02", "Privacy & Ghost",
+                    "Ghost · records · AyuForward · hidden", "7 MODULES · 3 GROUPS · ALL ON-DEVICE"),
+            new Category("appearance", "03", "Appearance & Media",
+                    "Wallpaper · icon · font · saver", "4 MODULES · 3 GROUPS · ALL ON-DEVICE"),
+            new Category("tools", "04", "Tools & Automation",
+                    "Premium · filters · gestures · speed · QoL", "9 MODULES · 1 GROUP · ALL ON-DEVICE"),
+            new Category("system", "05", "System & Data",
+                    "Backup · restore · developer", "3 ACTIONS · 1 GROUP · ALL ON-DEVICE"),
+    };
+
+    static Category categoryById(String id) {
+        for (Category category : CATEGORIES) {
+            if (category.id.equals(id)) {
+                return category;
+            }
+        }
+        return null;
+    }
+
+    /** Old ModModule sections are gone from the UI; membership is by
+     *  module id into the v2 taxonomy. Returns {categoryId, group} —
+     *  group: privacy 0=Ghost 1=Records 2=Locked; appearance
+     *  0=Appearance 1=Chat list 2=Media; tools n/a (-1). */
+    private static String moduleCategory(String moduleId) {
+        switch (moduleId) {
+            case "ghost_mode":
+            case "ghost_stories":
+            case "anti_delete":
+            case "edit_history":
+            case "screenshot_unlock":
+            case "ayu_forward":
+            case "hidden_chats":
+                return "privacy";
+            case "video_background":
+            case "hide_stories":
+            case "hide_sponsored":
+            case "auto_saver":
+                return "appearance";
+            default:
+                return "tools";
+        }
+    }
+
+    private static int moduleGroup(String moduleId) {
+        switch (moduleId) {
+            case "ghost_mode":
+            case "ghost_stories":
+                return 0;
+            case "anti_delete":
+            case "edit_history":
+                return 1;
+            case "screenshot_unlock":
+            case "ayu_forward":
+            case "hidden_chats":
+                return 2;
+            case "video_background":
+                return 0;
+            case "hide_stories":
+            case "hide_sponsored":
+                return 1;
+            case "auto_saver":
+                return 2;
+            default:
+                return -1;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // State
+    // ------------------------------------------------------------------
+
+    private final Host host;
+    private final int mode;
+    private String categoryId;
+
+    private RecyclerListView listView;
+    private HubAdapter adapter;
+    private final List<Row> rows = new ArrayList<>();
+    private int blockCounter;
+    private View lastRowView;
+    private final Runnable swoListener = () -> AndroidUtilities.runOnUIThread(this::rebuild);
+
+    // Home search state.
+    private boolean searching;
+    private boolean searchPluginsOnly;
+    private String searchQuery = "";
+    private List<SearchEntry> searchIndex;
+    private boolean buildingSearchIndex;
+    // Search-arrival highlight (page mode).
+    private String highlightKey;
+    private String flashingKey;
+
+    private static final class SearchEntry {
+        String title;
+        String breadcrumb;
+        String categoryId;
+        String targetKey;
+        String haystack;
+    }
+
+    public HubCommon(Host host, int mode, String categoryId) {
+        this.host = host;
+        this.mode = mode;
+        this.categoryId = categoryId;
+    }
+
+    public void setHighlight(String highlightKey) {
+        this.highlightKey = highlightKey;
+    }
+
+    // ------------------------------------------------------------------
+    // View + lifecycle
+    // ------------------------------------------------------------------
+
+    public View createRootView(Context context) {
+        FrameLayout layout = new FrameLayout(context);
+        layout.setBackgroundColor(HubSkin.BG);
+
+        listView = new RecyclerListView(context);
+        listView.setLayoutManager(new LinearLayoutManager(context, LinearLayoutManager.VERTICAL, false));
+        adapter = new HubAdapter();
+        listView.setAdapter(adapter);
+        listView.setOnItemClickListener((view, position) -> onRowClick(view, position));
+        layout.addView(listView, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        rebuild();
+        return layout;
+    }
+
+    public void onResume() {
+        if (mode == MODE_PAGE && "tools".equals(categoryId)) {
+            SendWhenOnlineStore.addListener(swoListener);
+        }
+        rebuild();
+    }
+
+    public void onPause() {
+        if (mode == MODE_PAGE && "tools".equals(categoryId)) {
+            SendWhenOnlineStore.removeListener(swoListener);
+        }
+    }
+
+    public void rebuild() {
+        Context context = host.context();
+        if (context == null) {
+            return;
+        }
+        rows.clear();
+        blockCounter = 0;
+        if (mode == MODE_HOME) {
+            buildHomeRows(context);
+        } else {
+            buildPageRows(context);
+        }
+        assignSegments();
+        if (adapter != null) {
+            adapter.notifyDataSetChanged();
+        }
+        maybeFlashHighlight();
+    }
+
+    /** Card segments, recomputed per page from the actual row list:
+     *  builders tag every card row with a block id; each maximal run
+     *  of one block id becomes FIRST/MID/LAST (or ONLY). Everything
+     *  else stays uncarded. (The pre-v3 machinery inferred groups
+     *  from row kinds and section boundaries; the runs it produced
+     *  are the same shape, now explicit.) */
+    private void assignSegments() {
+        for (Row row : rows) {
+            row.seg = SEG_NONE;
+        }
+        int i = 0;
+        while (i < rows.size()) {
+            int block = rows.get(i).block;
+            if (block < 0) {
+                i++;
+                continue;
+            }
+            int j = i;
+            while (j + 1 < rows.size() && rows.get(j + 1).block == block) {
+                j++;
+            }
+            closeGroup(i, j + 1);
+            i = j + 1;
+        }
+    }
+
+    private void closeGroup(int start, int endExclusive) {
+        if (endExclusive - start == 1) {
+            rows.get(start).seg = SEG_ONLY;
+        } else {
+            rows.get(start).seg = SEG_FIRST;
+            rows.get(endExclusive - 1).seg = SEG_LAST;
+            for (int j = start + 1; j < endExclusive - 1; j++) {
+                rows.get(j).seg = SEG_MID;
+            }
+        }
+    }
+
+    private int nextBlock() {
+        return ++blockCounter;
+    }
+
+    private Row addRow(int kind) {
+        Row row = new Row();
+        row.kind = kind;
+        rows.add(row);
+        return row;
+    }
+
+    private Row actionRow(int block, String actionId, String title, String value) {
+        Row row = addRow(KIND_ACTION);
+        row.block = block;
+        row.action = actionId;
+        row.title = title;
+        row.value = value;
+        return row;
+    }
+
+    /** Child rows are NOT carded (hub-v3 mockup: they hang on the
+     *  hairline guide under their module's card), so no block id. */
+    private Row subRow(String actionId, String title, String value, int subKind) {
+        Row row = addRow(KIND_SUBROW);
+        row.action = actionId;
+        row.title = title;
+        row.value = value;
+        row.subKind = subKind;
+        return row;
+    }
+
+    private void labelRow(String text) {
+        Row row = addRow(KIND_LABEL);
+        row.title = text;
+    }
+
+    // ------------------------------------------------------------------
+    // Home builder
+    // ------------------------------------------------------------------
+
+    private void buildHomeRows(Context context) {
+        if (searching) {
+            addRow(KIND_SEARCH);
+            buildSearchResults(context);
+            return;
+        }
+        addRow(KIND_MASTHEAD);
+        addRow(KIND_STATS);
+        addRow(KIND_SEARCH);
+
+        labelRow("PINNED // QUICK ACCESS");
+        int quickBlock = nextBlock();
+        Row ghost = addRow(KIND_QUICK);
+        ghost.block = quickBlock;
+        ghost.quickId = "ghost";
+        ghost.title = "Ghost Mode";
+
+        labelRow("INDEX // CATEGORIES");
+        int categoryBlock = nextBlock();
+        for (Category category : CATEGORIES) {
+            Row row = addRow(KIND_CATEGORY);
+            row.block = categoryBlock;
+            row.categoryId = category.id;
+            row.indexText = category.index;
+            row.title = category.name;
+            row.subtitle = category.subtitle;
+            row.value = categoryHomeValue(context, category);
+        }
+
+        Row footer = addRow(KIND_FOOTER);
+        // The mockup's footer wording (same disclaimer as the
+        // pre-v3 hub, compressed): rendered uppercase mono.
+        footer.title = "AminGram runs on Telegram's own sync · no polling, no extra "
+                + "background work. Queued actions fire on next launch.";
+    }
+
+    private String categoryHomeValue(Context context, Category category) {
+        switch (category.id) {
+            case "plugins":
+                try {
+                    return String.valueOf(app.exteraless.plugins.PluginsController
+                            .getInstance().getPlugins().size());
+                } catch (Throwable ignored) {
+                    return "";
+                }
+            case "privacy":
+                return "07";
+            case "appearance":
+                return "06";
+            case "tools":
+                return "09";
+            case "system":
+                return "03";
+            default:
+                return "";
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Category page builders
+    // ------------------------------------------------------------------
+
+    private void buildPageRows(Context context) {
+        Category category = categoryById(categoryId);
+        Row header = addRow(KIND_PAGE_HEADER);
+        header.title = category != null ? category.name : "";
+        header.indexText = category != null ? category.index : "";
+        header.value = category != null ? pageMeta(context, category) : "";
+        switch (categoryId) {
+            case "plugins":
+                buildPluginsPage(context);
+                break;
+            case "privacy":
+                buildGroupedModulesPage(context, "privacy",
+                        new String[]{"01 // GHOST", "02 // RECORDS", "03 // LOCKED & HIDDEN"});
+                break;
+            case "appearance":
+                buildGroupedModulesPage(context, "appearance",
+                        new String[]{"01 // APPEARANCE", "02 // CHAT LIST", "03 // MEDIA"});
+                break;
+            case "tools":
+                buildGroupedModulesPage(context, "tools", null);
+                break;
+            case "system":
+                buildSystemPage(context);
+                break;
+            default:
+                break;
+        }
+        if (category != null) {
+            Row end = addRow(KIND_PAGE_END);
+            end.indexText = category.index;
+            end.title = category.name;
+        }
+    }
+
+    private String pageMeta(Context context, Category category) {
+        if ("plugins".equals(category.id)) {
+            int count = 0;
+            try {
+                count = app.exteraless.plugins.PluginsController
+                        .getInstance().getPlugins().size();
+            } catch (Throwable ignored) {
+            }
+            return count + " PYTHON PLUGINS · ALL ON-DEVICE";
+        }
+        return category.meta != null ? category.meta : "";
+    }
+
+    private void buildGroupedModulesPage(Context context, String category, String[] groupLabels) {
+        int currentGroup = -2;
+        for (ModModule module : PluginRegistry.modules()) {
+            if (!category.equals(moduleCategory(module.id()))) {
+                continue;
+            }
+            int group = moduleGroup(module.id());
+            if (groupLabels != null && group != currentGroup) {
+                currentGroup = group;
+                if (group >= 0 && group < groupLabels.length) {
+                    labelRow(groupLabels[group]);
+                }
+            }
+            addModuleBlock(context, module);
+            if ("appearance".equals(category) && "video_background".equals(module.id())) {
+                // App Icon / App font sit in the Appearance group,
+                // right after the wallpaper module's own rows.
+                int block = nextBlock();
+                actionRow(block, "app_icon", "App Icon", currentIconTitle());
+                actionRow(block, "app_font", "App font", AminFonts.familyTitle());
+            }
+        }
+    }
+
+    private void buildSystemPage(Context context) {
+        int block = nextBlock();
+        actionRow(block, "backup_export", "Export AminGram backup", "JSON file");
+        actionRow(block, "backup_import", "Import backup", null);
+        actionRow(block, "dev_mode", "Developer mode",
+                AminPluginsActivity.isDeveloperMode() ? "On for this session" : "Off");
+    }
+
+    private void buildPluginsPage(Context context) {
+        // Only the Python (.plugin) engine remains (the JS engine
+        // was removed): its own hub page.
+        labelRow("01 // PYTHON (.plugin)");
+        int pyBlock = nextBlock();
+        actionRow(pyBlock, "py_plugins", "Python plugins (.plugin)",
+                app.exteraless.plugins.PluginsController.getInstance().isEngineEnabled() ? "Engine on" : "Engine off");
+    }
+
+    /** One merged module card: the module row itself (title +
+     *  description + status tail + switch, computed exactly like the
+     *  pre-v3 header + INFO pair) followed by the module's own rows —
+     *  action rows inside the same block, toggle/pick children in a
+     *  sub-block of their own. */
+    private void addModuleBlock(Context context, ModModule module) {
+        int block = nextBlock();
+        Row row = addRow(KIND_MODULE);
+        row.module = module;
+        row.block = block;
+        String status = "";
+        try {
+            status = module.status(context);
+        } catch (Throwable ignored) {
+        }
+        if (status == null) {
+            status = "";
+        }
+        boolean enabled = PluginRegistry.isEnabled(context, module);
+        if (!enabled) {
+            row.statusText = "OFF";
+            row.statusTone = TONE_MUTED;
+        } else if (status.startsWith("Needs")) {
+            row.statusText = status;
+            row.statusTone = TONE_ATTENTION;
+        } else if (status.isEmpty() || status.equals("Active")) {
+            row.statusText = "ACTIVE";
+            row.statusTone = TONE_ACTIVE;
+        } else {
+            row.statusText = status;
+            row.statusTone = TONE_ACTIVE;
+        }
+        addModuleActions(context, module, block);
+    }
+
+    private void addModuleActions(Context context, ModModule module, int moduleBlock) {
+        switch (module.id()) {
+            case "ghost_mode": {
+                // Stage 2: granular suppressions under the master
+                // Ghost Mode switch. Each is a boolean sub-row in
+                // the hub's own switch-row idiom (the module block
+                // continues — the guide line carries the indent);
+                // all default to On.
+                subRow("ghost_suppress_read", "Suppress Read Receipts",
+                        GhostModeModule.suppressReadReceipts(context) ? "On" : "Off", SUB_TOGGLE);
+                subRow("ghost_suppress_typing", "Suppress Typing & Recording Action",
+                        GhostModeModule.suppressTyping(context) ? "On" : "Off", SUB_TOGGLE);
+                subRow("ghost_suppress_online", "Suppress Online Status",
+                        GhostModeModule.suppressOnlineStatus(context) ? "On" : "Off", SUB_TOGGLE);
+                break;
+            }
+            case "anti_delete": {
+                int count = VaultStore.count(context, DeletedStore.PREFS, DeletedStore.DELETED_KEY);
+                actionRow(moduleBlock, "view_deleted", "Deleted messages", String.valueOf(count));
+                break;
+            }
+            case "edit_history": {
+                int count = VaultStore.count(context, DeletedStore.PREFS, DeletedStore.EDIT_KEY);
+                actionRow(moduleBlock, "view_edits", "Edit history", String.valueOf(count));
+                break;
+            }
+            case "ayu_forward": {
+                subRow("ayu_forward_media", "Re-upload restricted media",
+                        AyuForwardModule.reuploadMedia(context) ? "On" : "Off", SUB_TOGGLE);
+                subRow("ayu_forward_copy_save", "Unlock copy & gallery save",
+                        AyuForwardModule.unlockCopySave(context) ? "On" : "Off", SUB_TOGGLE);
+                break;
+            }
+            case "hidden_chats": {
+                // v1.3.4: ONE row into the dedicated management
+                // page (AminHiddenChatsActivity) — the scattered
+                // set-PIN / unlock / per-chat / lock rows that
+                // used to be generated here are gone.
+                String value;
+                if (!HiddenChatsStore.hasPin(context)) {
+                    value = "Set a PIN";
+                } else if (!HiddenChatsStore.isUnlocked()) {
+                    value = "Locked";
+                } else {
+                    value = HiddenChatsStore.getHiddenIds(context).size() + " hidden";
+                }
+                actionRow(moduleBlock, "manage_hidden_chats", "Manage hidden chats", value);
+                break;
+            }
+            case "video_background": {
+                // v2.0: the module's files live in the live
+                // wallpaper library (its own page); the hub only
+                // links there and offers deactivate-without-deleting.
+                int count = WallpaperLibraryStore.count(context);
+                actionRow(moduleBlock, "live_wallpapers", "Live wallpapers",
+                        count == 0 ? "Empty" : count + " wallpapers");
+                if (WallpaperLibraryStore.getActive(context) != null) {
+                    actionRow(moduleBlock, "clear_wallpaper", "Clear / None", "Keep library");
+                }
+                break;
+            }
+            case "auto_saver": {
+                int count = AutoSaverStore.count(context);
+                actionRow(moduleBlock, "view_saved", "Saved media", String.valueOf(count));
+                break;
+            }
+            case "forward_as_copy": {
+                subRow("fac_drop_author", "Drop “Forwarded from” header",
+                        ForwardAsCopyModule.dropAuthor(context) ? "On" : "Off", SUB_TOGGLE);
+                subRow("fac_drop_caption", "Strip media captions",
+                        ForwardAsCopyModule.dropCaption(context) ? "On" : "Off", SUB_TOGGLE);
+                break;
+            }
+            case "keyword_radar": {
+                int keywords = MessagePipeline.loadKeywords(context).size();
+                actionRow(moduleBlock, "edit_keywords", "Radar keywords", keywords == 0 ? "None" : keywords + " set");
+                int hits = VaultStore.count(context, MessagePipeline.RADAR_PREFS,
+                        MessagePipeline.RADAR_HITS_KEY);
+                actionRow(moduleBlock, "view_hits", "Radar hits", String.valueOf(hits));
+                break;
+            }
+            case "message_filters": {
+                int kwCount = MessageFiltersModule.loadKeywords(context).size();
+                actionRow(moduleBlock, "edit_filter_keywords", "Filter keywords",
+                        kwCount == 0 ? "None" : kwCount + " set");
+                int senderCount = MessageFiltersModule.loadSenders(context).size();
+                actionRow(moduleBlock, "edit_filter_senders", "Filtered sender IDs",
+                        senderCount == 0 ? "None" : senderCount + " set");
+                subRow("filter_channels_only", "Filter channels & groups only",
+                        MessageFiltersModule.channelsOnly(context) ? "On" : "Off", SUB_TOGGLE);
+                break;
+            }
+            case "folder_chat_qol": {
+                subRow("qol_mark_folder_read", "Mark folder as read",
+                        FolderChatQolModule.markFolderRead(context) ? "On" : "Off", SUB_TOGGLE);
+                subRow("qol_jump_to_start", "Jump to beginning of chat",
+                        FolderChatQolModule.jumpToStart(context) ? "On" : "Off", SUB_TOGGLE);
+                subRow("qol_folders_in_forward", "Folders in forward picker",
+                        FolderChatQolModule.foldersInForward(context) ? "On" : "Off", SUB_TOGGLE);
+                actionRow(moduleBlock, "qol_mark_folder_now", "Mark a folder as read now…", "Pick folder");
+                break;
+            }
+            case "gesture_actions": {
+                subRow("gesture_double_tap_pick", "Double-tap action",
+                        GestureActionsModule.doubleTapLabel(GestureActionsModule.doubleTapAction(context)), SUB_PICK);
+                subRow("gesture_double_tap_own", "Double-tap own message = Edit",
+                        GestureActionsModule.doubleTapOwnEdit(context) ? "On" : "Off", SUB_TOGGLE);
+                subRow("gesture_swipe_pick", "Swipe action",
+                        GestureActionsModule.swipeLabel(GestureActionsModule.swipeAction(context)), SUB_PICK);
+                break;
+            }
+            case "speed_boost": {
+                subRow("speed_boost_dl_pick", "Download boost level",
+                        SpeedBoostModule.levelShortLabel(SpeedBoostModule.downloadLevel(context)), SUB_PICK);
+                subRow("speed_boost_ul_toggle", "Upload speed boost",
+                        SpeedBoostModule.uploadBoost(context) ? "On" : "Off", SUB_TOGGLE);
+                break;
+            }
+            case "send_when_online": {
+                actionRow(moduleBlock, "swo_new", "New message…", "pick a person");
+                for (SendWhenOnlineStore.Entry entry : SendWhenOnlineStore.getAll(context)) {
+                    Row row = addRow(KIND_ACTION);
+                    row.block = moduleBlock;
+                    row.action = "swo_entry";
+                    row.swoEntry = entry;
+                    row.title = entry.name == null || entry.name.isEmpty()
+                            ? String.valueOf(entry.peer) : entry.name;
+                    row.value = entry.isPending() ? "Waiting for them to come online…"
+                            : "Sent ✓ — tap to remove";
+                }
+                break;
+            }
+            case "local_premium": {
+                // AyuGram-style local premium: sub-toggles that only
+                // narrow the master switch (Ghost Mode idiom) plus
+                // the per-account picks. Everything is local to this
+                // device — see LocalPremiumModule.
+                long selfId = UserConfig.getInstance(host.currentAccount()).getClientUserId();
+                subRow("lp_flag", "Premium flag",
+                        LocalPremiumModule.premiumFlag(context) ? "On" : "Off", SUB_TOGGLE);
+                subRow("lp_picker", "Premium emoji & sticker packs",
+                        LocalPremiumModule.pickerUnlock(context) ? "On" : "Off", SUB_TOGGLE);
+                subRow("lp_status_toggle", "Emoji status",
+                        LocalPremiumModule.emojiStatusEnabled(context) ? "On" : "Off", SUB_TOGGLE);
+                long statusDoc = LocalPremiumModule.statusDocumentId(context, selfId);
+                subRow("lp_status_pick", "Status emoji",
+                        statusDoc == 0 ? "None" : "Set", SUB_PICK);
+                subRow("lp_name_toggle", "Name emoji",
+                        LocalPremiumModule.nameEmojiEnabled(context) ? "On" : "Off", SUB_TOGGLE);
+                long nameDoc = LocalPremiumModule.nameEmojiDocumentId(context, selfId);
+                String nameAlt = LocalPremiumModule.nameEmojiAlt(context, selfId);
+                subRow("lp_name_pick", "Name emoji — choose",
+                        nameDoc == 0 ? "None"
+                                : nameAlt == null || nameAlt.isEmpty() ? "Set" : nameAlt, SUB_PICK);
+                subRow("lp_colors_toggle", "My colors",
+                        LocalPremiumModule.peerColorsEnabled(context) ? "On" : "Off", SUB_TOGGLE);
+                subRow("lp_name_color", "Name color",
+                        peerColorValueText(LocalPremiumModule.nameColorId(context, selfId)), SUB_PICK);
+                subRow("lp_profile_color", "Profile color",
+                        peerColorValueText(LocalPremiumModule.profileColorId(context, selfId)), SUB_PICK);
+                subRow("lp_reply_color", "Reply color",
+                        peerColorValueText(LocalPremiumModule.replyColorId(context, selfId)), SUB_PICK);
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Home search — index from the same builders; a result tap
+    // navigates (category page + scroll + flash), never toggles.
+    // ------------------------------------------------------------------
+
+    public boolean isSearching() {
+        return mode == MODE_HOME && searching;
+    }
+
+    public boolean exitSearch() {
+        if (!searching) {
+            return false;
+        }
+        searching = false;
+        searchPluginsOnly = false;
+        searchQuery = "";
+        searchIndex = null;
+        rebuild();
+        return true;
+    }
+
+    /** Plugins page → "Search plugins": the page asks the host to
+     *  finish it; home consumes the request and lands here. */
+    public void enterPluginSearch() {
+        searching = true;
+        searchPluginsOnly = true;
+        searchQuery = "";
+        searchIndex = null;
+        rebuild();
+        focusSearchField();
+    }
+
+    private final TextWatcher searchWatcher = new TextWatcher() {
+        @Override
+        public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+        }
+
+        @Override
+        public void onTextChanged(CharSequence s, int start, int before, int count) {
+            searchQuery = s == null ? "" : s.toString();
+            searching = true;
+            rebuild();
+        }
+
+        @Override
+        public void afterTextChanged(Editable s) {
+        }
+    };
+
+    private boolean searchHadFocus;
+
+    private void focusSearchField() {
+        if (listView == null) {
+            return;
+        }
+        listView.scrollToPosition(0);
+        AndroidUtilities.runOnUIThread(() -> {
+            if (listView == null) {
+                return;
+            }
+            RecyclerView.ViewHolder holder = listView.findViewHolderForAdapterPosition(0);
+            if (holder != null && holder.itemView instanceof SearchRowView) {
+                EditTextBoldCursor field = ((SearchRowView) holder.itemView).editText;
+                field.requestFocus();
+                AndroidUtilities.showKeyboard(field);
+            }
+        }, 80);
+    }
+
+    private static String rowTargetKey(Row row) {
+        switch (row.kind) {
+            case KIND_MODULE:
+                return row.module != null ? "module:" + row.module.id() : null;
+            case KIND_ACTION:
+            case KIND_SUBROW:
+                // swo_entry rows are per-entry data, not navigable.
+                if (row.action == null || "swo_entry".equals(row.action)) {
+                    return null;
+                }
+                return row.action;
+            default:
+                return null;
+        }
+    }
+
+    private void maybeFlashHighlight() {
+        if (mode != MODE_PAGE || highlightKey == null || listView == null) {
+            return;
+        }
+        String key = highlightKey;
+        highlightKey = null;
+        for (int i = 0; i < rows.size(); i++) {
+            if (key.equals(rowTargetKey(rows.get(i)))) {
+                flashingKey = key;
+                listView.scrollToPosition(i);
+                if (adapter != null) {
+                    adapter.notifyDataSetChanged();
+                }
+                AndroidUtilities.runOnUIThread(() -> {
+                    if (key.equals(flashingKey)) {
+                        flashingKey = null;
+                        if (adapter != null) {
+                            adapter.notifyDataSetChanged();
+                        }
+                    }
+                }, 1400);
+                return;
+            }
+        }
+    }
+
+    private boolean isFlashing(Row row) {
+        return flashingKey != null && flashingKey.equals(rowTargetKey(row));
+    }
+
+    private List<SearchEntry> buildSearchIndex(Context context) {
+        if (buildingSearchIndex) {
+            return new ArrayList<>();
+        }
+        buildingSearchIndex = true;
+        try {
+        List<SearchEntry> index = new ArrayList<>();
+        List<Row> saved = new ArrayList<>(rows);
+        String savedCategory = categoryId;
+        for (Category category : CATEGORIES) {
+            SearchEntry self = new SearchEntry();
+            self.title = category.name;
+            self.breadcrumb = "CATEGORY";
+            self.categoryId = category.id;
+            self.targetKey = null;
+            self.haystack = (category.name + " " + category.subtitle)
+                    .toLowerCase(Locale.US);
+            index.add(self);
+
+            categoryId = category.id;
+            rows.clear();
+            buildPageRows(context);
+            for (Row row : new ArrayList<>(rows)) {
+                String key = rowTargetKey(row);
+                if (key == null) {
+                    continue;
+                }
+                SearchEntry entry = new SearchEntry();
+                entry.categoryId = category.id;
+                entry.targetKey = key;
+                entry.breadcrumb = category.name.toUpperCase(Locale.US);
+                if (row.kind == KIND_MODULE && row.module != null) {
+                    entry.title = row.module.title();
+                    entry.haystack = (row.module.title() + " " + row.module.id() + " "
+                            + row.module.description()).toLowerCase(Locale.US);
+                } else {
+                    entry.title = row.title;
+                    entry.haystack = row.title == null ? ""
+                            : row.title.toLowerCase(Locale.US);
+                }
+                index.add(entry);
+            }
+        }
+        categoryId = savedCategory;
+        rows.clear();
+        rows.addAll(saved);
+        return index;
+        } finally {
+            buildingSearchIndex = false;
+        }
+    }
+
+    private void buildSearchResults(Context context) {
+        if (searchIndex == null) {
+            searchIndex = buildSearchIndex(context);
+        }
+        String q = searchQuery.trim().toLowerCase(Locale.US);
+        int shown = 0;
+        for (SearchEntry entry : searchIndex) {
+            if (searchPluginsOnly && !"plugins".equals(entry.categoryId)) {
+                continue;
+            }
+            if (!q.isEmpty() && (entry.haystack == null || !entry.haystack.contains(q))) {
+                continue;
+            }
+            Row row = addRow(KIND_SEARCH_RESULT);
+            row.title = entry.title;
+            row.subtitle = entry.breadcrumb;
+            row.searchEntry = entry;
+            shown++;
+        }
+        if (shown == 0) {
+            Row note = addRow(KIND_NOTE);
+            note.title = "No results";
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Clicks
+    // ------------------------------------------------------------------
+
+    private void onRowClick(View view, int position) {
+        Context context = host.context();
+        if (context == null || position < 0 || position >= rows.size()) {
+            return;
+        }
+        Row row = rows.get(position);
+        lastRowView = view;
+        switch (row.kind) {
+            case KIND_MODULE: {
+                boolean now = !PluginRegistry.isEnabled(context, row.module);
+                PluginRegistry.setEnabled(context, row.module, now);
+                rebuild();
+                break;
+            }
+            case KIND_ACTION:
+            case KIND_SUBROW:
+                onAction(context, row);
+                break;
+            case KIND_QUICK:
+                onQuickClick(context, row);
+                break;
+            case KIND_CATEGORY:
+                host.present(new AminHubPageActivity(row.categoryId));
+                break;
+            case KIND_SEARCH_RESULT:
+                if (row.searchEntry != null) {
+                    host.present(new AminHubPageActivity(
+                            row.searchEntry.categoryId, row.searchEntry.targetKey));
+                }
+                break;
+            default:
+                break;
+        }
+    }
+
+    /** Quick-access pins run the very same operations as their
+     *  in-page rows (engine toggle, Ghost Mode module toggle)
+     *  — no parallel implementations. */
+    private void onQuickClick(Context context, Row row) {
+        switch (row.quickId) {
+            case "ghost": {
+                for (ModModule module : PluginRegistry.modules()) {
+                    if ("ghost_mode".equals(module.id())) {
+                        PluginRegistry.setEnabled(context, module,
+                                !PluginRegistry.isEnabled(context, module));
+                        break;
+                    }
+                }
+                rebuild();
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
+    private void onAction(Context context, Row row) {
+        switch (row.action) {
+            case "ghost_suppress_read":
+                GhostModeModule.setSuppressReadReceipts(context,
+                        !GhostModeModule.suppressReadReceipts(context));
+                rebuild();
+                break;
+            case "ghost_suppress_typing":
+                GhostModeModule.setSuppressTyping(context,
+                        !GhostModeModule.suppressTyping(context));
+                rebuild();
+                break;
+            case "ghost_suppress_online":
+                GhostModeModule.setSuppressOnlineStatus(context,
+                        !GhostModeModule.suppressOnlineStatus(context));
+                rebuild();
+                break;
+            case "lp_flag":
+                LocalPremiumModule.setPremiumFlag(context,
+                        !LocalPremiumModule.premiumFlag(context));
+                rebuild();
+                break;
+            case "lp_picker":
+                LocalPremiumModule.setPickerUnlock(context,
+                        !LocalPremiumModule.pickerUnlock(context));
+                rebuild();
+                break;
+            case "lp_status_toggle":
+                LocalPremiumModule.setEmojiStatusEnabled(context,
+                        !LocalPremiumModule.emojiStatusEnabled(context));
+                rebuild();
+                break;
+            case "lp_status_pick":
+                pickLocalPremiumEmoji(true);
+                break;
+            case "lp_name_toggle":
+                LocalPremiumModule.setNameEmojiEnabled(context,
+                        !LocalPremiumModule.nameEmojiEnabled(context));
+                rebuild();
+                break;
+            case "lp_name_pick":
+                pickLocalPremiumEmoji(false);
+                break;
+            case "lp_colors_toggle":
+                LocalPremiumModule.setPeerColorsEnabled(context,
+                        !LocalPremiumModule.peerColorsEnabled(context));
+                rebuild();
+                break;
+            case "lp_name_color":
+                pickLocalPremiumColor(0);
+                break;
+            case "lp_profile_color":
+                pickLocalPremiumColor(1);
+                break;
+            case "lp_reply_color":
+                pickLocalPremiumColor(2);
+                break;
+            case "view_deleted":
+                host.present(new AminStoreListActivity("Deleted messages",
+                        DeletedStore.PREFS, DeletedStore.DELETED_KEY));
+                break;
+            case "view_edits":
+                host.present(new AminStoreListActivity("Edit history",
+                        DeletedStore.PREFS, DeletedStore.EDIT_KEY));
+                break;
+            case "view_hits":
+                host.present(new AminStoreListActivity("Keyword Radar hits",
+                        MessagePipeline.RADAR_PREFS, MessagePipeline.RADAR_HITS_KEY));
+                break;
+            case "view_saved":
+                host.present(new AminSavedMediaActivity());
+                break;
+            case "live_wallpapers":
+                host.present(new AminWallpaperLibraryActivity());
+                break;
+            case "clear_wallpaper":
+                WallpaperLibraryStore.clearActive(context);
+                bulletin(R.raw.ic_delete, "Wallpaper cleared — library kept");
+                rebuild();
+                break;
+            case "edit_keywords":
+                editKeywords(context);
+                break;
+            case "app_icon":
+                pickAppIcon();
+                break;
+            case "app_font":
+                pickAppFont();
+                break;
+            case "manage_hidden_chats":
+                host.present(new AminHiddenChatsActivity());
+                break;
+            case "swo_new":
+                host.present(new AminDialogPickerActivity("Send when online — pick a person", true,
+                        (dialogId, name) -> swoComposeText(context, dialogId, name)));
+                break;
+            case "swo_entry":
+                confirmRemoveSwo(context, row.swoEntry);
+                break;
+            case "backup_export":
+                exportBackup();
+                break;
+            case "backup_import":
+                importBackup();
+                break;
+            case "dev_mode": {
+                boolean devNow = !AminPluginsActivity.isDeveloperMode();
+                AminPluginsActivity.setDeveloperMode(devNow);
+                bulletin(R.raw.contact_check, devNow
+                        ? "Developer mode on — plugin pages show the Developer section"
+                        : "Developer mode off");
+                rebuild();
+                break;
+            }
+            case "py_plugins":
+                host.present(new app.exteraless.plugins.ui.PluginsActivity());
+                break;
+            case "ayu_forward_media":
+                AyuForwardModule.setReuploadMedia(context,
+                        !AyuForwardModule.reuploadMedia(context));
+                rebuild();
+                break;
+            case "ayu_forward_copy_save":
+                AyuForwardModule.setUnlockCopySave(context,
+                        !AyuForwardModule.unlockCopySave(context));
+                rebuild();
+                break;
+            case "fac_drop_author":
+                ForwardAsCopyModule.setDropAuthor(context,
+                        !ForwardAsCopyModule.dropAuthor(context));
+                rebuild();
+                break;
+            case "fac_drop_caption":
+                ForwardAsCopyModule.setDropCaption(context,
+                        !ForwardAsCopyModule.dropCaption(context));
+                rebuild();
+                break;
+            case "edit_filter_keywords":
+                editFilterKeywords(context);
+                break;
+            case "edit_filter_senders":
+                editFilterSenders(context);
+                break;
+            case "filter_channels_only":
+                MessageFiltersModule.setChannelsOnly(context,
+                        !MessageFiltersModule.channelsOnly(context));
+                rebuild();
+                break;
+            case "qol_mark_folder_read":
+                FolderChatQolModule.setMarkFolderRead(context,
+                        !FolderChatQolModule.markFolderRead(context));
+                rebuild();
+                break;
+            case "qol_jump_to_start":
+                FolderChatQolModule.setJumpToStart(context,
+                        !FolderChatQolModule.jumpToStart(context));
+                rebuild();
+                break;
+            case "qol_folders_in_forward":
+                FolderChatQolModule.setFoldersInForward(context,
+                        !FolderChatQolModule.foldersInForward(context));
+                rebuild();
+                break;
+            case "qol_mark_folder_now":
+                AminHooks.showMarkFolderReadDialog(host.fragment(), host.currentAccount());
+                break;
+            case "gesture_double_tap_pick":
+                pickDoubleTapAction(context);
+                break;
+            case "gesture_double_tap_own":
+                GestureActionsModule.setDoubleTapOwnEdit(context,
+                        !GestureActionsModule.doubleTapOwnEdit(context));
+                rebuild();
+                break;
+            case "gesture_swipe_pick":
+                pickSwipeAction(context);
+                break;
+            case "speed_boost_dl_pick":
+                pickDownloadSpeedBoost(context);
+                break;
+            case "speed_boost_ul_toggle":
+                SpeedBoostModule.setUploadBoost(context,
+                        !SpeedBoostModule.uploadBoost(context));
+                rebuild();
+                break;
+            default:
+                break;
+        }
+    }
+
+    private void bulletin(int icon, String text) {
+        BulletinFactory.of(host.fragment()).createSimpleBulletin(icon, text).show();
+    }
+
+    private void showError(String error) {
+        AlertDialog.Builder builder = new AlertDialog.Builder(host.parentActivity());
+        builder.setTitle("Plugin not installed");
+        builder.setMessage(error);
+        builder.setPositiveButton("OK", null);
+        host.showDialog(builder.create());
+    }
+
+    /** SAF results for the flows this layer starts (the hosting
+     *  fragment forwards its callback here). */
+    public void onActivityResultFragment(int requestCode, int resultCode, Intent data) {
+        Context context = host.context();
+        if (resultCode != Activity.RESULT_OK || data == null || data.getData() == null || context == null) {
+            return;
+        }
+        Uri uri = data.getData();
+        try {
+            if (requestCode == REQUEST_BACKUP_EXPORT) {
+                OutputStream out = context.getContentResolver().openOutputStream(uri);
+                if (out != null) {
+                    out.write(BackupManager.exportJson(context).getBytes(StandardCharsets.UTF_8));
+                    out.close();
+                    bulletin(R.raw.contact_check, "Backup saved");
+                } else {
+                    bulletin(R.raw.error, "Could not write the backup file");
+                }
+            } else if (requestCode == REQUEST_BACKUP_IMPORT) {
+                InputStream in = context.getContentResolver().openInputStream(uri);
+                String json = in != null ? readStream(in) : null;
+                String error = json != null ? BackupManager.importJson(context, json)
+                        : "Could not read that file.";
+                if (error == null) {
+                    bulletin(R.raw.contact_check, "Backup imported");
+                } else {
+                    AlertDialog.Builder builder = new AlertDialog.Builder(host.parentActivity());
+                    builder.setTitle("Import failed");
+                    builder.setMessage(error);
+                    builder.setPositiveButton("OK", null);
+                    host.showDialog(builder.create());
+                }
+                rebuild();
+            }
+        } catch (Exception e) {
+            FileLog.e(e);
+            bulletin(R.raw.error, "Something went wrong");
+        }
+    }
+
+
+    private static String readStream(InputStream in) throws Exception {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        byte[] buffer = new byte[8192];
+        int read;
+        long total = 0;
+        while ((read = in.read(buffer)) > 0) {
+            total += read;
+            if (total > 2 * 1024 * 1024) {
+                break;
+            }
+            out.write(buffer, 0, read);
+        }
+        in.close();
+        return out.toString("UTF-8");
+    }
+
+    // ------------------------------------------------------------------
+    // Dialogs and flows (moved from the pre-v3 hub; bodies unchanged
+    // apart from host plumbing)
+    // ------------------------------------------------------------------
+
+    private EditTextBoldCursor textField(Context context, String hint, boolean multiline) {
+        EditTextBoldCursor editText = new EditTextBoldCursor(context);
+        editText.setHint(hint);
+        editText.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText));
+        editText.setHintTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteHintText));
+        if (multiline) {
+            editText.setSingleLine(false);
+            editText.setGravity(Gravity.TOP | Gravity.LEFT);
+            editText.setMinLines(6);
+        }
+        return editText;
+    }
+
+    private FrameLayout fieldContainer(Context context, View field) {
+        FrameLayout container = new FrameLayout(context);
+        container.setPadding(AndroidUtilities.dp(24), AndroidUtilities.dp(8),
+                AndroidUtilities.dp(24), 0);
+        container.addView(field, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        return container;
+    }
+
+    private void editKeywords(Context context) {
+        EditTextBoldCursor editText = textField(context, "keyword1, keyword2, …", false);
+        editText.setText(MessagePipeline.getKeywordsRaw(context));
+        AlertDialog.Builder builder = new AlertDialog.Builder(host.parentActivity());
+        builder.setTitle("Keyword Radar keywords");
+        builder.setView(fieldContainer(context, editText));
+        builder.setPositiveButton("Save", (dialog, which) -> {
+            MessagePipeline.setKeywords(context, editText.getText().toString());
+            rebuild();
+        });
+        builder.setNegativeButton("Cancel", null);
+        host.showDialog(builder.create());
+    }
+
+    private void editFilterKeywords(Context context) {
+        EditTextBoldCursor editText = textField(context, "ad, sponsored, promo, …", false);
+        editText.setText(MessageFiltersModule.getKeywordsRaw(context));
+        AlertDialog.Builder builder = new AlertDialog.Builder(host.parentActivity());
+        builder.setTitle("Message Filters — keywords");
+        builder.setView(fieldContainer(context, editText));
+        builder.setPositiveButton("Save", (dialog, which) -> {
+            MessageFiltersModule.setKeywords(context, editText.getText().toString());
+            rebuild();
+        });
+        builder.setNegativeButton("Cancel", null);
+        host.showDialog(builder.create());
+    }
+
+    private void editFilterSenders(Context context) {
+        EditTextBoldCursor editText = textField(context, "123456789, -100987654321, …", false);
+        editText.setText(MessageFiltersModule.getSendersRaw(context));
+        AlertDialog.Builder builder = new AlertDialog.Builder(host.parentActivity());
+        builder.setTitle("Message Filters — sender IDs");
+        builder.setView(fieldContainer(context, editText));
+        builder.setPositiveButton("Save", (dialog, which) -> {
+            MessageFiltersModule.setSenders(context, editText.getText().toString());
+            rebuild();
+        });
+        builder.setNegativeButton("Cancel", null);
+        host.showDialog(builder.create());
+    }
+
+    private void pickDoubleTapAction(Context context) {
+        if (host.parentActivity() == null) {
+            return;
+        }
+        int current = GestureActionsModule.doubleTapAction(context);
+        CharSequence[] items = new CharSequence[GestureActionsModule.DOUBLE_TAP_LABELS.length];
+        for (int i = 0; i < items.length; i++) {
+            items[i] = GestureActionsModule.DOUBLE_TAP_LABELS[i] + (current == i ? "  ✓" : "");
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(host.parentActivity());
+        builder.setTitle("Double-tap action");
+        builder.setItems(items, (dialog, which) -> {
+            GestureActionsModule.setDoubleTapAction(context, which);
+            rebuild();
+        });
+        builder.setNegativeButton("Cancel", null);
+        host.showDialog(builder.create());
+    }
+
+    private void pickSwipeAction(Context context) {
+        if (host.parentActivity() == null) {
+            return;
+        }
+        int current = GestureActionsModule.swipeAction(context);
+        CharSequence[] items = new CharSequence[GestureActionsModule.SWIPE_LABELS.length];
+        for (int i = 0; i < items.length; i++) {
+            items[i] = GestureActionsModule.SWIPE_LABELS[i] + (current == i ? "  ✓" : "");
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(host.parentActivity());
+        builder.setTitle("Swipe action");
+        builder.setItems(items, (dialog, which) -> {
+            GestureActionsModule.setSwipeAction(context, which);
+            rebuild();
+        });
+        builder.setNegativeButton("Cancel", null);
+        host.showDialog(builder.create());
+    }
+
+    private void pickDownloadSpeedBoost(Context context) {
+        if (host.parentActivity() == null) {
+            return;
+        }
+        int current = SpeedBoostModule.downloadLevel(context);
+        CharSequence[] items = new CharSequence[SpeedBoostModule.LEVEL_LABELS.length];
+        for (int i = 0; i < items.length; i++) {
+            items[i] = SpeedBoostModule.LEVEL_LABELS[i] + (current == i ? "  ✓" : "");
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(host.parentActivity());
+        builder.setTitle("Download speed boost");
+        builder.setItems(items, (dialog, which) -> {
+            SpeedBoostModule.setDownloadLevel(context, which);
+            AminHooks.syncSpeedBoostFlagOnController(context, host.currentAccount());
+            rebuild();
+        });
+        builder.setNegativeButton("Cancel", null);
+        host.showDialog(builder.create());
+    }
+
+    private void pickAppIcon() {
+        Context context = host.context();
+        org.telegram.ui.LauncherIconController.LauncherIcon[] icons =
+                org.telegram.ui.LauncherIconController.LauncherIcon.values();
+
+        LinearLayout list = new LinearLayout(context);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setPadding(0, AndroidUtilities.dp(8), 0, AndroidUtilities.dp(8));
+
+        AlertDialog[] dialogHolder = new AlertDialog[1];
+        for (org.telegram.ui.LauncherIconController.LauncherIcon icon : icons) {
+            boolean active = org.telegram.ui.LauncherIconController.isEnabled(icon);
+
+            LinearLayout row = new LinearLayout(context);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(AndroidUtilities.dp(20), AndroidUtilities.dp(4),
+                    AndroidUtilities.dp(20), AndroidUtilities.dp(4));
+            row.setBackground(Theme.createSimpleSelectorRoundRectDrawable(
+                    AndroidUtilities.dp(10), android.graphics.Color.TRANSPARENT,
+                    Theme.getColor(Theme.key_listSelector), android.graphics.Color.BLACK));
+
+            // preview composed exactly like upstream's own icon picker
+            // (AppIconsSelectorCell): background drawable as the image,
+            // foreground drawable drawn over it, circular clip
+            org.telegram.ui.Cells.AppIconsSelectorCell.AdaptiveIconImageView preview =
+                    new org.telegram.ui.Cells.AppIconsSelectorCell.AdaptiveIconImageView(context);
+            preview.setPadding(AndroidUtilities.dp(8), AndroidUtilities.dp(8),
+                    AndroidUtilities.dp(8), AndroidUtilities.dp(8));
+            preview.setImageResource(icon.background);
+            preview.setForeground(icon.foreground);
+            row.addView(preview, new LinearLayout.LayoutParams(
+                    AndroidUtilities.dp(52), AndroidUtilities.dp(52)));
+
+            TextView name = new TextView(context);
+            name.setText(org.telegram.messenger.LocaleController.getString(icon.title));
+            name.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, 16);
+            name.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText));
+            LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            nameParams.leftMargin = AndroidUtilities.dp(14);
+            row.addView(name, nameParams);
+
+            if (active) {
+                TextView check = new TextView(context);
+                check.setText("✓");
+                check.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, 18);
+                check.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteValueText));
+                row.addView(check);
+            }
+
+            row.setOnClickListener(v -> {
+                org.telegram.ui.LauncherIconController.setIcon(icon);
+                bulletin(R.raw.contact_check, "App icon changed");
+                rebuild();
+                if (dialogHolder[0] != null) {
+                    dialogHolder[0].dismiss();
+                }
+            });
+            list.addView(row, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        }
+
+        android.widget.ScrollView scroll = new android.widget.ScrollView(context);
+        scroll.addView(list);
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(host.parentActivity());
+        builder.setTitle("App Icon");
+        builder.setView(scroll);
+        builder.setNegativeButton("Cancel", null);
+        dialogHolder[0] = builder.create();
+        host.showDialog(dialogHolder[0]);
+    }
+
+    private void pickAppFont() {
+        CharSequence[] items = new CharSequence[AminFonts.FAMILY_TITLES.length];
+        for (int i = 0; i < items.length; i++) {
+            items[i] = AminFonts.family() == i
+                    ? AminFonts.FAMILY_TITLES[i] + "  \u2713" : AminFonts.FAMILY_TITLES[i];
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(host.parentActivity());
+        builder.setTitle("App font");
+        builder.setItems(items, (dialog, which) -> {
+            AminFonts.setFamily(host.context(), which);
+            bulletin(R.raw.contact_check, "Font changed");
+            rebuild();
+        });
+        builder.setNegativeButton("Cancel", null);
+        host.showDialog(builder.create());
+    }
+
+    private static String currentIconTitle() {
+        for (org.telegram.ui.LauncherIconController.LauncherIcon icon
+                : org.telegram.ui.LauncherIconController.LauncherIcon.values()) {
+            if (org.telegram.ui.LauncherIconController.isEnabled(icon)) {
+                return org.telegram.messenger.LocaleController.getString(icon.title);
+            }
+        }
+        return "Default";
+    }
+
+    // ------------------------------------------------------------------
+    // Local Premium pickers (all state is this-device-only — see
+    // LocalPremiumModule)
+    // ------------------------------------------------------------------
+
+    /** The classic names of the seven default peer colors (ids 0–6,
+     *  in Theme.keys_avatar_nameInMessage order). */
+    private static final String[] PEER_COLOR_NAMES = {
+            "Red", "Orange", "Violet", "Green", "Cyan", "Blue", "Pink"
+    };
+
+    private long localPremiumSelfId() {
+        return UserConfig.getInstance(host.currentAccount()).getClientUserId();
+    }
+
+    private static String peerColorName(int colorId) {
+        if (colorId >= 0 && colorId < PEER_COLOR_NAMES.length) {
+            return PEER_COLOR_NAMES[colorId];
+        }
+        return "Color " + colorId;
+    }
+
+    private String peerColorValueText(int colorId) {
+        return colorId == LocalPremiumModule.COLOR_UNSET
+                ? "Default" : peerColorName(colorId);
+    }
+
+    /** Upstream's custom-emoji picker — the same popup window the
+     *  Peer Color / Channel Color pages use — anchored to the tapped
+     *  hub row. Picking the empty slot clears the stored document. */
+    private void pickLocalPremiumEmoji(boolean forStatus) {
+        Context context = host.context();
+        View anchor = lastRowView;
+        if (context == null || anchor == null || host.parentActivity() == null) {
+            return;
+        }
+        final long selfId = localPremiumSelfId();
+        final long current = forStatus
+                ? LocalPremiumModule.statusDocumentId(context, selfId)
+                : LocalPremiumModule.nameEmojiDocumentId(context, selfId);
+        final SelectAnimatedEmojiDialog.SelectAnimatedEmojiDialogWindow[] popup =
+                new SelectAnimatedEmojiDialog.SelectAnimatedEmojiDialogWindow[1];
+        int[] location = new int[2];
+        anchor.getLocationInWindow(location);
+        boolean anchorLow = location[1] > AndroidUtilities.displaySize.y / 2;
+        int type = anchorLow
+                ? SelectAnimatedEmojiDialog.TYPE_EMOJI_STATUS_TOP
+                : SelectAnimatedEmojiDialog.TYPE_EMOJI_STATUS;
+        final int popupHeight = (int) Math.min(AndroidUtilities.dp(330),
+                AndroidUtilities.displaySize.y * .75f);
+        SelectAnimatedEmojiDialog layout = new SelectAnimatedEmojiDialog(host.fragment(), context, true,
+                null, type, true, host.fragment().getResourceProvider(), anchorLow ? 24 : 16,
+                host.fragment().getThemedColor(Theme.key_windowBackgroundWhiteBlackText)) {
+            @Override
+            protected void onEmojiSelected(View emojiView, Long documentId,
+                    TLRPC.Document document, TL_stars.TL_starGiftUnique gift, Integer until) {
+                long chosen = documentId == null ? 0 : documentId;
+                if (forStatus) {
+                    LocalPremiumModule.setStatusDocumentId(context, selfId, chosen);
+                } else {
+                    String alt = chosen == 0 || document == null ? ""
+                            : MessageObject.findAnimatedEmojiEmoticon(document, "");
+                    LocalPremiumModule.setNameEmoji(context, selfId, chosen, alt);
+                }
+                bulletin(R.raw.contact_check,
+                        chosen == 0 ? "Cleared" : "Saved — this device only");
+                rebuild();
+                if (popup[0] != null) {
+                    popup[0].dismiss();
+                }
+            }
+        };
+        layout.setSelected(current == 0 ? null : current);
+        popup[0] = new SelectAnimatedEmojiDialog.SelectAnimatedEmojiDialogWindow(layout,
+                LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT);
+        int yoff = anchorLow ? -(anchor.getHeight() + popupHeight) : 0;
+        popup[0].showAsDropDown(anchor, 0, yoff, Gravity.TOP | Gravity.RIGHT);
+        popup[0].dimBehind();
+    }
+
+    /** Color picker over upstream's own peer-color palettes
+     *  (MessagesController.peerColors / profilePeerColors — the same
+     *  lists PeerColorActivity renders). which: 0 = name, 1 =
+     *  profile, 2 = reply. */
+    private void pickLocalPremiumColor(int which) {
+        Context context = host.context();
+        if (context == null || host.parentActivity() == null) {
+            return;
+        }
+        MessagesController controller = MessagesController.getInstance(host.currentAccount());
+        MessagesController.PeerColors palette = which == 1
+                ? controller.profilePeerColors : controller.peerColors;
+        if (palette == null || palette.colors.isEmpty()) {
+            AlertDialog.Builder notice = new AlertDialog.Builder(host.parentActivity());
+            notice.setTitle("Colors");
+            notice.setMessage("The color list is still loading — connect once and try again.");
+            notice.setPositiveButton("OK", null);
+            host.showDialog(notice.create());
+            return;
+        }
+        final long selfId = localPremiumSelfId();
+        final int current = which == 0
+                ? LocalPremiumModule.nameColorId(context, selfId)
+                : which == 1 ? LocalPremiumModule.profileColorId(context, selfId)
+                : LocalPremiumModule.replyColorId(context, selfId);
+        List<CharSequence> items = new ArrayList<>();
+        List<Integer> ids = new ArrayList<>();
+        items.add("Default" + (current == LocalPremiumModule.COLOR_UNSET ? "  ✓" : ""));
+        ids.add(LocalPremiumModule.COLOR_UNSET);
+        for (MessagesController.PeerColor peerColor : palette.colors) {
+            if (peerColor.hidden) {
+                continue;
+            }
+            int swatch = peerColor.isDefaultName && peerColor.id >= 0
+                    && peerColor.id < Theme.keys_avatar_nameInMessage.length
+                    ? Theme.getColor(Theme.keys_avatar_nameInMessage[peerColor.id])
+                    : peerColor.getColor1();
+            SpannableString label = new SpannableString("●  " + peerColorName(peerColor.id)
+                    + (current == peerColor.id ? "  ✓" : ""));
+            label.setSpan(new ForegroundColorSpan(swatch), 0, 1,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            items.add(label);
+            ids.add(peerColor.id);
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(host.parentActivity());
+        builder.setTitle(which == 0 ? "Name color" : which == 1 ? "Profile color" : "Reply color");
+        builder.setItems(items.toArray(new CharSequence[0]), (dialog, index) -> {
+            if (index < 0 || index >= ids.size()) {
+                return;
+            }
+            int chosen = ids.get(index);
+            if (which == 0) {
+                LocalPremiumModule.setNameColorId(context, selfId, chosen);
+            } else if (which == 1) {
+                LocalPremiumModule.setProfileColorId(context, selfId, chosen);
+            } else {
+                LocalPremiumModule.setReplyColorId(context, selfId, chosen);
+            }
+            bulletin(R.raw.contact_check, "Saved — this device only");
+            rebuild();
+        });
+        builder.setNegativeButton("Cancel", null);
+        host.showDialog(builder.create());
+    }
+
+    private void swoComposeText(Context context, long peer, String name) {
+        EditTextBoldCursor field = textField(context, "Message to send when they are online", true);
+        AlertDialog.Builder builder = new AlertDialog.Builder(host.parentActivity());
+        builder.setTitle("Send to " + name + " when online");
+        builder.setView(fieldContainer(context, field));
+        builder.setPositiveButton("Queue", (dialog, which) -> {
+            String text = field.getText().toString().trim();
+            if (!text.isEmpty()) {
+                SendWhenOnlineStore.add(context, host.currentAccount(), peer, name, text);
+                bulletin(R.raw.contact_check, "Queued — will send when " + name + " is online");
+                rebuild();
+            }
+        });
+        builder.setNegativeButton("Cancel", null);
+        host.showDialog(builder.create());
+    }
+
+    private void confirmRemoveSwo(Context context, SendWhenOnlineStore.Entry entry) {
+        if (entry == null) {
+            return;
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(host.parentActivity());
+        builder.setTitle(entry.isPending() ? "Cancel this message?" : "Remove from list?");
+        builder.setMessage(entry.text);
+        builder.setPositiveButton(entry.isPending() ? "Cancel send" : "Remove", (dialog, which) -> {
+            SendWhenOnlineStore.remove(context, entry);
+            rebuild();
+        });
+        builder.setNegativeButton("Keep", null);
+        host.showDialog(builder.create());
+    }
+
+
+
+    // ------------------------------------------------------------------
+    // Plugin packs (§3.4)
+    // ------------------------------------------------------------------
+
+    /** Export step 1: multi-select over the installed plugins. */
+
+
+    /** Import: parse the pack, then walk its entries through the
+     *  permission review screen one at a time (source "pack").
+     *  Each confirmed entry installs and gets its storage
+     *  restored; the chain ends with a summary. */
+
+
+    // ------------------------------------------------------------------
+    // File pickers
+    // ------------------------------------------------------------------
+
+
+    private void exportBackup() {
+        try {
+            Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+            intent.setType("application/json");
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.putExtra(Intent.EXTRA_TITLE, "amingram-backup.json");
+            host.startActivityForResult(intent, REQUEST_BACKUP_EXPORT);
+        } catch (Exception e) {
+            FileLog.e(e);
+            bulletin(R.raw.error, "No file picker available");
+        }
+    }
+
+    private void importBackup() {
+        try {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.setType("*/*");
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            host.startActivityForResult(intent, REQUEST_BACKUP_IMPORT);
+        } catch (Exception e) {
+            FileLog.e(e);
+            bulletin(R.raw.error, "No file picker available");
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Dossier-skin views (hub-local; HubSkin constants + typefaces)
+    // ------------------------------------------------------------------
+
+    private static TextView hubText(Context context, float sp, int color,
+                                    android.graphics.Typeface typeface) {
+        TextView view = new TextView(context);
+        view.setTextSize(sp);
+        view.setTextColor(color);
+        if (typeface != null) {
+            view.setTypeface(typeface);
+        }
+        return view;
+    }
+
+    private static FrameLayout switchBox(Context context, Switch switchView) {
+        FrameLayout box = new FrameLayout(context);
+        box.addView(switchView, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.RIGHT | Gravity.CENTER_VERTICAL));
+        return box;
+    }
+
+    /** 力 badge + AMINGRAM wordmark + dossier kicker + marble strip. */
+    private static class MastheadView extends LinearLayout {
+        MastheadView(Context context) {
+            super(context);
+            setOrientation(VERTICAL);
+            setPadding(AndroidUtilities.dp(24), AndroidUtilities.dp(20),
+                    AndroidUtilities.dp(24), 0);
+
+            LinearLayout top = new LinearLayout(context);
+            top.setOrientation(HORIZONTAL);
+            top.setGravity(Gravity.CENTER_VERTICAL);
+            addView(top, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+            // The mockup's masthead: the 力 glyph large and unboxed
+            // beside the wordmark (Fraunces has no CJK cut — the
+            // platform serif fallback draws it, as in the render).
+            TextView kanji = hubText(context, 40, HubSkin.BONE, HubSkin.display(context));
+            kanji.setText("力");
+            top.addView(kanji, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+            SpannableString word = new SpannableString("AMINGRAM.");
+            word.setSpan(new ForegroundColorSpan(HubSkin.ACCENT),
+                    word.length() - 1, word.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            TextView wordView = hubText(context, 29, HubSkin.BONE, HubSkin.display(context));
+            wordView.setText(word);
+            wordView.setLetterSpacing(0.03f);
+            LinearLayout.LayoutParams wordParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            wordParams.leftMargin = AndroidUtilities.dp(13);
+            top.addView(wordView, wordParams);
+
+            TextView creditView = hubText(context, 9, HubSkin.GRAY, HubSkin.mono(context));
+            creditView.setText("MADE BY AMIN");
+            creditView.setLetterSpacing(0.14f);
+            LinearLayout.LayoutParams creditParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            creditParams.topMargin = AndroidUtilities.dp(11);
+            addView(creditView, creditParams);
+
+            TextView kickerView = hubText(context, 9, HubSkin.GRAY, HubSkin.mono(context));
+            kickerView.setText("PLUGINS & MODULES · THE FULL INDEX");
+            kickerView.setLetterSpacing(0.14f);
+            LinearLayout.LayoutParams kickerParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            kickerParams.topMargin = AndroidUtilities.dp(11);
+            addView(kickerView, kickerParams);
+
+            ImageView marble = new ImageView(context);
+            android.graphics.Bitmap bitmap = HubSkin.marble(context);
+            if (bitmap != null) {
+                marble.setImageBitmap(bitmap);
+            } else {
+                marble.setBackgroundColor(HubSkin.SURFACE2);
+            }
+            marble.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            LinearLayout.LayoutParams marbleParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, AndroidUtilities.dp(28));
+            marbleParams.topMargin = AndroidUtilities.dp(14);
+            addView(marble, marbleParams);
+        }
+    }
+
+    /** 3-cell live stat grid — read at bind time from the same stores
+     *  the rows use; no polling, no timers. */
+    private static class StatsView extends LinearLayout {
+        private final TextView[] values = new TextView[3];
+        private final TextView[] labels = new TextView[3];
+        private final TextView[] subs = new TextView[3];
+
+        StatsView(Context context) {
+            super(context);
+            setOrientation(VERTICAL);
+            setPadding(AndroidUtilities.dp(24), AndroidUtilities.dp(14),
+                    AndroidUtilities.dp(24), 0);
+            for (int r = 0; r < 2; r++) {
+                LinearLayout rowLayout = new LinearLayout(context);
+                rowLayout.setOrientation(HORIZONTAL);
+                addView(rowLayout, new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                for (int c = 0; c < 2; c++) {
+                    int i = r * 2 + c;
+                    if (i >= 3) {
+                        break;
+                    }
+                    // Cell 2 (APP FONT) spans the whole second row.
+                    float weight = (i == 2) ? 2f : 1f;
+                    LinearLayout cell = new LinearLayout(context);
+                    cell.setOrientation(VERTICAL);
+                    cell.setBackground(HubSkin.blockDrawable(SEG_ONLY, HubSkin.SURFACE));
+                    cell.setPadding(AndroidUtilities.dp(13), AndroidUtilities.dp(11),
+                            AndroidUtilities.dp(13), AndroidUtilities.dp(11));
+                    rowLayout.addView(cell, new LinearLayout.LayoutParams(
+                            0, ViewGroup.LayoutParams.WRAP_CONTENT, weight));
+                    // Mockup cell: mono label on top, then the
+                    // Fraunces value with the mono sub on its
+                    // baseline.
+                    labels[i] = hubText(context, 8.5f, HubSkin.GRAY, HubSkin.mono(context));
+                    labels[i].setLetterSpacing(0.12f);
+                    cell.addView(labels[i]);
+                    LinearLayout valueRow = new LinearLayout(context);
+                    valueRow.setOrientation(HORIZONTAL);
+                    valueRow.setGravity(Gravity.BOTTOM);
+                    LinearLayout.LayoutParams valueRowParams = new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                    valueRowParams.topMargin = AndroidUtilities.dp(5);
+                    cell.addView(valueRow, valueRowParams);
+                    values[i] = hubText(context, 20, HubSkin.BONE, HubSkin.display(context));
+                    values[i].setSingleLine(true);
+                    values[i].setEllipsize(TextUtils.TruncateAt.END);
+                    valueRow.addView(values[i], new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                    subs[i] = hubText(context, 8.5f, HubSkin.FAINT, HubSkin.mono(context));
+                    subs[i].setSingleLine(true);
+                    subs[i].setEllipsize(TextUtils.TruncateAt.END);
+                    LinearLayout.LayoutParams subParams = new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                    subParams.leftMargin = AndroidUtilities.dp(8);
+                    subParams.bottomMargin = AndroidUtilities.dp(2);
+                    valueRow.addView(subs[i], subParams);
+                }
+            }
+        }
+
+        private void setCell(int i, String value, String label, String sub) {
+            values[i].setText(value);
+            values[i].setTextSize(value.length() <= 4 ? 20 : value.length() <= 8 ? 17 : 14.5f);
+            labels[i].setText(label);
+            subs[i].setText(sub);
+        }
+
+        private static String pad2(int n) {
+            return n < 10 ? "0" + n : String.valueOf(n);
+        }
+
+        void bind(Context context) {
+            int total = 0;
+            int active = 0;
+            boolean engineOn = false;
+            try {
+                app.exteraless.plugins.PluginsController controller =
+                        app.exteraless.plugins.PluginsController.getInstance();
+                engineOn = controller.isEngineEnabled();
+                java.util.Map<String, ? extends app.exteraless.plugins.Plugin> plugins =
+                        controller.getPlugins();
+                if (plugins != null) {
+                    total = plugins.size();
+                    for (app.exteraless.plugins.Plugin plugin : plugins.values()) {
+                        if (plugin.isEnabled()) {
+                            active++;
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+            setCell(0, pad2(total), "PLUGINS",
+                    active + " ACTIVE" + (engineOn ? "" : " · ENGINE OFF"));
+
+            List<ModModule> modules = PluginRegistry.modules();
+            int enabled = 0;
+            for (ModModule module : modules) {
+                if (PluginRegistry.isEnabled(context, module)) {
+                    enabled++;
+                }
+            }
+            setCell(1, enabled + "/" + modules.size(), "MODULES", "ENABLED");
+
+            String fontSub = "CUSTOM FACE";
+            try {
+                if (AminFonts.family() == 0) {
+                    fontSub = "STOCK FACE";
+                }
+            } catch (Throwable ignored) {
+            }
+            setCell(2, AminFonts.familyTitle().toUpperCase(Locale.US), "APP FONT", fontSub);
+        }
+    }
+
+    private static class MagnifierView extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        MagnifierView(Context context) {
+            super(context);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(AndroidUtilities.dp(1.6f));
+            paint.setColor(HubSkin.GRAY);
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            float r = AndroidUtilities.dp(5.5f);
+            float cx = getWidth() / 2f - AndroidUtilities.dp(1.5f);
+            float cy = getHeight() / 2f - AndroidUtilities.dp(1.5f);
+            canvas.drawCircle(cx, cy, r, paint);
+            canvas.drawLine(cx + r * 0.72f, cy + r * 0.72f,
+                    cx + r * 1.6f, cy + r * 1.6f, paint);
+        }
+    }
+
+    private static class SearchRowView extends FrameLayout {
+        final EditTextBoldCursor editText;
+        private boolean watcherAttached;
+
+        SearchRowView(Context context) {
+            super(context);
+            LinearLayout inner = new LinearLayout(context);
+            inner.setOrientation(LinearLayout.HORIZONTAL);
+            inner.setGravity(Gravity.CENTER_VERTICAL);
+            inner.setPadding(AndroidUtilities.dp(14), AndroidUtilities.dp(2),
+                    AndroidUtilities.dp(14), AndroidUtilities.dp(2));
+            addView(inner, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+            MagnifierView magnifier = new MagnifierView(context);
+            inner.addView(magnifier, new LinearLayout.LayoutParams(
+                    AndroidUtilities.dp(18), AndroidUtilities.dp(18)));
+
+            editText = new EditTextBoldCursor(context);
+            editText.setBackground(null);
+            editText.setSingleLine(true);
+            editText.setTextSize(13);
+            editText.setTypeface(HubSkin.mono(context));
+            editText.setTextColor(HubSkin.BONE);
+            editText.setHintTextColor(HubSkin.FAINT);
+            editText.setPadding(AndroidUtilities.dp(10), AndroidUtilities.dp(11),
+                    0, AndroidUtilities.dp(11));
+            LinearLayout.LayoutParams fieldParams = new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            fieldParams.leftMargin = AndroidUtilities.dp(2);
+            inner.addView(editText, fieldParams);
+        }
+
+        void bind(HubCommon hub) {
+            if (!watcherAttached) {
+                watcherAttached = true;
+                editText.addTextChangedListener(hub.searchWatcher);
+                editText.setOnFocusChangeListener((v, hasFocus) -> hub.searchHadFocus = hasFocus);
+            }
+            String current = editText.getText() == null ? ""
+                    : editText.getText().toString();
+            if (!current.equals(hub.searchQuery)) {
+                editText.setText(hub.searchQuery);
+                editText.setSelection(editText.getText().length());
+            }
+            editText.setHint(hub.searchPluginsOnly ? "SEARCH PLUGINS" : "SEARCH MODULES · PLUGINS · SETTINGS");
+            if (hub.searchHadFocus && !editText.hasFocus()) {
+                editText.post(editText::requestFocus);
+            }
+        }
+    }
+
+    private static class LabelView extends TextView {
+        LabelView(Context context) {
+            super(context);
+            setTypeface(HubSkin.mono(context));
+            setTextSize(10);
+            setLetterSpacing(0.1f);
+            setPadding(AndroidUtilities.dp(24), AndroidUtilities.dp(20),
+                    AndroidUtilities.dp(24), AndroidUtilities.dp(9));
+        }
+
+        void setLabel(String text) {
+            int idx = text.indexOf("//");
+            if (idx > 0 && idx + 2 < text.length()) {
+                SpannableString spanned = new SpannableString(text);
+                spanned.setSpan(new ForegroundColorSpan(HubSkin.ACCENT), 0, idx + 2,
+                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                spanned.setSpan(new ForegroundColorSpan(HubSkin.GRAY), idx + 2,
+                        text.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                setText(spanned);
+            } else {
+                setTextColor(HubSkin.GRAY);
+                setText(text);
+            }
+        }
+    }
+
+    private static class PageHeaderView extends LinearLayout {
+        private final TextView kickerView;
+        private final TextView titleView;
+        private final TextView metaView;
+
+        PageHeaderView(Context context) {
+            super(context);
+            setOrientation(VERTICAL);
+            setPadding(AndroidUtilities.dp(24), AndroidUtilities.dp(18),
+                    AndroidUtilities.dp(24), 0);
+            kickerView = hubText(context, 9.5f, HubSkin.ACCENT, HubSkin.mono(context));
+            kickerView.setLetterSpacing(0.12f);
+            addView(kickerView);
+            titleView = hubText(context, 28, HubSkin.BONE, HubSkin.display(context));
+            LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            titleParams.topMargin = AndroidUtilities.dp(6);
+            addView(titleView, titleParams);
+            metaView = hubText(context, 9, HubSkin.GRAY, HubSkin.mono(context));
+            metaView.setLetterSpacing(0.08f);
+            LinearLayout.LayoutParams metaParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            metaParams.topMargin = AndroidUtilities.dp(7);
+            addView(metaView, metaParams);
+            View hairline = new View(context);
+            hairline.setBackgroundColor(HubSkin.HAIRLINE);
+            LinearLayout.LayoutParams hairlineParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 1);
+            hairlineParams.topMargin = AndroidUtilities.dp(15);
+            addView(hairline, hairlineParams);
+        }
+
+        void bind(Row row) {
+            String kicker = "CATEGORY // " + row.indexText;
+            SpannableString spanned = new SpannableString(kicker + " · DOSSIER");
+            spanned.setSpan(new ForegroundColorSpan(HubSkin.ACCENT), 0, kicker.length(),
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            spanned.setSpan(new ForegroundColorSpan(HubSkin.GRAY), kicker.length(),
+                    spanned.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            kickerView.setText(spanned);
+            titleView.setText(row.title);
+            metaView.setText(row.value);
+        }
+    }
+
+    private static class CategoryRowView extends LinearLayout {
+        private final TextView indexView;
+        private final TextView nameView;
+        private final TextView subView;
+        private final TextView valueView;
+        private final View dividerView;
+
+        CategoryRowView(Context context) {
+            super(context);
+            setOrientation(VERTICAL);
+            LinearLayout content = new LinearLayout(context);
+            content.setOrientation(HORIZONTAL);
+            content.setGravity(Gravity.CENTER_VERTICAL);
+            content.setPadding(AndroidUtilities.dp(16), AndroidUtilities.dp(13),
+                    AndroidUtilities.dp(14), AndroidUtilities.dp(13));
+            addView(content, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            indexView = hubText(context, 11, HubSkin.ACCENT, HubSkin.mono(context));
+            content.addView(indexView, new LinearLayout.LayoutParams(
+                    AndroidUtilities.dp(36), ViewGroup.LayoutParams.WRAP_CONTENT));
+            LinearLayout middle = new LinearLayout(context);
+            middle.setOrientation(VERTICAL);
+            content.addView(middle, new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            nameView = hubText(context, 17, HubSkin.BONE, HubSkin.displaySemiBold(context));
+            nameView.setSingleLine(true);
+            nameView.setEllipsize(TextUtils.TruncateAt.END);
+            middle.addView(nameView);
+            subView = hubText(context, 12.5f, HubSkin.SECONDARY, HubSkin.sans(context));
+            subView.setSingleLine(true);
+            subView.setEllipsize(TextUtils.TruncateAt.END);
+            LinearLayout.LayoutParams subParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            subParams.topMargin = AndroidUtilities.dp(3);
+            middle.addView(subView, subParams);
+            valueView = hubText(context, 11, HubSkin.SECONDARY, HubSkin.mono(context));
+            content.addView(valueView);
+            TextView chevron = hubText(context, 19, HubSkin.FAINT, HubSkin.sans(context));
+            chevron.setText("›");
+            LinearLayout.LayoutParams chevronParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            chevronParams.leftMargin = AndroidUtilities.dp(7);
+            content.addView(chevron, chevronParams);
+            dividerView = new View(context);
+            dividerView.setBackgroundColor(HubSkin.HAIRLINE);
+            LinearLayout.LayoutParams dividerParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 1);
+            dividerParams.leftMargin = AndroidUtilities.dp(16);
+            addView(dividerView, dividerParams);
+        }
+
+        void bind(Row row) {
+            indexView.setText(row.indexText);
+            nameView.setText(row.title);
+            subView.setText(row.subtitle);
+            valueView.setText(row.value);
+            dividerView.setVisibility(row.seg == SEG_FIRST || row.seg == SEG_MID
+                    ? VISIBLE : GONE);
+        }
+    }
+
+    /** One switch row in the dossier idiom: Grotesk title, mono
+     *  ON/OFF cue, display-only recolored switch (the row toggles). */
+    private static class ToggleRowView extends LinearLayout {
+        private final TextView titleView;
+        private final TextView stateView;
+        private final Switch switchView;
+        private final View dividerView;
+
+        ToggleRowView(Context context) {
+            super(context);
+            setOrientation(VERTICAL);
+            LinearLayout content = new LinearLayout(context);
+            content.setOrientation(HORIZONTAL);
+            content.setGravity(Gravity.CENTER_VERTICAL);
+            content.setPadding(AndroidUtilities.dp(16), AndroidUtilities.dp(7),
+                    AndroidUtilities.dp(16), AndroidUtilities.dp(7));
+            addView(content, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            titleView = hubText(context, 15, HubSkin.BONE, HubSkin.sansMedium(context));
+            titleView.setSingleLine(true);
+            titleView.setEllipsize(TextUtils.TruncateAt.END);
+            content.addView(titleView, new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            stateView = hubText(context, 9.5f, HubSkin.FAINT, HubSkin.mono(context));
+            LinearLayout.LayoutParams stateParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            stateParams.rightMargin = AndroidUtilities.dp(10);
+            content.addView(stateView, stateParams);
+            switchView = HubSkin.newSwitch(context);
+            switchView.setFocusable(false);
+            switchView.setClickable(false);
+            content.addView(switchBox(context, switchView), new LinearLayout.LayoutParams(
+                    AndroidUtilities.dp(56), AndroidUtilities.dp(40)));
+            dividerView = new View(context);
+            dividerView.setBackgroundColor(HubSkin.HAIRLINE);
+            LinearLayout.LayoutParams dividerParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 1);
+            dividerParams.leftMargin = AndroidUtilities.dp(16);
+            addView(dividerView, dividerParams);
+        }
+
+        void bind(String title, boolean on, String stateText, int seg) {
+            titleView.setText(title);
+            switchView.setChecked(on, false);
+            stateView.setText(stateText);
+            stateView.setTextColor(on ? HubSkin.ACCENT_LIGHT : HubSkin.FAINT);
+            dividerView.setVisibility(seg == SEG_FIRST || seg == SEG_MID ? VISIBLE : GONE);
+        }
+    }
+
+    /** The merged module card: title + state + switch on line 1,
+     *  and the description under it with the status folded in as a
+     *  mono tail ("…presence. · ACTIVE") — the pre-v3 header +
+     *  INFO pair as one row, exactly as the v3 mockup draws it. */
+    private static class ModuleCardView extends LinearLayout {
+        private final TextView titleView;
+        private final TextView stateView;
+        private final Switch switchView;
+        private final TextView descView;
+        private final View dividerView;
+
+        ModuleCardView(Context context) {
+            super(context);
+            setOrientation(VERTICAL);
+            setPadding(AndroidUtilities.dp(16), AndroidUtilities.dp(12),
+                    AndroidUtilities.dp(16), AndroidUtilities.dp(12));
+            LinearLayout line1 = new LinearLayout(context);
+            line1.setOrientation(HORIZONTAL);
+            line1.setGravity(Gravity.CENTER_VERTICAL);
+            addView(line1, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            titleView = hubText(context, 15.5f, HubSkin.BONE, HubSkin.sansMedium(context));
+            titleView.setSingleLine(true);
+            titleView.setEllipsize(TextUtils.TruncateAt.END);
+            line1.addView(titleView, new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            stateView = hubText(context, 9.5f, HubSkin.FAINT, HubSkin.mono(context));
+            LinearLayout.LayoutParams stateParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            stateParams.rightMargin = AndroidUtilities.dp(10);
+            line1.addView(stateView, stateParams);
+            switchView = HubSkin.newSwitch(context);
+            switchView.setFocusable(false);
+            switchView.setClickable(false);
+            line1.addView(switchBox(context, switchView), new LinearLayout.LayoutParams(
+                    AndroidUtilities.dp(56), AndroidUtilities.dp(40)));
+
+            descView = hubText(context, 13, HubSkin.SECONDARY, HubSkin.sans(context));
+            descView.setMaxLines(3);
+            descView.setEllipsize(TextUtils.TruncateAt.END);
+            descView.setLineSpacing(0, 1.15f);
+            LinearLayout.LayoutParams descParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            descParams.topMargin = AndroidUtilities.dp(4);
+            addView(descView, descParams);
+
+            dividerView = new View(context);
+            dividerView.setBackgroundColor(HubSkin.HAIRLINE);
+            LinearLayout.LayoutParams dividerParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 1);
+            dividerParams.topMargin = AndroidUtilities.dp(12);
+            dividerParams.bottomMargin = -AndroidUtilities.dp(12);
+            addView(dividerView, dividerParams);
+        }
+
+        void bind(Context context, Row row) {
+            ModModule module = row.module;
+            titleView.setText(module.title());
+            boolean enabled = PluginRegistry.isEnabled(context, module);
+            switchView.setChecked(enabled, false);
+            stateView.setText(enabled ? "ON" : "OFF");
+            stateView.setTextColor(enabled ? HubSkin.ACCENT_LIGHT : HubSkin.FAINT);
+            String description = module.description() == null ? "" : module.description();
+            String tail = row.statusText == null ? "" : row.statusText;
+            if (tail.isEmpty()) {
+                descView.setText(description);
+                descView.setVisibility(description.isEmpty() ? GONE : VISIBLE);
+            } else {
+                String full = description.isEmpty() ? tail : description + "  ·  " + tail;
+                SpannableString spanned = new SpannableString(full);
+                int tailStart = full.length() - tail.length();
+                spanned.setSpan(new MonoSpan(HubSkin.mono(context)), tailStart,
+                        full.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                spanned.setSpan(new RelativeSizeSpan(0.8f), tailStart,
+                        full.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                spanned.setSpan(new ForegroundColorSpan(
+                        row.statusTone == TONE_ACTIVE ? HubSkin.ACCENT_LIGHT
+                                : row.statusTone == TONE_ATTENTION ? HubSkin.ACCENT
+                                : row.statusTone == TONE_MUTED ? HubSkin.FAINT
+                                : HubSkin.GRAY), tailStart, full.length(),
+                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                descView.setVisibility(VISIBLE);
+                descView.setText(spanned);
+            }
+            dividerView.setVisibility(row.seg == SEG_FIRST || row.seg == SEG_MID
+                    ? VISIBLE : GONE);
+        }
+    }
+
+    /** Sets a mono typeface over a span of a Grotesk paragraph
+     *  (the module card's status tail). */
+    private static class MonoSpan extends MetricAffectingSpan {
+        private final android.graphics.Typeface typeface;
+
+        MonoSpan(android.graphics.Typeface typeface) {
+            this.typeface = typeface;
+        }
+
+        @Override
+        public void updateDrawState(TextPaint paint) {
+            paint.setTypeface(typeface);
+        }
+
+        @Override
+        public void updateMeasureState(TextPaint paint) {
+            paint.setTypeface(typeface);
+        }
+    }
+
+    private static class ActionRowView extends LinearLayout {
+        private final TextView titleView;
+        private final TextView valueView;
+        private final View dividerView;
+
+        ActionRowView(Context context) {
+            super(context);
+            setOrientation(VERTICAL);
+            LinearLayout content = new LinearLayout(context);
+            content.setOrientation(HORIZONTAL);
+            content.setGravity(Gravity.CENTER_VERTICAL);
+            content.setPadding(AndroidUtilities.dp(16), AndroidUtilities.dp(13),
+                    AndroidUtilities.dp(12), AndroidUtilities.dp(13));
+            addView(content, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            titleView = hubText(context, 14.5f, HubSkin.BONE, HubSkin.sans(context));
+            titleView.setSingleLine(true);
+            titleView.setEllipsize(TextUtils.TruncateAt.END);
+            content.addView(titleView, new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            valueView = hubText(context, 10.5f, HubSkin.GRAY, HubSkin.mono(context));
+            valueView.setSingleLine(true);
+            valueView.setEllipsize(TextUtils.TruncateAt.END);
+            LinearLayout.LayoutParams valueParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            valueParams.leftMargin = AndroidUtilities.dp(10);
+            content.addView(valueView, valueParams);
+            TextView chevron = hubText(context, 18, HubSkin.FAINT, HubSkin.sans(context));
+            chevron.setText("›");
+            LinearLayout.LayoutParams chevronParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            chevronParams.leftMargin = AndroidUtilities.dp(6);
+            content.addView(chevron, chevronParams);
+            dividerView = new View(context);
+            dividerView.setBackgroundColor(HubSkin.HAIRLINE);
+            LinearLayout.LayoutParams dividerParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 1);
+            dividerParams.leftMargin = AndroidUtilities.dp(16);
+            addView(dividerView, dividerParams);
+        }
+
+        void bind(Row row) {
+            titleView.setText(row.title);
+            if (row.value == null) {
+                valueView.setVisibility(GONE);
+            } else {
+                valueView.setVisibility(VISIBLE);
+                valueView.setText(row.value);
+            }
+            dividerView.setVisibility(row.seg == SEG_FIRST || row.seg == SEG_MID
+                    ? VISIBLE : GONE);
+        }
+    }
+
+    /** Indented child row — NOT carded: in the v3 mockup the
+     *  children hang on a hairline guide under their module's card,
+     *  each marked with a small orange tick. The guide tiles across
+     *  consecutive child rows into one continuous line. Right side
+     *  is either a switch (toggle child) or a mono value + chevron
+     *  (pick child). */
+    private static class SubRowView extends FrameLayout {
+        private final TextView titleView;
+        private final LinearLayout toggleGroup;
+        private final TextView stateView;
+        private final Switch switchView;
+        private final LinearLayout pickGroup;
+        private final TextView valueView;
+
+        SubRowView(Context context) {
+            super(context);
+            View guide = new View(context);
+            guide.setBackgroundColor(HubSkin.HAIRLINE);
+            FrameLayout.LayoutParams guideParams = new FrameLayout.LayoutParams(
+                    1, ViewGroup.LayoutParams.MATCH_PARENT);
+            guideParams.leftMargin = AndroidUtilities.dp(39);
+            addView(guide, guideParams);
+
+            View tick = new View(context);
+            tick.setBackgroundColor(HubSkin.ACCENT);
+            FrameLayout.LayoutParams tickParams = new FrameLayout.LayoutParams(
+                    AndroidUtilities.dp(5), AndroidUtilities.dp(5));
+            tickParams.leftMargin = AndroidUtilities.dp(37);
+            tickParams.gravity = Gravity.CENTER_VERTICAL;
+            addView(tick, tickParams);
+
+            LinearLayout content = new LinearLayout(context);
+            content.setOrientation(LinearLayout.HORIZONTAL);
+            content.setGravity(Gravity.CENTER_VERTICAL);
+            content.setPadding(0, AndroidUtilities.dp(4), AndroidUtilities.dp(40),
+                    AndroidUtilities.dp(4));
+            FrameLayout.LayoutParams contentParams = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            contentParams.leftMargin = AndroidUtilities.dp(58);
+            addView(content, contentParams);
+
+            titleView = hubText(context, 14, HubSkin.SECONDARY, HubSkin.sans(context));
+            titleView.setSingleLine(true);
+            titleView.setEllipsize(TextUtils.TruncateAt.END);
+            content.addView(titleView, new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+            toggleGroup = new LinearLayout(context);
+            toggleGroup.setOrientation(LinearLayout.HORIZONTAL);
+            toggleGroup.setGravity(Gravity.CENTER_VERTICAL);
+            content.addView(toggleGroup);
+            stateView = hubText(context, 9.5f, HubSkin.FAINT, HubSkin.mono(context));
+            LinearLayout.LayoutParams stateParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            stateParams.rightMargin = AndroidUtilities.dp(10);
+            toggleGroup.addView(stateView, stateParams);
+            switchView = HubSkin.newSwitch(context);
+            switchView.setFocusable(false);
+            switchView.setClickable(false);
+            toggleGroup.addView(switchBox(context, switchView), new LinearLayout.LayoutParams(
+                    AndroidUtilities.dp(56), AndroidUtilities.dp(40)));
+
+            pickGroup = new LinearLayout(context);
+            pickGroup.setOrientation(LinearLayout.HORIZONTAL);
+            pickGroup.setGravity(Gravity.CENTER_VERTICAL);
+            content.addView(pickGroup);
+            valueView = hubText(context, 10.5f, HubSkin.SECONDARY, HubSkin.mono(context));
+            valueView.setSingleLine(true);
+            valueView.setEllipsize(TextUtils.TruncateAt.END);
+            pickGroup.addView(valueView);
+            TextView chevron = hubText(context, 18, HubSkin.FAINT, HubSkin.sans(context));
+            chevron.setText("›");
+            LinearLayout.LayoutParams chevronParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            chevronParams.leftMargin = AndroidUtilities.dp(6);
+            pickGroup.addView(chevron, chevronParams);
+        }
+
+        void bind(Row row) {
+            titleView.setText(row.title);
+            if (row.subKind == SUB_TOGGLE) {
+                pickGroup.setVisibility(GONE);
+                toggleGroup.setVisibility(VISIBLE);
+                boolean on = "On".equals(row.value);
+                switchView.setChecked(on, false);
+                stateView.setText(on ? "ON" : "OFF");
+                stateView.setTextColor(on ? HubSkin.ACCENT_LIGHT : HubSkin.FAINT);
+            } else {
+                toggleGroup.setVisibility(GONE);
+                pickGroup.setVisibility(VISIBLE);
+                valueView.setText(row.value);
+            }
+        }
+    }
+
+    private static class SearchResultView extends LinearLayout {
+        private final TextView titleView;
+        private final TextView crumbView;
+
+        SearchResultView(Context context) {
+            super(context);
+            setOrientation(VERTICAL);
+            setPadding(AndroidUtilities.dp(24), AndroidUtilities.dp(11),
+                    AndroidUtilities.dp(24), 0);
+            titleView = hubText(context, 14.5f, HubSkin.BONE, HubSkin.sansMedium(context));
+            titleView.setSingleLine(true);
+            titleView.setEllipsize(TextUtils.TruncateAt.END);
+            addView(titleView);
+            crumbView = hubText(context, 8.5f, HubSkin.FAINT, HubSkin.mono(context));
+            crumbView.setLetterSpacing(0.1f);
+            LinearLayout.LayoutParams crumbParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            crumbParams.topMargin = AndroidUtilities.dp(3);
+            addView(crumbView, crumbParams);
+            View divider = new View(context);
+            divider.setBackgroundColor(HubSkin.HAIRLINE);
+            LinearLayout.LayoutParams dividerParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 1);
+            dividerParams.topMargin = AndroidUtilities.dp(11);
+            addView(divider, dividerParams);
+        }
+
+        void bind(Row row) {
+            titleView.setText(row.title);
+            crumbView.setText(row.subtitle);
+        }
+    }
+
+    private static class NoteView extends TextView {
+        NoteView(Context context) {
+            super(context);
+            setTypeface(HubSkin.sans(context));
+            setTextSize(13);
+            setTextColor(HubSkin.GRAY);
+            setLineSpacing(0, 1.25f);
+            setPadding(AndroidUtilities.dp(24), AndroidUtilities.dp(10),
+                    AndroidUtilities.dp(24), AndroidUtilities.dp(10));
+        }
+    }
+
+    private static class FooterView extends LinearLayout {
+        private final TextView disclaimerView;
+        private final TextView versionView;
+
+        FooterView(Context context) {
+            super(context);
+            setOrientation(VERTICAL);
+            setGravity(Gravity.CENTER_HORIZONTAL);
+            setPadding(AndroidUtilities.dp(24), AndroidUtilities.dp(24),
+                    AndroidUtilities.dp(24), AndroidUtilities.dp(30));
+            disclaimerView = hubText(context, 8.5f, HubSkin.FAINT, HubSkin.mono(context));
+            disclaimerView.setGravity(Gravity.CENTER);
+            disclaimerView.setLineSpacing(0, 1.35f);
+            disclaimerView.setLetterSpacing(0.04f);
+            addView(disclaimerView, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            versionView = hubText(context, 9, HubSkin.GRAY, HubSkin.mono(context));
+            versionView.setGravity(Gravity.CENTER);
+            versionView.setLetterSpacing(0.08f);
+            LinearLayout.LayoutParams versionParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            versionParams.topMargin = AndroidUtilities.dp(12);
+            addView(versionView, versionParams);
+            View tick = new View(context);
+            tick.setBackgroundColor(HubSkin.ACCENT);
+            LinearLayout.LayoutParams tickParams = new LinearLayout.LayoutParams(
+                    AndroidUtilities.dp(26), AndroidUtilities.dp(3));
+            tickParams.topMargin = AndroidUtilities.dp(14);
+            tickParams.gravity = Gravity.CENTER_HORIZONTAL;
+            addView(tick, tickParams);
+        }
+
+        private static volatile String cachedVersionLine;
+
+        void bind(Row row) {
+            disclaimerView.setText(row.title == null ? ""
+                    : row.title.toUpperCase(Locale.US));
+            String line = cachedVersionLine;
+            if (line == null) {
+                String version = null;
+                try {
+                    Context context = getContext();
+                    version = context.getPackageManager()
+                            .getPackageInfo(context.getPackageName(), 0).versionName;
+                } catch (Throwable ignored) {
+                }
+                line = (version == null || version.isEmpty())
+                        ? "AMINGRAM · HUB DOSSIER V3 · MADE BY AMIN"
+                        : "AMINGRAM · VERSION " + version + " · HUB DOSSIER V3 · MADE BY AMIN";
+                cachedVersionLine = line;
+            }
+            versionView.setText(line);
+        }
+    }
+
+    /** "END OF CATEGORY 02 — PRIVACY & GHOST" + the orange end-tick. */
+    private static class PageEndView extends LinearLayout {
+        private final TextView textView;
+
+        PageEndView(Context context) {
+            super(context);
+            setOrientation(VERTICAL);
+            setGravity(Gravity.CENTER_HORIZONTAL);
+            setPadding(AndroidUtilities.dp(24), AndroidUtilities.dp(26),
+                    AndroidUtilities.dp(24), AndroidUtilities.dp(30));
+            textView = hubText(context, 8.5f, HubSkin.FAINT, HubSkin.mono(context));
+            textView.setLetterSpacing(0.1f);
+            addView(textView);
+            View tick = new View(context);
+            tick.setBackgroundColor(HubSkin.ACCENT);
+            LinearLayout.LayoutParams tickParams = new LinearLayout.LayoutParams(
+                    AndroidUtilities.dp(26), AndroidUtilities.dp(3));
+            tickParams.topMargin = AndroidUtilities.dp(12);
+            tickParams.gravity = Gravity.CENTER_HORIZONTAL;
+            addView(tick, tickParams);
+        }
+
+        void bind(Row row) {
+            textView.setText("END OF CATEGORY " + row.indexText + " — "
+                    + (row.title == null ? "" : row.title.toUpperCase(Locale.US)));
+        }
+    }
+
+    /** extera-style rich plugin card (v1.3.3), one per installed JS
+     *  plugin: icon chip + working enable switch, big name, a
+     *  "Version X · @author" line (author in accent), description
+     *  up to two lines, capability chips, and a bottom action row
+     *  (settings page, view log, delete in red). The buttons run
+     *  the plugin page's own operations via Callbacks; tapping the
+     *  card itself still opens the plugin page. The switch is
+     *  display-only like the module headers — a transparent hit
+     *  area over it performs the toggle.
+     *  v3: presentation moved to the dossier skin (surface fill,
+     *  hairline stroke, Fraunces name, mono meta/chips); structure,
+     *  listeners and the v1.3.4 suppression fix are unchanged. */
+
+    // ------------------------------------------------------------------
+    // Adapter
+    // ------------------------------------------------------------------
+
+    private class HubAdapter extends RecyclerListView.SelectionAdapter {
+
+        @Override
+        public int getItemCount() {
+            return rows.size();
+        }
+
+        @Override
+        public int getItemViewType(int position) {
+            return rows.get(position).kind;
+        }
+
+        @Override
+        public boolean isEnabled(RecyclerView.ViewHolder holder) {
+            int position = holder.getAdapterPosition();
+            if (position < 0 || position >= rows.size()) {
+                return false;
+            }
+            int kind = rows.get(position).kind;
+            return kind != KIND_MASTHEAD && kind != KIND_STATS
+                    && kind != KIND_SEARCH && kind != KIND_LABEL
+                    && kind != KIND_PAGE_HEADER && kind != KIND_FOOTER
+                    && kind != KIND_NOTE && kind != KIND_PAGE_END;
+        }
+
+        @Override
+        public RecyclerView.ViewHolder onCreateViewHolder(ViewGroup parent, int viewType) {
+            View view;
+            Context context = parent.getContext();
+            switch (viewType) {
+                case KIND_MASTHEAD:
+                    view = new MastheadView(context);
+                    break;
+                case KIND_STATS:
+                    view = new StatsView(context);
+                    break;
+                case KIND_SEARCH:
+                    view = new SearchRowView(context);
+                    break;
+                case KIND_LABEL:
+                    view = new LabelView(context);
+                    break;
+                case KIND_PAGE_HEADER:
+                    view = new PageHeaderView(context);
+                    break;
+                case KIND_CATEGORY:
+                    view = new CategoryRowView(context);
+                    break;
+                case KIND_QUICK:
+                    view = new ToggleRowView(context);
+                    break;
+                case KIND_MODULE:
+                    view = new ModuleCardView(context);
+                    break;
+                case KIND_ACTION:
+                    view = new ActionRowView(context);
+                    break;
+                case KIND_SUBROW:
+                    view = new SubRowView(context);
+                    break;
+                case KIND_SEARCH_RESULT:
+                    view = new SearchResultView(context);
+                    break;
+                case KIND_FOOTER:
+                    view = new FooterView(context);
+                    break;
+                case KIND_PAGE_END:
+                    view = new PageEndView(context);
+                    break;
+                case KIND_NOTE:
+                default:
+                    view = new NoteView(context);
+                    break;
+            }
+            view.setLayoutParams(new RecyclerView.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT));
+            return new RecyclerListView.Holder(view);
+        }
+
+        @Override
+        public void onBindViewHolder(RecyclerView.ViewHolder holder, int position) {
+            Context context = holder.itemView.getContext();
+            Row row = rows.get(position);
+            // Block rows float on the page background: 24dp side
+            // margins and a 12dp gap above the first segment of
+            // each block. (Pre-v3: 12dp margins / 10dp gap — the
+            // dossier page margin is wider.)
+            RecyclerView.LayoutParams lp =
+                    (RecyclerView.LayoutParams) holder.itemView.getLayoutParams();
+            boolean carded = row.seg != SEG_NONE;
+            lp.leftMargin = carded ? AndroidUtilities.dp(24) : 0;
+            lp.rightMargin = carded ? AndroidUtilities.dp(24) : 0;
+            lp.topMargin = row.seg == SEG_FIRST || row.seg == SEG_ONLY
+                    ? AndroidUtilities.dp(12) : 0;
+            holder.itemView.setLayoutParams(lp);
+            if (carded) {
+                holder.itemView.setBackground(isFlashing(row)
+                        ? HubSkin.highlightDrawable(row.seg)
+                        : HubSkin.blockDrawable(row.seg));
+            }
+            switch (row.kind) {
+                case KIND_MASTHEAD:
+                    break;
+                case KIND_STATS:
+                    ((StatsView) holder.itemView).bind(context);
+                    break;
+                case KIND_SEARCH:
+                    lp.leftMargin = AndroidUtilities.dp(24);
+                    lp.rightMargin = AndroidUtilities.dp(24);
+                    lp.topMargin = AndroidUtilities.dp(14);
+                    holder.itemView.setLayoutParams(lp);
+                    holder.itemView.setBackground(
+                            HubSkin.blockDrawable(SEG_ONLY, HubSkin.SURFACE));
+                    ((SearchRowView) holder.itemView).bind(HubCommon.this);
+                    break;
+                case KIND_LABEL:
+                    ((LabelView) holder.itemView).setLabel(row.title);
+                    break;
+                case KIND_PAGE_HEADER:
+                    ((PageHeaderView) holder.itemView).bind(row);
+                    break;
+                case KIND_CATEGORY:
+                    ((CategoryRowView) holder.itemView).bind(row);
+                    break;
+                case KIND_QUICK: {
+                    ToggleRowView toggle = (ToggleRowView) holder.itemView;
+                    if ("ghost".equals(row.quickId)) {
+                        boolean on = PluginRegistry.isEnabledById(context, "ghost_mode");
+                        toggle.bind(row.title, on, on ? "ON" : "OFF", row.seg);
+                    }
+                    break;
+                }
+                case KIND_MODULE:
+                    ((ModuleCardView) holder.itemView).bind(context, row);
+                    break;
+                case KIND_ACTION:
+                    ((ActionRowView) holder.itemView).bind(row);
+                    break;
+                case KIND_SUBROW:
+                    ((SubRowView) holder.itemView).bind(row);
+                    break;
+                case KIND_SEARCH_RESULT:
+                    ((SearchResultView) holder.itemView).bind(row);
+                    break;
+                case KIND_FOOTER:
+                    ((FooterView) holder.itemView).bind(row);
+                    break;
+                case KIND_PAGE_END:
+                    ((PageEndView) holder.itemView).bind(row);
+                    break;
+                case KIND_NOTE:
+                    ((NoteView) holder.itemView).setText(row.title);
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+}

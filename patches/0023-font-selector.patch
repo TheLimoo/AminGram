@@ -39,9 +39,11 @@ index 4c6fbba..40c1819 100644
      }
  
      public static ILocationServiceProvider getLocationServiceProvider() {
-@@ -293,6 +297,11 @@ public class ApplicationLoader extends Application {
- 
-         super.onCreate();
+@@ -299,7 +299,12 @@ public class ApplicationLoader extends Application {
+         // The widget engine's isolated process has no files, network or accounts: none of the client starts there.
+         if (org.telegram.utils.twidget.WidgetEngineService.isEngineProcess()) {
+             return;
+         }
  
 +        // AminGram: load the font selector's latch once, here where the
 +        // application context is guaranteed; the AndroidUtilities

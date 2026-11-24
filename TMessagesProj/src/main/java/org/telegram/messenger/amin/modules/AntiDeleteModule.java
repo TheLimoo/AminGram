@@ -19,7 +19,7 @@ public class AntiDeleteModule implements ModModule {
         if (!PluginRegistry.isEnabled(context, this)) {
             return "";
         }
-        int kept = VaultStore.getAll(context, DeletedStore.PREFS, DeletedStore.DELETED_KEY).size();
+        int kept = VaultStore.count(context, DeletedStore.PREFS, DeletedStore.DELETED_KEY);
         return kept > 0 ? "Active · " + kept + " deleted kept" : "Active";
     }
 }

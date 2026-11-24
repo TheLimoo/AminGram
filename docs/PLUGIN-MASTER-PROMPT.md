@@ -25,8 +25,7 @@ async HTTP (`amin.httpGetAsync` / `amin.httpPostAsync`), storage v2
 (JSON + namespaces), settings schema v2 (number / slider / select /
 header / dependsOn), lifecycle hooks (`onEnable` / `onDisable` /
 `onSettingsChanged` / `onMigrate`), leveled logging, `amin.platform`
-feature detection, manifest `@minPlatform` / `@dataVersion`, and
-dual-mode Gemini (AI Studio / Vertex AI) for the `google` capability.
+feature detection, manifest `@minPlatform` / `@dataVersion`.
 Everything from v2.0 still holds: the `file` capability +
 `amin.sendFile`, HTTP error bodies from `amin.httpPost` (with the
 canonical `extractError` helper), and the attach-menu fields `@icon` /
@@ -55,7 +54,7 @@ multi-request, server-side work.
    don't use is asking for power you don't need; missing one makes the
    surface not exist at runtime.
 2. **Gated surfaces do not exist without their capability** — this is
-   structural, not a permission check. `amin.sendFile`, `amin.google`,
+   structural, not a permission check. `amin.sendFile`,
    `amin.editMessage`, `amin.files` … are `undefined` / absent when
    the capability isn't declared. Feature-detect and degrade.
 3. **Nothing ever throws across the bridge.** Every `amin.*` failure
@@ -166,7 +165,6 @@ The file starts with a manifest comment block. `@id`, `@name`, `@version`,
   | `ui` | `amin.ui` (+ `@contextMenu` items) | "Show notifications, use the clipboard, open chats and links" |
   | `settings` | the SETTINGS page + `PLUGIN_PAGE` | "Keep its own settings and page here" |
   | `menu` | attach-menu button (`onMenuAction`) | "Add items to the attach (+) menu" |
-  | `google` | `amin.google` | "Use your Google account sign-in (for Gemini)" |
 
 - `@contextMenu` (optional, v2.2; needs `ui`): a label for ONE item in
   the message long-press menu. When the user taps it, your
@@ -248,6 +246,10 @@ amin.platform                       // v2.1 feature detection — see below
 amin.getChatInfo(chatId)            // v2.1 lazy lookups — see below
 amin.getUserInfo(userId)
 amin.getMessage(chatId, id)
+amin.getMessageRaw(chatId, id)      // v2.4 raw TLRPC.Message metadata snapshot
+amin.sendMessageMedia(ref, opts)    // `file` ONLY (v2.4) — export/send sticker or message media
+amin.storage.setMulti(obj)          // v2.4 batched storage write in one apply()
+amin.db.putMulti(ns, obj)           // v2.4 batched SQLite write in one transaction
 amin.editMessage(ref, text)         // `act` capability ONLY — see below
 amin.react(ref, emoji)              // `act` capability ONLY — see below
 amin.deleteMessage(ref, opts)       // `act` ONLY (v2.2) — see Acting
@@ -351,7 +353,7 @@ message returns null. Design for the null case.
 
 If the manifest does NOT declare the `act` capability, `amin.editMessage`
 and `amin.react` do not exist at all (`typeof amin.editMessage ===
-"undefined"`) — the gate is structural, exactly like `amin.google` and
+"undefined"`) — the gate is structural, exactly like
 `amin.sendFile`. With the capability:
 
 ```js
@@ -486,7 +488,7 @@ amin.db.clear("notes")                       // empties ONE namespace
 
 If the manifest does NOT declare the `file` capability, `amin.sendFile`
 does not exist at all (`typeof amin.sendFile === "undefined"`) — the gate
-is structural, exactly like `amin.google`. With the capability:
+is structural. With the capability:
 
 ```js
 var ok = amin.sendFile(url, opts)   // SYNCHRONOUS — returns a boolean
@@ -904,74 +906,10 @@ function onPluginAction(actionId) {
   for pages that DO things (export, reset, recompute), and use
   `amin.ui.notify` / `amin.toast` to report the outcome.
 
-## Google account (`google` capability only) — dual mode (v2.1)
+## Google account — REMOVED in v3.0.20
 
-If the manifest does NOT declare the `google` capability, `amin.google`
-does not exist at all (`typeof amin.google === "undefined"`). With the
-capability, the plugin can use the Google account the user connected in
-**Plugins → Google Account** — an OAuth access token, never an API key:
-
-```js
-amin.google.isSignedIn()            // true while an account is connected
-amin.google.getAccessToken(fn)      // ASYNC: fn(token) — token is a string, or null
-amin.google.signIn(fn)              // ASYNC: fn(true/false) — opens the native
-                                    // Google account picker / consent screen
-amin.google.getMode()               // v2.1: "aistudio" or "vertex" ("" if unreadable)
-amin.google.getLastAuthError()      // v2.1: the most recent authorize failure's
-                                    // detail, or "" when none / last attempt OK
-```
-
-- Both async calls take a **callback** — they never return the value
-  directly, and the callback fires later (on the plugin's own thread),
-  possibly after the user finishes a consent screen. Structure code as
-  continuations: everything that needs the token goes INSIDE the
-  getAccessToken callback.
-- Typical pattern: if `!amin.google.isSignedIn()`, call
-  `amin.google.signIn(function (ok) { … })` and continue inside it when
-  `ok` is true; otherwise tell the user once, cleanly.
-- Tokens live about an hour; `getAccessToken` silently refreshes them.
-  Never store a token in `amin.storage` — always fetch a fresh one.
-- Google may occasionally demand an interactive re-consent
-  (unverified app): then `getAccessToken` returns null and `signIn`
-  is the way back.
-
-### The two modes
-
-The user picks the mode in **Plugins → Google Account → API mode**
-(`amin.google.getMode()` reports it; switching modes clears the cached
-token, since the modes use different scopes — the user reconnects under
-the new mode). A dual-mode plugin must branch on the mode:
-
-- **"aistudio" (default)** — the original AI Studio endpoint:
-  `https://generativelanguage.googleapis.com/v1beta/models/<model>:generateContent`
-  with `Authorization: "Bearer " + token`.
-  ⚠️ **Currently blocked by a Google-side defect.** This mode needs the
-  `generative-language` OAuth scope, which Google's console refuses to
-  register for this app — authorization dies with `invalid_scope`, and
-  tokens minted under the broader `cloud-platform` scope are rejected
-  by the API itself ("insufficient authentication scopes"). There is
-  nothing a plugin (or the app) can do about it today. Plugin-facing
-  behaviour: `getAccessToken` yields null and
-  `amin.google.getLastAuthError()` contains `invalid_scope` — answer
-  with a plain-words line, like the bundled gemini-chat does:
-  *"AI Studio mode needs a Google-side scope fix — switch to Vertex AI
-  in Plugins → Google Account, or wait for the fix."* Do not retry in a
-  loop and do not blame the user's connection.
-- **"vertex"** — the same Gemini models through the user's Google Cloud
-  project (this mode's `cloud-platform` scope registers fine):
-  `https://<location>-aiplatform.googleapis.com/v1/projects/<project>/locations/<location>/publishers/google/models/<model>:generateContent`,
-  same JSON body as AI Studio. Auth is EITHER the account token
-  (`Authorization: "Bearer " + token`) OR — when the plugin's
-  `vertexApiKey` setting is set — the header
-  `x-goog-api-key: <key>` with **no Google sign-in at all**: in key
-  mode, never call `signIn` / `getAccessToken`; the key IS the
-  credential. The one gate is **project billing**: a 403 whose error
-  mentions billing means billing is off — map it to a plain-words
-  line ("Vertex needs billing enabled on the project (one console
-  step) — or switch back to AI Studio mode."), never a raw dump.
-  The bundled gemini-chat carries `vertexProject` /
-  `vertexLocation` / `vertexModel` / `vertexApiKey` settings for
-  exactly this.
+The `google` capability, `amin.google`, Google sign-in and all AI
+features were deleted from AminGram in v3.0.20. Plugins must not reference them.
 
 ## Hooks — define the ones you need
 
@@ -1193,7 +1131,7 @@ does exactly this for its template store).
    `typeof amin.sendFile === "function"` before relying on it, and
    always provide the link fallback when it is missing or returns false.
    The same applies to `amin.editMessage` / `amin.react` (`act`),
-   `amin.google` (`google`), the access objects `amin.files`
+   the access objects `amin.files`
    (a field on `file` bridges), `amin.ui` / `amin.relay` (fields that
    are **null** without their capability — test truthiness, not
    `typeof`), and new surfaces via `amin.platform.has(...)`.
@@ -1309,17 +1247,9 @@ worked examples of the surfaces above (12 in the Built-in library):
 - **quick-translate** — /tr via the keyless gtx endpoint, plus a
   long-press **Translate** context action (`@contextMenu`)
   (`commands`, `send`, `http`, `settings`, `ui`).
-- **gemini-chat** — /ai, dual-mode Gemini as documented in the Google
-  section (`commands`, `send`, `http`, `google`, `settings`, `menu`).
 - **link-cleaner** — strips tracking parameters from links.
 - **qr-maker** — /qr posts a QR image (`sendFile` + link fallback).
 - **price-check** — /price, live currency/gold/crypto prices.
-- **ai-actions** (NEW in v2.1) — reply to a message with **/sum**
-  (summarize), **/explain** (explain simply) or **/draft** (draft a
-  reply), or pass text directly (`/sum <text>`); the attach-menu
-  button **"AI: summarize"** summarizes the last text seen in the
-  chat. Dual-mode Gemini like gemini-chat, driven by `ctx.replyTo`
-  (`commands`, `send`, `http`, `google`, `menu`, `observe`, `settings`).
 - **quick-replies** (NEW in v2.1) — text templates: `/tpl set <name>
   <text>` saves one, `/tpl <name>` posts it, `/tpl list` lists them,
   `/tpl del <name>` removes one. Templates live as one JSON object via
@@ -1374,163 +1304,10 @@ function onMessage(msg) {
 }
 ```
 
-## Example A (v2.1, full) — a dual-mode Gemini command (`google` + `httpPost` + `extractError`)
+## Example A — REMOVED in v3.0.20
 
-A complete `/ai <question>` plugin in the v2.1 shape: it reads the
-user's API mode with `amin.google.getMode()`, supports Vertex key mode
-(no sign-in at all), continues inside the async token callback, posts
-with the right auth header, and maps the two known dead ends —
-AI Studio's Google-side scope defect and Vertex's billing gate — to
-plain-words replies via the canonical `extractError` (possible only
-because `httpPost` returns error bodies on non-2xx). This mirrors the
-bundled gemini-chat.
-
-```js
-// ==AminGramPlugin==
-// @id          ai-ask
-// @name        AI Ask
-// @version     1.0
-// @author      Amin
-// @description /ai <question> asks Gemini — AI Studio or Vertex mode, per Plugins → Google Account.
-// @capabilities commands, send, http, google, settings
-// @minPlatform 2
-// ==/AminGramPlugin==
-
-var SETTINGS = [
-  { key: "model", type: "text", title: "Gemini model (AI Studio mode)", def: "gemini-3-flash-preview" },
-  { key: "vertexProject", type: "text", title: "Vertex AI: project", def: "" },
-  { key: "vertexLocation", type: "text", title: "Vertex AI: location", def: "us-central1" },
-  { key: "vertexModel", type: "text", title: "Vertex AI: model", def: "gemini-2.5-flash" },
-  { key: "vertexApiKey", type: "text", title: "Vertex AI: API key (optional; skips Google sign-in)", def: "" }
-];
-
-function setting(key, def) {
-  var v = String(amin.storage.get(key, def) || "").trim();
-  return v ? v : def;
-}
-
-function mode() {
-  return (amin.google.getMode && amin.google.getMode()) || "aistudio";
-}
-
-function onCommand(ctx) {
-  if (ctx.command !== "ai") return;
-  var prompt = (ctx.args || "").trim();
-  if (!prompt) { amin.reply(ctx.msg, "Usage: /ai <question>"); return; }
-  // Vertex + API key: no Google account involved at all.
-  if (mode() === "vertex" && setting("vertexApiKey", "")) {
-    vertexRequest(ctx, prompt, null, setting("vertexApiKey", ""));
-    return;
-  }
-  if (!amin.google.isSignedIn()) {
-    amin.google.signIn(function (ok) {
-      if (ok) { askWithToken(ctx, prompt); }
-      else { amin.reply(ctx.msg, "Google sign-in was cancelled — connect an account in Plugins → Google Account."); }
-    });
-    return;
-  }
-  askWithToken(ctx, prompt);
-}
-
-function askWithToken(ctx, prompt) {
-  amin.google.getAccessToken(function (token) {
-    if (!token) {
-      var authError = (amin.google.getLastAuthError && amin.google.getLastAuthError()) || "";
-      if (mode() !== "vertex" && authError.indexOf("invalid_scope") >= 0) {
-        amin.reply(ctx.msg, "⚠️ AI Studio mode needs a Google-side scope fix — switch to Vertex AI in Plugins → Google Account, or wait for the fix.");
-        return;
-      }
-      amin.reply(ctx.msg, "⚠️ No Google token — reconnect in Plugins → Google Account.");
-      return;
-    }
-    if (mode() === "vertex") { vertexRequest(ctx, prompt, token, ""); }
-    else { aistudioRequest(ctx, prompt, token); }
-  });
-}
-
-function aistudioRequest(ctx, prompt, token) {
-  var model = setting("model", "gemini-3-flash-preview");
-  var url = "https://generativelanguage.googleapis.com/v1beta/models/"
-    + encodeURIComponent(model) + ":generateContent";
-  var response = amin.httpPost(url, body(prompt), {
-    "Authorization": "Bearer " + token,
-    "Content-Type": "application/json"
-  });
-  handleResponse(ctx, response, false);
-}
-
-function vertexRequest(ctx, prompt, token, apiKey) {
-  var project = setting("vertexProject", "");
-  var location = setting("vertexLocation", "us-central1");
-  var model = setting("vertexModel", "gemini-2.5-flash");
-  if (!project) { amin.reply(ctx.msg, "⚠️ Set the Vertex project in the plugin settings first."); return; }
-  var url = "https://" + location + "-aiplatform.googleapis.com/v1/projects/"
-    + project + "/locations/" + location + "/publishers/google/models/"
-    + model + ":generateContent";
-  var headers = apiKey
-    ? { "x-goog-api-key": apiKey, "Content-Type": "application/json" }
-    : { "Authorization": "Bearer " + token, "Content-Type": "application/json" };
-  var response = amin.httpPost(url, body(prompt), headers);
-  handleResponse(ctx, response, true);
-}
-
-function body(prompt) {
-  return JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] });
-}
-
-function handleResponse(ctx, response, isVertex) {
-  if (!response) {
-    amin.reply(ctx.msg, "⚠️ Gemini did not answer — check the connection and the model name.");
-    return;
-  }
-  var apiError = extractError(response);
-  if (apiError) {
-    if (isVertex && apiError.toLowerCase().indexOf("billing") >= 0) {
-      amin.reply(ctx.msg, "⚠️ Vertex needs billing enabled on the project (one console step) — or switch back to AI Studio mode in Plugins → Google Account.");
-      return;
-    }
-    amin.reply(ctx.msg, "⚠️ Gemini error: " + apiError);
-    return;
-  }
-  var answer = extractText(response);
-  if (!answer) {
-    amin.reply(ctx.msg, "⚠️ Gemini answered, but the reply could not be read (safety filter?).");
-    return;
-  }
-  amin.reply(ctx.msg, answer);
-}
-
-// Canonical error extractor (see the httpPost section above).
-function extractError(response) {
-  try {
-    var data = JSON.parse(response);
-    if (data && data.error && data.error.message) {
-      var msg = String(data.error.message);
-      return msg.length > 300 ? msg.substring(0, 300) + "…" : msg;
-    }
-    return "";
-  } catch (e) {
-    return "";
-  }
-}
-
-// candidates[0].content.parts[*].text, defensively.
-function extractText(response) {
-  try {
-    var data = JSON.parse(response);
-    if (!data || !data.candidates || !data.candidates.length) return "";
-    var content = data.candidates[0].content;
-    if (!content || !content.parts) return "";
-    var out = "";
-    for (var i = 0; i < content.parts.length; i++) {
-      if (content.parts[i] && content.parts[i].text) out += content.parts[i].text;
-    }
-    return out.trim();
-  } catch (e) {
-    return "";
-  }
-}
-```
+The dual-mode AI-chat command example was removed with the Google sign-in + AI
+deletion (v3.0.20). See Example B for the `sendFile` downloader.
 
 ## Example B (v2.0, full) — a `sendFile` downloader with menu action and link fallback
 
