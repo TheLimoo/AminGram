@@ -173,6 +173,51 @@ def line_end(text, idx):
     return len(text) if j == -1 else j
 
 
+def delete_if_chain(text, cond_substr):
+    """Delete an `if (...cond_substr...) { ... }` plus any chained
+    `else if (...) { ... }` / final `else { ... }`. Returns (new_text, found)."""
+    for m in re.finditer(r'\bif\s*\(', text):
+        paren = text.find("(", m.start())
+        depth = 0
+        j = paren
+        cond = None
+        while j < len(text):
+            if text[j] == "(":
+                depth += 1
+            elif text[j] == ")":
+                depth -= 1
+                if depth == 0:
+                    cond = text[paren:j + 1]
+                    break
+            j += 1
+        if cond is None or cond_substr not in cond:
+            continue
+        brace = text.find("{", j)
+        if brace == -1:
+            continue
+        end = brace_span(text, brace)
+        if end is None:
+            continue
+        # chained else-if / else blocks
+        while True:
+            k = end
+            while k < len(text) and text[k] in " \t\r\n":
+                k += 1
+            if not text.startswith("else", k):
+                break
+            ebrace = text.find("{", k)
+            if ebrace == -1:
+                break
+            eend = brace_span(text, ebrace)
+            if eend is None:
+                break
+            end = eend
+        start = line_start(text, m.start())
+        end = line_end(text, end - 1) + 1
+        return text[:start] + text[end:], True
+    return text, False
+
+
 def delete_if_block(text, cond_substr):
     """Delete the first `if (...cond_substr...) { ... }` statement. No else.
 
@@ -317,16 +362,22 @@ def delete_method(text, signature_regex):
     return text[:start] + text[end:], True
 
 
-def delete_case_block(text, case_substr, max_lines=15):
-    """Delete `case <case_substr>:` through its break;/return line (inclusive)."""
+def delete_case_block(text, case_substr, max_lines=60):
+    """Delete `case <case_substr>:` through its break;/return line (inclusive).
+    For a braced case (`case X: { ... break; }`) the closing `}` is deleted
+    too."""
     lines = text.split("\n")
     for i, ln in enumerate(lines):
         if ln.strip().startswith("case ") and case_substr in ln:
+            braced = ln.strip().endswith("{")
             j = i
             while j < len(lines) and j - i < max_lines:
                 s = lines[j].strip()
                 if s == "break;" or s.startswith("return "):
-                    return "\n".join(lines[:i] + lines[j + 1:]), True
+                    end = j + 1
+                    if braced and end < len(lines) and lines[end].strip() == "}":
+                        end += 1
+                    return "\n".join(lines[:i] + lines[end:]), True
                 j += 1
             return text, False
     return text, False
@@ -828,14 +879,41 @@ def step_hub():
 
     write(hub, t)
 
-    # 5f. verify: no exteraless package refs / LauncherIconController left
-    # in the amin tree. (Bare "exteraless" in comments is harmless.)
-    for pat in (r"app\.exteraless\.", r"LauncherIconController"):
-        hits = grep_count(SRC / "java/org/telegram/messenger/amin", pat)
-        if hits:
-            fail(f"hub rewire left {pat}: {hits[:5]}")
-        else:
-            info(f"  verified: no {pat} in amin tree")
+    # 5f. nekomimi TypefaceHelper: it calls the dead exteraless
+    # AppearanceConfig (its own doc says the stand-in "always returns 0",
+    # so the 0 branch is the only live one). Replace with the constant 0
+    # and an unreachable TITLE_TEXT_CUSTOM value.
+    th = SRC / "java/tw/nekomimi/nekogram/helpers/TypefaceHelper.java"
+    if not th.is_file():
+        fail("TypefaceHelper.java not found in overlay copy")
+    else:
+        s = read(th)
+        reps = [
+            ("{@link app.exteraless.appearance.AppearanceConfig#titleText()}",
+             "titleText()"),
+            ("app.exteraless.appearance.AppearanceConfig.titleText()", "0"),
+            ("app.exteraless.appearance.AppearanceConfig.TITLE_TEXT_CUSTOM",
+             "4 /* was TITLE_TEXT_CUSTOM; unreachable while titleText is 0 */"),
+        ]
+        for old, new in reps:
+            if old not in s:
+                fail(f"TypefaceHelper: anchor not found: {old[:60]}")
+            else:
+                s = s.replace(old, new, 1)
+                info(f"  TypefaceHelper: replaced {old[:50]}...")
+        write(th, s)
+
+    # 5g. verify: no exteraless package refs / LauncherIconController left
+    # in the amin or nekomimi trees. (Bare "exteraless" in comments is
+    # harmless.)
+    for root in (SRC / "java/org/telegram/messenger/amin",
+                 SRC / "java/tw/nekomimi"):
+        for pat in (r"app\.exteraless\.", r"LauncherIconController"):
+            hits = grep_count(root, pat)
+            if hits:
+                fail(f"hub rewire left {pat} in {root.name}: {hits[:5]}")
+            else:
+                info(f"  verified: no {pat} in {root.name}")
 
 
 def delete_case_block_helper(text, case_label):
@@ -992,6 +1070,92 @@ def step_ai_delete():
         fail("VoiceRecognitionController: AI post-processing if/else not found")
     write(p, t)
 
+    # -- ChatActivity.java (AI Generate menu item, text-selection AI hook,
+    #    ai Client field/getter)
+    p = SRC / "java/org/telegram/ui/ChatActivity.java"
+    t = read(p)
+    t, n = delete_import_lines(t, [AI_PKG])
+    info(f"  ChatActivity: removed {n} ai imports")
+    t, n = delete_lines_with(
+        t, "private final Client client = new Client.Builder().build();")
+    info(f"  ChatActivity: ai Client field deleted: {n}")
+    t, ok = delete_method(t, r'^\s*public Client getClient\(\)')
+    info(f"  ChatActivity: getClient() deleted: {ok}")
+    if not ok:
+        fail("ChatActivity: getClient() method not found")
+    n_blocks = 0
+    while True:
+        t, ok = delete_if_block(t, "AiController.canUseAI()")
+        if not ok:
+            break
+        n_blocks += 1
+    info(f"  ChatActivity: AiController.canUseAI() if-blocks deleted: {n_blocks}")
+    if n_blocks != 2:
+        fail(f"ChatActivity: expected 2 AiController if-blocks, deleted {n_blocks}")
+    t, ok = delete_case_block(t, "OPTION_GENERATE")
+    info(f"  ChatActivity: case OPTION_GENERATE deleted: {ok}")
+    if not ok:
+        fail("ChatActivity: case OPTION_GENERATE not found")
+    write(p, t)
+
+    # -- ChatActivityEnterView.java (send-popup AI hint + ActionRow, both
+    # popups; insertAiResponse/buildAiRichInsert helpers). The two
+    # `top` booleans that were `!AiController.canUseAI()` are the no-AI
+    # value (TranslateBeforeSendWrapper/ActionBarMenuSubItem take
+    # (top, bottom); with the AI row gone the translate/schedule button
+    # is the top item — the second popup already hardcodes `true`).
+    p = SRC / "java/org/telegram/ui/Components/ChatActivityEnterView.java"
+    t = read(p)
+    t, n = delete_import_lines(t, [AI_PKG])
+    info(f"  ChatActivityEnterView: removed {n} ai imports")
+    n_chains = 0
+    while True:
+        t, ok = delete_if_chain(t, "!AiController.canUseAI() && !hidden")
+        if not ok:
+            break
+        n_chains += 1
+    info(f"  ChatActivityEnterView: AI hint/ActionRow chains deleted: {n_chains}")
+    if n_chains != 2:
+        fail(f"ChatActivityEnterView: expected 2 AI chains, deleted {n_chains}")
+    n_gaps = 0
+    while True:
+        t, ok = delete_if_block(
+            t, "AiController.canUseAI() || !AiController.canUseAI()")
+        if not ok:
+            break
+        n_gaps += 1
+    info(f"  ChatActivityEnterView: AI gapView if-blocks deleted: {n_gaps}")
+    if n_gaps != 2:
+        fail(f"ChatActivityEnterView: expected 2 AI gapView blocks, deleted {n_gaps}")
+    t, n = delete_lines_with(
+        t, 'final boolean hidden = AiConfig.getPreferences()')
+    info(f"  ChatActivityEnterView: ai_hint_hidden declarations deleted: {n}")
+    if n != 2:
+        fail(f"ChatActivityEnterView: expected 2 hidden declarations, deleted {n}")
+    if "!containsText && !AiController.canUseAI()" in t:
+        t = t.replace("!containsText && !AiController.canUseAI()",
+                      "!containsText", 1)
+        info("  ChatActivityEnterView: schedule-button top flag -> !containsText")
+    else:
+        fail("ChatActivityEnterView: schedule-button top anchor not found")
+    if "!AiController.canUseAI()" in t:
+        t = t.replace("!AiController.canUseAI()", "true")
+        info("  ChatActivityEnterView: translate-button top flag -> true")
+    else:
+        info("  ChatActivityEnterView: no remaining !AiController.canUseAI()")
+    t, ok = delete_method(
+        t, r'^\s*private TL_iv\.RichMessage buildAiRichInsert\(')
+    info(f"  ChatActivityEnterView: buildAiRichInsert deleted: {ok}")
+    if not ok:
+        fail("ChatActivityEnterView: buildAiRichInsert not found")
+    t, ok = delete_method(
+        t, r'^\s*public void insertAiResponse\(String prompt, '
+           r'CharSequence response, TL_iv\.RichMessage richMessage\)')
+    info(f"  ChatActivityEnterView: insertAiResponse deleted: {ok}")
+    if not ok:
+        fail("ChatActivityEnterView: insertAiResponse not found")
+    write(p, t)
+
     # -- ChatsPreferencesActivity.kt
     p = SRC / ("java/com/exteragram/messenger/preferences"
                "/ChatsPreferencesActivity.kt")
@@ -1061,6 +1225,18 @@ def step_ai_delete():
         info(f"  PreferencesUtils: AiConfig.CONFIG_NAME lines deleted: {n}")
     t, n = delete_lines_with(t, "AiConfig.getEditor()")
     info(f"  PreferencesUtils: AiConfig.getEditor() line deleted: {n}")
+    t, n = delete_lines_with(t, "AiConfig.ensureConfigMigrated();")
+    info(f"  PreferencesUtils: AiConfig.ensureConfigMigrated() deleted: {n}")
+    if n != 2:
+        fail(f"PreferencesUtils: expected 2 ensureConfigMigrated lines, deleted {n}")
+    t, ok = delete_if_block(t, "AiConfig.CONFIG_NAME.equals(config)")
+    info(f"  PreferencesUtils: AiConfig roles check deleted: {ok}")
+    if not ok:
+        fail("PreferencesUtils: AiConfig.CONFIG_NAME.equals(config) block not found")
+    t, n = delete_lines_with(t, "OnDeviceAvailability.onModelConfigChanged(null);")
+    info(f"  PreferencesUtils: OnDeviceAvailability call deleted: {n}")
+    if n != 1:
+        fail(f"PreferencesUtils: expected 1 OnDeviceAvailability call, deleted {n}")
     t, ok = delete_case_block(t, "AiConfig.CONFIG_NAME")
     info(f"  PreferencesUtils: findBackupItem AiConfig case deleted: {ok}")
     if not ok:
@@ -1075,12 +1251,30 @@ def step_ai_delete():
                 r"\bAiController\b",
                 r"TelegramAiReplacement",
                 r"AiPreferencesActivity",
-                r"\bAiConfig\b"):
+                r"\bAiConfig\b",
+                r"AiResponseAlert",
+                r"GenerateFromMessageBottomSheet",
+                r"EditServiceActivity",
+                r"OnDeviceAvailability",
+                r"GenerationCallback",
+                r"buildAiRichInsert",
+                r"insertAiResponse"):
         hits = grep_count(TM / "src", pat)
         if hits:
             fail(f"AI delete left {pat}: {hits[:5]}")
         else:
             info(f"  verified: no {pat} in src")
+    # getClient() belonged to the deleted ai Client: no caller may survive
+    # in the two files that referenced it.
+    for f in (SRC / "java/org/telegram/ui/ChatActivity.java",
+              SRC / "java/org/telegram/ui/Components/ChatActivityEnterView.java"):
+        txt = read(f)
+        found = [ln.strip() for ln in txt.split("\n")
+                 if "getClient()" in ln]
+        if found:
+            fail(f"AI delete left getClient() in {f.name}: {found[:3]}")
+        else:
+            info(f"  verified: no getClient() in {f.name}")
     for f, pat in (
             (SRC / "java/org/telegram/ui/Components/TranslateAlert2.java",
              r"aiReplacementCancel"),
@@ -1321,12 +1515,19 @@ def step_missing_strings():
                 defined.add(m.group(1))
         except Exception:
             pass
-    # Names the amin code references.
+    # Names the overlay code references (amin modules + nekomimi helpers +
+    # WalletPluginFreeze).
     needed = set()
     amin_dir = SRC / "java/org/telegram/messenger/amin"
-    for jf in amin_dir.rglob("*.java"):
-        for m in re.finditer(r'R\.string\.(\w+)', read(jf)):
-            needed.add(m.group(1))
+    scan_roots = [amin_dir,
+                  SRC / "java/tw/nekomimi",
+                  SRC / "java/org/telegram/ui/Wallet/WalletPluginFreeze.java"]
+    for root in scan_roots:
+        files = ([root] if root.is_file() else list(root.rglob("*.java"))
+                 if root.exists() else [])
+        for jf in files:
+            for m in re.finditer(r'R\.string\.(\w+)', read(jf)):
+                needed.add(m.group(1))
     missing = sorted(needed - defined)
     if not missing:
         info(f"  all {len(needed)} R.string names used by amin code exist")
@@ -1346,10 +1547,15 @@ def step_missing_strings():
         fail(f"strings needed by amin code exist NOWHERE: {not_found}")
         return
     out = ['<?xml version="1.0" encoding="utf-8"?>', '<resources>',
-           '    <!-- AminGram: strings referenced by the amin hub/modules '
-           'that exteraGram does not define. -->']
+           '    <!-- AminGram: strings referenced by the overlay code that '
+           'exteraGram does not define. -->']
     for n in missing:
-        out.append("    " + ET.tostring(by_name[n], encoding="unicode").strip())
+        elem = by_name[n]
+        # OpenExtera is the chat-list title: rebrand it from "exteraless".
+        if n == "OpenExtera":
+            elem = copy.deepcopy(elem)
+            elem.text = "AminGram"
+        out.append("    " + ET.tostring(elem, encoding="unicode").strip())
     out.append('</resources>')
     write(SRC / "res/values/amingram_strings.xml", "\n".join(out) + "\n")
     info(f"  wrote res/values/amingram_strings.xml with {len(missing)} strings")
