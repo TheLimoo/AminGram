@@ -723,6 +723,50 @@ def apply_patch_hunks(patch_path):
     return applied, skipped, reasons
 
 
+def step_amin_option_ids():
+    """Renumber AminHooks' menu-option IDs 200-208 -> 400-408.
+
+    exteraGram's ChatActivity renumbered its own OPTION_* constants into
+    200-209 (SAVE_MESSAGE=200, REPEAT=201, CLEAR_FROM_CACHE=202,
+    COPY_PHOTO=203, DETAILS=204, HISTORY=205, GENERATE=206,
+    IMPORT_SETTINGS=207, PLUGINS_ITEMS=208, GO_TO_POST=209), so every
+    AminHooks OPTION_* in 200-208 collides by VALUE with an exteraGram
+    case in the same `switch (option)` — javac 'duplicate case label'
+    (runs 8-9: HISTORY/SAVE_MESSAGE/REPEAT/COPY_PHOTO/CLEAR_FROM_CACHE/
+    IMPORT_SETTINGS). The old stock-Telegram base did not use 200-208,
+    which is why .76 built. All uses are by NAME (options.add + the
+    handleStage2MessageOption switch), so only the values change.
+    400-408 is free (ChatActivity uses 0-36, 100-118, 200-209).
+    OPTION_PLUGIN_CONTEXT_BASE (300) is untouched — no collision."""
+    info("== step 3b: renumber AminHooks option IDs ==")
+    p = SRC / "java/org/telegram/messenger/amin/AminHooks.java"
+    t = read(p)
+    renumber = {
+        "OPTION_MESSAGE_DETAILS": 400,
+        "OPTION_REVEAL_FILTERED": 401,
+        "OPTION_AYU_FORWARD_COPY": 402,
+        "OPTION_AYU_SAVE_SELF": 403,
+        "OPTION_FORWARD_AS_COPY": 404,
+        "OPTION_JUMP_TO_BEGINNING": 405,
+        "OPTION_MARK_FOLDER_READ": 406,
+        "OPTION_AYU_COPY_TEXT": 407,
+        "OPTION_QUICK_GESTURE_ACTION": 408,
+    }
+    for name, new_val in renumber.items():
+        pat = re.compile(rf"(public static final int {name} = )(\d+);")
+        m = pat.search(t)
+        if not m:
+            fail(f"AminHooks: {name} constant not found for renumbering")
+            return
+        old_val = int(m.group(2))
+        if old_val == new_val:
+            info(f"  {name} already {new_val}")
+            continue
+        t = t[:m.start(2)] + str(new_val) + t[m.end(2):]
+        info(f"  {name}: {old_val} -> {new_val}")
+    write(p, t)
+
+
 def step_patches():
     info("== step 4: apply keeper patches (hunk level) ==")
     for patch in sorted(PATCHES_DIR.glob("*.patch")):
@@ -1744,6 +1788,33 @@ def step_verify():
     if FAILURES:
         return
     info("  verified: no duplicate case labels in ChatActivity/SettingsActivity")
+    # Value collisions: javac 'duplicate case label' fires when two case
+    # labels have the same VALUE even with different names (runs 8-9:
+    # AminHooks OPTION_* 200-208 vs exteraGram ChatActivity OPTION_* 200-209).
+    # Parse both constant tables and fail on any overlap.
+    def option_values(path):
+        vals = {}
+        for m in re.finditer(
+                r'\bOPTION_([A-Z_]+)\s*=\s*(\d+)\s*;', read(path)):
+            vals[m.group(1)] = int(m.group(2))
+        return vals
+    chat_opts = option_values(SRC / "java/org/telegram/ui/ChatActivity.java")
+    amin_opts = option_values(
+        SRC / "java/org/telegram/messenger/amin/AminHooks.java")
+    chat_by_val = {}
+    for name, val in chat_opts.items():
+        chat_by_val.setdefault(val, []).append(name)
+    collisions = []
+    for name, val in amin_opts.items():
+        if val in chat_by_val:
+            collisions.append(
+                f"AminHooks.OPTION_{name}={val} collides with "
+                f"ChatActivity.OPTION_{'/OPTION_'.join(chat_by_val[val])}")
+    if collisions:
+        fail("option-ID value collisions: " + "; ".join(collisions))
+    else:
+        info(f"  verified: no option-ID collisions "
+             f"(ChatActivity {len(chat_opts)}, AminHooks {len(amin_opts)})")
     gp = read(EXTERA / "gradle.properties")
     if "APP_PACKAGE=org.telegram.amingram" not in gp:
         fail("gradle.properties: APP_PACKAGE is not org.telegram.amingram")
@@ -1759,7 +1830,8 @@ def step_verify():
 
 
 def main():
-    steps = [step_clone, step_gradle_properties, step_overlay, step_patches,
+    steps = [step_clone, step_gradle_properties, step_overlay,
+             step_amin_option_ids, step_patches,
              step_settings_rows, step_hub, step_ai_delete, step_freetranslate,
              step_speedboost, step_rebrand_strings, step_google_services,
              step_missing_strings, step_verify]
