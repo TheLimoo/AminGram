@@ -619,9 +619,13 @@ def step_overlay():
 # Step 4: hunk-level patch application
 # --------------------------------------------------------------------------
 
-KEEPER_PATCHES = ["0001", "0003", "0004", "0006", "0011", "0012", "0013",
+KEEPER_PATCHES = ["0003", "0004", "0006", "0011", "0012", "0013",
                   "0014", "0017", "0018", "0019", "0020", "0023", "0024",
-                  "0028", "0059"]
+                  "0028"]
+# 0001 + 0059 are NOT applied: step 4b re-derives them entirely (imports,
+# rows 90/91, cases 90/91). 0059's case hunk applied with -C1 fuzz in run 8
+# even though its context (case 90) was absent, adding a lone case 91 that
+# step 4b then duplicated — a javac "duplicate case label" failure.
 # 0002 is NOT applied: gradle.properties is rebranded by step 2 (its context
 # APP_PACKAGE=org.telegram.messenger does not match exteraGram's
 # APP_PACKAGE=com.exteragram.messenger).
@@ -807,17 +811,23 @@ def step_settings_rows():
     if switch not in t:
         fail("SettingsActivity: switch (item.id) anchor not found")
         return
-    cases = ("            case 90:\n"
-             "                presentSettingFragment(new AminPluginsActivity());\n"
-             "                break;\n"
-             "            case 91:\n"
-             "                presentSettingFragment(new AminResourcesActivity());\n"
-             "                break;")
-    if "case 90:" in t and "case 91:" in t:
-        info("  cases 90/91 already present")
+    # Cases right after `switch (item.id) {` — add each only if absent
+    # (a patch could have added one of them alone; adding both blindly
+    # duplicates the one that exists — run 8's case-91 failure).
+    add = []
+    if "case 90:" not in t:
+        add.append("            case 90:\n"
+                   "                presentSettingFragment(new AminPluginsActivity());\n"
+                   "                break;")
+    if "case 91:" not in t:
+        add.append("            case 91:\n"
+                   "                presentSettingFragment(new AminResourcesActivity());\n"
+                   "                break;")
+    if add:
+        t = t.replace(switch, switch + "\n" + "\n".join(add), 1)
+        info(f"  cases added: {len(add)}")
     else:
-        t = t.replace(switch, switch + "\n" + cases, 1)
-        info("  cases 90/91 added")
+        info("  cases 90/91 already present")
     write(p, t)
 
 # --------------------------------------------------------------------------
@@ -1636,6 +1646,51 @@ def step_missing_strings():
 # Step 12: final verification + summary
 # --------------------------------------------------------------------------
 
+def check_no_duplicate_cases(path):
+    """Fail if any switch in the file has a duplicate case label (javac
+    'duplicate case label'). Dumps the region around each duplicate so the
+    cause is visible in the rebase log instead of after a 30-min build."""
+    t = read(path)
+    for m in re.finditer(r'\bswitch\s*\(', t):
+        paren = t.find("(", m.start())
+        d = 0
+        j = paren
+        cond_end = None
+        while j < len(t):
+            if t[j] == "(":
+                d += 1
+            elif t[j] == ")":
+                d -= 1
+                if d == 0:
+                    cond_end = j
+                    break
+            j += 1
+        if cond_end is None:
+            continue
+        brace = t.find("{", cond_end)
+        if brace == -1:
+            continue
+        end = brace_span(t, brace)
+        if end is None:
+            continue
+        body = t[brace:end]
+        labels = {}
+        for lm in re.finditer(r'^\s*case\s+([^:]+):', body, re.M):
+            lb = lm.group(1).strip()
+            line_no = t[:brace].count("\n") + body[:lm.start()].count("\n") + 1
+            if lb in labels:
+                lines = t.split("\n")
+                lo = max(0, line_no - 12)
+                hi = min(len(lines), line_no + 4)
+                info(f"  DUP-CASE region in {path.name} around line {line_no}:")
+                for k in range(lo, hi):
+                    info(f"    {k + 1}: {lines[k]}")
+                fail(f"duplicate case label {lb!r} in {path.name} "
+                     f"(lines {labels[lb]} and {line_no})")
+                return
+            labels[lb] = line_no
+
+
 def step_verify():
     info("== step 12: final verification ==")
     checks = [
@@ -1682,6 +1737,13 @@ def step_verify():
         fail(f"duplicate resources across res dirs: {dups[:5]}")
     else:
         info("  verified: no duplicate resources across res dirs")
+    # Duplicate case labels (javac fails the whole build on one; run 8).
+    for rel in ("java/org/telegram/ui/ChatActivity.java",
+                "java/org/telegram/ui/SettingsActivity.java"):
+        check_no_duplicate_cases(SRC / rel)
+    if FAILURES:
+        return
+    info("  verified: no duplicate case labels in ChatActivity/SettingsActivity")
     gp = read(EXTERA / "gradle.properties")
     if "APP_PACKAGE=org.telegram.amingram" not in gp:
         fail("gradle.properties: APP_PACKAGE is not org.telegram.amingram")
